@@ -1,0 +1,17 @@
+# Rust
+/target/
+
+# Local application state
+/settings.json
+
+# Local models
+/models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Other IDEs
+.idea/
+
+project_snapshot.zip

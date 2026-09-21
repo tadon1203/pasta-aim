@@ -1,0 +1,3 @@
+The directory vendor/makxd is copied from the user-provided mak-suite-main archive.
+Package metadata: makxd 0.5.0, MIT license.
+It is used as a path dependency; this project does not reimplement the MAK protocol.
