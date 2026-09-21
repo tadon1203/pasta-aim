@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::{
-    config::{Config, HotkeyAction, HotkeyBinding, OutputMode, Sensitivity},
+    config::{Config, FpsLimit, HotkeyAction, HotkeyBinding, OutputMode, Sensitivity},
     engine::{CapturePhase, Engine, EngineStatus, MakPhase, ModelPhase, RunPhase},
     hotkeys::{
         CaptureResult, HotkeyRegistry, canonical_shortcut, capture_from_events, display_shortcut,
@@ -106,18 +106,26 @@ impl App {
         }
     }
 
+    fn set_fps_limit(&mut self, fps_limit: FpsLimit, persist: bool) {
+        self.config.fps_limit = fps_limit;
+        self.engine.set_fps_limit(fps_limit);
+        if persist {
+            self.persist();
+        }
+    }
+
     fn begin_hotkey_capture(&mut self, action: HotkeyAction) {
         self.capturing_hotkey = Some(action);
         self.hotkey_capture_armed = false;
         self.hotkey_capture_error = None;
-        self.hotkeys.suspend();
+        self.hotkeys.begin_capture();
     }
 
     fn cancel_hotkey_capture(&mut self) {
         self.capturing_hotkey = None;
         self.hotkey_capture_armed = false;
         self.hotkey_capture_error = None;
-        self.hotkeys.resume();
+        self.hotkeys.end_capture();
     }
 
     fn add_hotkey(&mut self, action: HotkeyAction, shortcut: String) {
@@ -448,6 +456,23 @@ impl App {
                     RunPhase::Idle => "Idle",
                 });
             });
+            ui.horizontal(|ui| {
+                ui.label("FPS limit");
+                let mut value = self.config.fps_limit.value();
+                let response = ui.add(
+                    egui::DragValue::new(&mut value)
+                        .speed(1.0)
+                        .range(FpsLimit::MIN..=FpsLimit::MAX),
+                );
+                if response.changed() {
+                    self.set_fps_limit(FpsLimit::new(value), false);
+                }
+                if response.drag_stopped() || response.lost_focus() {
+                    self.persist();
+                }
+                ui.small("Continuous only");
+            });
+
             let hold_shortcuts = bindings_summary(&self.config, HotkeyAction::ContinuousHold);
             if hold_shortcuts.is_empty() {
                 ui.small("No hold shortcut assigned.");
@@ -456,8 +481,9 @@ impl App {
             }
             if status.performance.sample_count > 0 {
                 ui.small(format!(
-                    "{:.1} FPS · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
+                    "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
                     status.performance.fps,
+                    self.config.fps_limit.value(),
                     status.performance.total.p50_ms,
                     status.performance.total.p95_ms,
                     status.performance.inference.p50_ms,
@@ -589,6 +615,8 @@ impl App {
             // with keyboard navigation. Capture begins on the next egui pass.
             self.hotkey_capture_armed = true;
             ctx.request_repaint();
+        } else if let Some(shortcut) = self.hotkeys.poll_captured_xinput() {
+            self.add_hotkey(action, shortcut);
         } else {
             let super_down = ctx.input(|input| {
                 input.key_down(egui::Key::SuperLeft) || input.key_down(egui::Key::SuperRight)
@@ -624,8 +652,8 @@ impl App {
                 ui.strong(action.label());
                 ui.add_space(8.0);
                 ui.heading("Waiting for input…");
-                ui.label("Press a key or key combination.");
-                ui.small("Esc cancels. Ctrl, Shift, and Alt can be used as modifiers.");
+                ui.label("Press a key, controller button, or trigger.");
+                ui.small("Esc cancels. Keyboard shortcuts may use Ctrl, Shift, and Alt. XInput buttons and LT/RT are also supported.");
                 if let Some(error) = &self.hotkey_capture_error {
                     ui.add_space(6.0);
                     ui.colored_label(ui.visuals().error_fg_color, error);

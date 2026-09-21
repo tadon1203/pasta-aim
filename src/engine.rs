@@ -13,7 +13,7 @@ use eframe::egui;
 
 use crate::{
     capture::DxgiCapture,
-    config::{Config, OutputMode, Sensitivity},
+    config::{Config, FpsLimit, OutputMode, Sensitivity},
     detector::Detector,
     mak_output::{MakConnectionEvent, MakMetadata, MakOutput, MakRoutes, PhysicalControllerStatus},
     metrics::{Metrics, PerformanceSnapshot, StageTimings},
@@ -172,6 +172,7 @@ impl EngineStatus {
 enum Command {
     LoadModel { name: String, path: PathBuf },
     SetSensitivity(Sensitivity),
+    SetFpsLimit(FpsLimit),
     SetOutput(OutputMode),
     SetContinuous(bool),
     RunOnce,
@@ -242,6 +243,10 @@ impl Engine {
         let _ = self.tx.send(Command::SetSensitivity(value));
     }
 
+    pub fn set_fps_limit(&self, value: FpsLimit) {
+        let _ = self.tx.send(Command::SetFpsLimit(value));
+    }
+
     pub fn set_output(&self, mode: OutputMode) {
         let _ = self.tx.send(Command::SetOutput(mode));
     }
@@ -284,6 +289,7 @@ struct Worker {
     mak: MakOutput,
     metrics: Metrics,
     sensitivity: Sensitivity,
+    fps_limit: FpsLimit,
     output_mode: OutputMode,
     continuous: bool,
     last_physical_probe: Instant,
@@ -303,6 +309,7 @@ fn run_worker(
         mak: MakOutput::new(),
         metrics: Metrics::new(),
         sensitivity: config.sensitivity,
+        fps_limit: config.fps_limit,
         output_mode: config.output_mode,
         continuous: false,
         last_physical_probe: Instant::now() - PHYSICAL_CONTROLLER_POLL_INTERVAL,
@@ -335,9 +342,15 @@ fn run_worker(
                 continue;
             }
 
+            let frame_started = Instant::now();
             if let Err(error) = worker.step(false) {
                 worker.stop_after_run_error(format!("Inference failed: {error:#}"));
                 thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            if !wait_for_next_frame(&rx, &mut worker, frame_started) {
+                return;
             }
         } else {
             match rx.recv_timeout(IDLE_POLL_INTERVAL) {
@@ -353,11 +366,37 @@ fn run_worker(
     }
 }
 
+fn wait_for_next_frame(
+    rx: &Receiver<Command>,
+    worker: &mut Worker,
+    frame_started: Instant,
+) -> bool {
+    while worker.continuous {
+        let deadline = frame_started + worker.fps_limit.frame_interval();
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        match rx.recv_timeout(deadline.saturating_duration_since(now)) {
+            Ok(command) => {
+                if !worker.handle_command(command) {
+                    return false;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+    }
+    true
+}
+
 impl Worker {
     fn handle_command(&mut self, command: Command) -> bool {
         match command {
             Command::LoadModel { name, path } => self.load_model(name, path),
             Command::SetSensitivity(value) => self.sensitivity = value,
+            Command::SetFpsLimit(value) => self.fps_limit = value,
             Command::SetOutput(mode) => {
                 self.stop_continuous();
                 if self.output_mode == OutputMode::Controller && mode != OutputMode::Controller {

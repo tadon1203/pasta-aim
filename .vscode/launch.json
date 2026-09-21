@@ -1,0 +1,24 @@
+{
+    "name": "nice-aimassist: Debug",
+    "type": "lldb",
+    "request": "launch",
+    "cargo": {
+        "args": [
+            "build",
+            "--bin",
+            "nice-aimassist"
+        ],
+        "filter": {
+            "name": "nice-aimassist",
+            "kind": "bin"
+        }
+    },
+    "cwd": "${workspaceFolder}/target/debug",
+    "env": {
+        "RUST_BACKTRACE": "1"
+    },
+    "sourceLanguages": [
+        "rust"
+    ],
+    "terminal": "integrated"
+}

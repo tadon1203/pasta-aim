@@ -10,6 +10,7 @@ Rust + egui で構成した、ローカル完結の最小構成です。
 - 公式 MAK Rust SDK を使ったマウス / コントローラー出力
 - 1機能に複数割り当て可能なグローバルホットキー
 - 整数スケールの単一 `Sensitivity`
+- Continuous推論の整数FPS上限
 - 単発推論による手動キャリブレーション
 - capture / preprocess / inference / postprocess / output / total の性能計測
 
@@ -47,7 +48,7 @@ models/
 2. **Model** — `models/` 内から選択します。ロード成功時だけ設定へcommitします。
 3. **Output** — Mouse / Controller のユーザー選択を保持し、routeの一時消失で勝手に切り替えません。
 4. **Calibration** — 整数Sensitivityを調整し、`Run once` で単発確認します。
-5. **Continuous** — 複数のHold shortcutのどれかが押されている間だけ動作します。
+5. **Continuous** — 複数のHold shortcutのどれかが押されている間だけ動作します。FPS上限もここで設定します。
 6. **Hotkeys** — `+ Add` から `Waiting for input…` に入り、次のキー入力を登録します。
 7. **Diagnostics** — capture / MAK / detection / performance の詳細を必要時だけ表示します。
 
@@ -88,6 +89,12 @@ Sensitivityは小数ではなく整数のpercent scaleです。
 ```
 
 内部では `gain = sensitivity / 100` としてだけ変換します。UIは直接整数入力と `-10 / -1 / +1 / +10` の微調整を提供します。
+
+## FPS limit
+
+Continuous推論だけに整数FPS上限を適用します。既定値は240 FPS、設定範囲は1〜1000 FPSです。`Run once`には適用しません。
+
+各フレームのcapture開始時刻を基準にフレーム周期を計算し、処理が上限周期より早く終わった場合だけ残り時間を待ちます。待機中もworker commandを受信するため、Hold shortcutを離したときの停止、Sensitivity変更、FPS上限変更などを単純な`sleep`でブロックしません。処理自体が上限周期を超えた場合は追加待機を行わず、実FPSは処理性能に従います。
 
 ## Hotkeys
 
@@ -154,3 +161,28 @@ cargo build --release
 ```
 
 VS Codeでは `cargo: verify` task が format check → clippy → test を順番に実行します。
+
+## VS Code debugging
+
+VS Codeでは `rust-analyzer` と `CodeLLDB` を推奨拡張として登録しています。`Run and Debug` から次を選べます。
+
+```text
+nice-aimassist: Debug
+nice-aimassist: Debug tests
+```
+
+`nice-aimassist: Debug` はCargoのdebug buildをCodeLLDBで起動します。ブレークポイント、ステップ実行、変数、call stackを確認できます。`nice-aimassist: Debug tests` はbinary targetのテスト実行ファイルをデバッガで起動します。
+
+F5デバッグ時は `NICE_AIMASSIST_DATA_DIR=${workspaceFolder}` を設定するため、debug executableが `target/debug/` にあっても、モデルと設定はワークスペース直下を使います。
+
+```text
+nice-aimassist/
+  models/
+  settings.json
+  src/
+  target/
+```
+
+通常起動で `NICE_AIMASSIST_DATA_DIR` が未設定の場合は、従来どおり実行ファイルのディレクトリを使用します。デバッグ設定では `RUST_BACKTRACE=1` も有効です。
+
+性能計測はdebug buildの値を基準にせず、`cargo run --release` またはrelease buildで確認してください。
