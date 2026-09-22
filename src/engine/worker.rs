@@ -19,7 +19,7 @@ use super::{
 use crate::{
     config::Config,
     detector::Detector,
-    graphics::{DxgiCapture, GraphicsThread, MappedCaptureFrame},
+    graphics::{CapturePoll, DxgiCapture, GraphicsThread, MappedCaptureFrame},
     mak::{MakClient, MakConnectionEvent, MakMetadata, MakRoutes, PhysicalControllerStatus},
     metrics::{Metrics, StageTimings},
     models,
@@ -247,18 +247,27 @@ impl Worker {
         };
 
         let adapters = graphics.enumerate_adapters();
-        match graphics.enumerate_displays() {
-            Ok(displays) => self.edit_status(|status| {
+        let displays = graphics.enumerate_displays();
+        match (adapters, displays) {
+            (Ok(adapters), Ok(displays)) => self.edit_status(|status| {
                 status.graphics.adapters = adapters;
                 status.graphics.displays = displays;
                 status.graphics.catalog_error = None;
             }),
-            Err(error) => self.edit_status(|status| {
-                tracing::error!(error = %format!("{error:#}"), "display enumeration failed");
-                status.graphics.adapters = adapters;
-                status.graphics.displays.clear();
-                status.graphics.catalog_error = Some(format!("{error:#}"));
-            }),
+            (adapter_result, display_result) => {
+                let error = adapter_result
+                    .as_ref()
+                    .err()
+                    .or_else(|| display_result.as_ref().err())
+                    .map(|error| format!("{error:#}"))
+                    .unwrap_or_else(|| "graphics enumeration failed".to_owned());
+                self.edit_status(|status| {
+                    tracing::error!(%error, "graphics enumeration failed");
+                    status.graphics.adapters = adapter_result.unwrap_or_default();
+                    status.graphics.displays = display_result.unwrap_or_default();
+                    status.graphics.catalog_error = Some(error);
+                });
+            }
         }
     }
 
@@ -754,11 +763,26 @@ impl Worker {
             .ok_or_else(|| anyhow!("DXGI capture is not initialized"))?;
 
         let scheduled_due = if one_shot { None } else { self.next_frame_due };
-        let frame: MappedCaptureFrame<'_> = capture.capture_center(input_width, input_height)?;
+        let frame: MappedCaptureFrame<'_> =
+            match capture.try_capture_center(input_width, input_height)? {
+                CapturePoll::Fresh(frame) => frame,
+                CapturePoll::NoDesktopUpdate => {
+                    if !one_shot {
+                        self.next_frame_due = Some(next_frame_deadline(
+                            scheduled_due,
+                            Instant::now(),
+                            self.fps_limit.frame_interval(),
+                        ));
+                    }
+                    return Ok(());
+                }
+            };
         let acquired_at = frame.acquired_at();
         let frame_wait_ms = frame.frame_wait_ms();
         let capture_ms = frame.capture_ms();
         let desktop_size = frame.desktop_size();
+        let present_qpc = frame.present_qpc();
+        let accumulated_frames = frame.accumulated_frames();
         if !one_shot {
             self.next_frame_due = Some(next_frame_deadline(
                 scheduled_due,
@@ -861,6 +885,8 @@ impl Worker {
                 one_shot,
                 frame_wait_ms,
                 capture_ms,
+                present_qpc,
+                accumulated_frames,
                 inference_ms = inference.inference_ms,
                 mak_write_ms,
                 target = ?last_target,

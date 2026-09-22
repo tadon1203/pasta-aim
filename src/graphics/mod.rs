@@ -1,13 +1,27 @@
 mod capture;
 
 pub use capture::DxgiCapture;
-pub(crate) use capture::MappedCaptureFrame;
+pub(crate) use capture::{CapturePoll, MappedCaptureFrame};
 
 use std::{marker::PhantomData, rc::Rc};
 
 use anyhow::{Context, Result, anyhow};
-use win_desktop_duplication::devices::AdapterFactory;
-use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::{
+    Win32::{
+        Graphics::{
+            Dxgi::{
+                CreateDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ERROR_NOT_FOUND, DXGI_OUTPUT_DESC,
+                IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
+            },
+            Gdi::{
+                DEVMODEW, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_FLAGS,
+                EnumDisplaySettingsExW,
+            },
+        },
+        System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize},
+    },
+    core::{Interface, PCWSTR},
+};
 
 /// Owns COM and DXGI initialization for the dedicated graphics thread.
 ///
@@ -26,10 +40,10 @@ impl GraphicsThread {
         Ok(Self(PhantomData))
     }
 
-    pub(crate) fn enumerate_adapters(&self) -> Vec<AdapterInfo> {
-        let adapters = enumerate_adapters_impl();
+    pub(crate) fn enumerate_adapters(&self) -> Result<Vec<AdapterInfo>> {
+        let adapters = enumerate_adapters_impl()?;
         tracing::debug!(count = adapters.len(), "enumerated graphics adapters");
-        adapters
+        Ok(adapters)
     }
 
     pub(crate) fn enumerate_displays(&self) -> Result<Vec<DisplayInfo>> {
@@ -89,53 +103,141 @@ impl DisplayInfo {
     }
 }
 
-fn enumerate_adapters_impl() -> Vec<AdapterInfo> {
-    let factory = AdapterFactory::new();
+pub(super) struct SelectedOutput {
+    pub adapter: IDXGIAdapter1,
+    pub output: IDXGIOutput1,
+    pub info: DisplayInfo,
+}
+
+fn create_factory() -> Result<IDXGIFactory1> {
+    // SAFETY: CreateDXGIFactory1 initializes and returns the requested COM interface.
+    unsafe { CreateDXGIFactory1() }.context("failed to create DXGI factory")
+}
+
+fn select_output(adapter_index: u32, output_index: u32) -> Result<SelectedOutput> {
+    let factory = create_factory()?;
+    let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+        Ok(adapter) => adapter,
+        Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => {
+            return Err(anyhow!("no DXGI adapter {adapter_index}"));
+        }
+        Err(error) => return Err(error).context("failed to enumerate DXGI adapter"),
+    };
+    let output = match unsafe { adapter.EnumOutputs(output_index) } {
+        Ok(output) => output,
+        Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => {
+            return Err(anyhow!(
+                "no DXGI output {output_index} on adapter {adapter_index}"
+            ));
+        }
+        Err(error) => return Err(error).context("failed to enumerate DXGI output"),
+    };
+    let info = current_display_info(adapter_index, output_index, &adapter, &output)?;
+    let output = output
+        .cast::<IDXGIOutput1>()
+        .context("selected DXGI output does not support IDXGIOutput1")?;
+    Ok(SelectedOutput {
+        adapter,
+        output,
+        info,
+    })
+}
+
+fn current_display_info(
+    adapter_index: u32,
+    output_index: u32,
+    adapter: &IDXGIAdapter1,
+    output: &IDXGIOutput,
+) -> Result<DisplayInfo> {
+    let mut adapter_desc = DXGI_ADAPTER_DESC1::default();
+    // SAFETY: the descriptor points to writable storage of the documented type.
+    unsafe { adapter.GetDesc1(&mut adapter_desc) }.context("failed to query DXGI adapter")?;
+
+    let mut output_desc = DXGI_OUTPUT_DESC::default();
+    // SAFETY: the descriptor points to writable storage of the documented type.
+    unsafe { output.GetDesc(&mut output_desc) }.context("failed to query DXGI output")?;
+
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    // SAFETY: DeviceName is null-terminated by DXGI and mode is initialized with its size.
+    let mode_found = unsafe {
+        EnumDisplaySettingsExW(
+            PCWSTR(output_desc.DeviceName.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &mut mode,
+            ENUM_DISPLAY_SETTINGS_FLAGS(0),
+        )
+    };
+    if !mode_found.as_bool() {
+        return Err(anyhow!(
+            "failed to query current display mode for {}",
+            wide_string(&output_desc.DeviceName)
+        ));
+    }
+
+    Ok(DisplayInfo {
+        adapter_index,
+        output_index,
+        adapter_name: wide_string(&adapter_desc.Description),
+        display_name: wide_string(&output_desc.DeviceName),
+        width: mode.dmPelsWidth,
+        height: mode.dmPelsHeight,
+        refresh_hz: f64::from(mode.dmDisplayFrequency),
+    })
+}
+
+fn enumerate_adapters_impl() -> Result<Vec<AdapterInfo>> {
+    let factory = create_factory()?;
     let mut result = Vec::new();
     for index in 0.. {
-        let Some(adapter) = factory.get_adapter_by_idx(index) else {
-            break;
+        let adapter = match unsafe { factory.EnumAdapters1(index) } {
+            Ok(adapter) => adapter,
+            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(error) => return Err(error).context("failed to enumerate DXGI adapters"),
         };
+        let mut desc = DXGI_ADAPTER_DESC1::default();
+        // SAFETY: the descriptor points to writable storage of the documented type.
+        unsafe { adapter.GetDesc1(&mut desc) }.context("failed to query DXGI adapter")?;
         result.push(AdapterInfo {
             index,
-            name: adapter.name(),
+            name: wide_string(&desc.Description),
         });
     }
-    result
+    Ok(result)
 }
 
 fn enumerate_displays_impl() -> Result<Vec<DisplayInfo>> {
-    let factory = AdapterFactory::new();
+    let factory = create_factory()?;
     let mut result = Vec::new();
-
     for adapter_index in 0.. {
-        let Some(adapter) = factory.get_adapter_by_idx(adapter_index) else {
-            break;
+        let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+            Ok(adapter) => adapter,
+            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(error) => return Err(error).context("failed to enumerate DXGI adapters"),
         };
-        let adapter_name = adapter.name();
         for output_index in 0.. {
-            let Some(display) = adapter.get_display_by_idx(output_index) else {
-                break;
+            let output = match unsafe { adapter.EnumOutputs(output_index) } {
+                Ok(output) => output,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(error).context("failed to enumerate DXGI outputs"),
             };
-            let mode = display
-                .get_current_display_mode()
-                .map_err(|error| anyhow!("failed to query display mode: {error:?}"))?;
-            let refresh_hz = if mode.refresh_den == 0 {
-                0.0
-            } else {
-                f64::from(mode.refresh_num) / f64::from(mode.refresh_den)
-            };
-            result.push(DisplayInfo {
+            result.push(current_display_info(
                 adapter_index,
                 output_index,
-                adapter_name: adapter_name.clone(),
-                display_name: display.name(),
-                width: mode.width,
-                height: mode.height,
-                refresh_hz,
-            });
+                &adapter,
+                &output,
+            )?);
         }
     }
-
     Ok(result)
+}
+
+fn wide_string(value: &[u16]) -> String {
+    let end = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
+    String::from_utf16_lossy(&value[..end])
 }

@@ -29,7 +29,14 @@ mod settings;
 fn main() -> eframe::Result {
     let _logging = logging::init();
     tracing::info!("nice-aimassist starting");
-    win_desktop_duplication::set_process_dpi_awareness();
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+    // SAFETY: this sets process-wide DPI behavior before creating any windows.
+    if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.is_err()
+    {
+        tracing::warn!("failed to set per-monitor-v2 DPI awareness");
+    }
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

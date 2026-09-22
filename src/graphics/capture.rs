@@ -1,24 +1,36 @@
 use std::{slice, time::Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
-use win_desktop_duplication::{
-    DesktopDuplicationApi, DuplicationApiOptions, devices::AdapterFactory, texture::ColorFormat,
-};
-use windows::Win32::Graphics::{
-    Direct3D11::{
-        D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-        D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, ID3D11Device4, ID3D11DeviceContext4,
-        ID3D11Texture2D,
+use anyhow::{Context, Result, bail};
+use windows::Win32::{
+    Foundation::HMODULE,
+    Graphics::{
+        Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_1},
+        Direct3D11::{
+            D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ,
+            D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+            D3D11CreateDevice, ID3D11Device, ID3D11Device4, ID3D11DeviceContext,
+            ID3D11DeviceContext4, ID3D11Resource, ID3D11Texture2D,
+        },
+        Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
+        Dxgi::{
+            DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
+            IDXGIAdapter1, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+        },
     },
-    Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
 };
+use windows::core::Interface;
 
-use super::DisplayInfo;
+use super::{DisplayInfo, select_output};
 
 struct StagingTexture {
     width: usize,
     height: usize,
     texture: ID3D11Texture2D,
+}
+
+pub(crate) enum CapturePoll<'a> {
+    Fresh(MappedCaptureFrame<'a>),
+    NoDesktopUpdate,
 }
 
 pub(crate) struct MappedCaptureFrame<'a> {
@@ -31,6 +43,8 @@ pub(crate) struct MappedCaptureFrame<'a> {
     capture_ms: f64,
     frame_wait_ms: f64,
     desktop_size: (usize, usize),
+    present_qpc: i64,
+    accumulated_frames: u32,
     context: &'a ID3D11DeviceContext4,
     texture: &'a ID3D11Texture2D,
 }
@@ -60,6 +74,14 @@ impl MappedCaptureFrame<'_> {
     pub(crate) fn desktop_size(&self) -> (usize, usize) {
         self.desktop_size
     }
+
+    pub(crate) fn present_qpc(&self) -> i64 {
+        self.present_qpc
+    }
+
+    pub(crate) fn accumulated_frames(&self) -> u32 {
+        self.accumulated_frames
+    }
 }
 
 impl Drop for MappedCaptureFrame<'_> {
@@ -70,7 +92,9 @@ impl Drop for MappedCaptureFrame<'_> {
 }
 
 pub struct DxgiCapture {
-    duplication: DesktopDuplicationApi,
+    output: IDXGIOutput1,
+    duplication: IDXGIOutputDuplication,
+    frame_held: bool,
     device: ID3D11Device4,
     context: ID3D11DeviceContext4,
     staging: Option<StagingTexture>,
@@ -80,42 +104,16 @@ pub struct DxgiCapture {
 impl DxgiCapture {
     pub(super) fn new(adapter_index: u32, output_index: u32) -> Result<Self> {
         tracing::info!(adapter_index, output_index, "initializing DXGI capture");
-        let factory = AdapterFactory::new();
-        let adapter = factory
-            .get_adapter_by_idx(adapter_index)
-            .with_context(|| format!("no DXGI adapter {adapter_index}"))?;
-        let adapter_name = adapter.name();
-        let output = adapter
-            .get_display_by_idx(output_index)
-            .with_context(|| format!("no DXGI output {output_index} on adapter {adapter_index}"))?;
-        let mode = output
-            .get_current_display_mode()
-            .map_err(|error| anyhow!("failed to query selected display mode: {error:?}"))?;
-        let refresh_hz = if mode.refresh_den == 0 {
-            0.0
-        } else {
-            f64::from(mode.refresh_num) / f64::from(mode.refresh_den)
-        };
-        let info = DisplayInfo {
-            adapter_index,
-            output_index,
-            adapter_name,
-            display_name: output.name(),
-            width: mode.width,
-            height: mode.height,
-            refresh_hz,
-        };
-
-        let mut duplication =
-            DesktopDuplicationApi::new(adapter, output.clone()).map_err(|error| {
-                anyhow!("failed to create DXGI Desktop Duplication session: {error:?}")
-            })?;
-        duplication.configure(DuplicationApiOptions { skip_cursor: true });
-        let (device, context) = duplication.get_device_and_ctx();
+        let selected = select_output(adapter_index, output_index)?;
+        let (device, context) = create_device(&selected.adapter)?;
+        let duplication = create_duplication(&selected.output, &device)?;
+        let info = selected.info;
 
         tracing::info!(adapter_index, output_index, width = info.width, height = info.height, display = %info.display_name, "DXGI capture initialized");
         Ok(Self {
+            output: selected.output,
             duplication,
+            frame_held: false,
             device,
             context,
             staging: None,
@@ -127,29 +125,57 @@ impl DxgiCapture {
         &self.info
     }
 
-    pub(crate) fn capture_center(
+    pub(crate) fn try_capture_center(
         &mut self,
         model_width: usize,
         model_height: usize,
-    ) -> Result<MappedCaptureFrame<'_>> {
+    ) -> Result<CapturePoll<'_>> {
         if model_width == 0 || model_height == 0 {
             bail!("model input size must be non-zero");
         }
 
-        // Cadence is controlled exclusively by the worker's monotonic FPS deadline.
-        let frame_wait_ms = 0.0;
         let capture_started = Instant::now();
-        let texture = self
-            .duplication
-            .acquire_next_frame_now()
-            .map_err(|error| anyhow!("DXGI did not return a desktop frame: {error:?}"))?;
+        self.ensure_staging_texture(model_width, model_height)?;
+        if !self.prepare_acquire()? {
+            return Ok(CapturePoll::NoDesktopUpdate);
+        }
+
+        let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource: Option<IDXGIResource> = None;
+        // SAFETY: output parameters point to writable storage and timeout is explicitly zero.
+        match unsafe {
+            self.duplication
+                .AcquireNextFrame(0, &mut frame_info, &mut resource)
+        } {
+            Ok(()) => self.frame_held = true,
+            Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                return Ok(CapturePoll::NoDesktopUpdate);
+            }
+            Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
+                self.recreate_duplication()?;
+                return Ok(CapturePoll::NoDesktopUpdate);
+            }
+            Err(error) => return Err(error).context("failed to acquire DXGI desktop frame"),
+        }
         let acquired_at = Instant::now();
-        let desc = texture.desc();
-        let frame_width = desc.width as usize;
-        let frame_height = desc.height as usize;
-        if desc.format != ColorFormat::ABGR8UNorm {
+
+        if frame_info.LastPresentTime == 0 {
+            return Ok(CapturePoll::NoDesktopUpdate);
+        }
+
+        let resource = resource.context("DXGI returned no desktop resource")?;
+        let texture = resource
+            .cast::<ID3D11Texture2D>()
+            .context("DXGI desktop resource is not a D3D11 texture")?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: desc points to writable storage for the texture descriptor.
+        unsafe { texture.GetDesc(&mut desc) };
+        if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
             bail!("unsupported DXGI pixel format; disable HDR/10-bit output for this build");
         }
+
+        let frame_width = desc.Width as usize;
+        let frame_height = desc.Height as usize;
         if model_width > frame_width || model_height > frame_height {
             bail!(
                 "model input {}x{} is larger than captured desktop {}x{}",
@@ -160,6 +186,7 @@ impl DxgiCapture {
             );
         }
 
+        let frame_wait_ms = 0.0;
         let left = ((frame_width - model_width) / 2) as u32;
         let top = ((frame_height - model_height) / 2) as u32;
         let source_box = D3D11_BOX {
@@ -170,11 +197,13 @@ impl DxgiCapture {
             bottom: top + model_height as u32,
             back: 1,
         };
-        self.ensure_staging_texture(model_width, model_height)?;
         let staging = self
             .staging
             .as_ref()
             .context("staging texture was not created")?;
+        let source = texture
+            .cast::<ID3D11Resource>()
+            .context("failed to cast desktop texture to D3D11 resource")?;
         // SAFETY: resources share a device and format; source_box stays in bounds.
         unsafe {
             self.context.CopySubresourceRegion(
@@ -183,7 +212,7 @@ impl DxgiCapture {
                 0,
                 0,
                 0,
-                texture.as_raw_ref(),
+                &source,
                 0,
                 Some(&source_box as *const D3D11_BOX),
             );
@@ -216,6 +245,8 @@ impl DxgiCapture {
             capture_ms,
             frame_wait_ms,
             desktop_size: (frame_width, frame_height),
+            present_qpc: frame_info.LastPresentTime,
+            accumulated_frames: frame_info.AccumulatedFrames,
             context: &self.context,
             texture: &staging.texture,
         };
@@ -240,7 +271,32 @@ impl DxgiCapture {
         if frame.mapped_len != expected_len {
             bail!("mapped DXGI byte length did not match its row layout");
         }
-        Ok(frame)
+        Ok(CapturePoll::Fresh(frame))
+    }
+
+    fn prepare_acquire(&mut self) -> Result<bool> {
+        if !self.frame_held {
+            return Ok(true);
+        }
+
+        // SAFETY: this instance tracks that the previous successful acquire is still held.
+        let release_result = unsafe { self.duplication.ReleaseFrame() };
+        self.frame_held = false;
+        match release_result {
+            Ok(()) => Ok(true),
+            Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
+                self.recreate_duplication()?;
+                Ok(false)
+            }
+            Err(error) => Err(error).context("failed to release previous DXGI frame"),
+        }
+    }
+
+    fn recreate_duplication(&mut self) -> Result<()> {
+        self.duplication = create_duplication(&self.output, &self.device)?;
+        self.frame_held = false;
+        tracing::debug!("DXGI desktop duplication recreated after access loss");
+        Ok(())
     }
 
     fn ensure_staging_texture(&mut self, width: usize, height: usize) -> Result<()> {
@@ -287,4 +343,49 @@ impl DxgiCapture {
         tracing::debug!(width, height, "DXGI staging texture created");
         Ok(())
     }
+}
+
+impl Drop for DxgiCapture {
+    fn drop(&mut self) {
+        if self.frame_held {
+            // SAFETY: this instance still owns one successful, unreleased frame.
+            let _ = unsafe { self.duplication.ReleaseFrame() };
+            self.frame_held = false;
+        }
+    }
+}
+
+fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device4, ID3D11DeviceContext4)> {
+    let mut device: Option<ID3D11Device> = None;
+    let mut context: Option<ID3D11DeviceContext> = None;
+    // SAFETY: output pointers are valid and the selected adapter is retained by DXGI.
+    unsafe {
+        D3D11CreateDevice(
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_FLAG(0),
+            Some(&[D3D_FEATURE_LEVEL_11_1]),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )
+    }
+    .context("failed to create D3D11 device")?;
+    let device = device.context("D3D11 returned no device")?.cast()?;
+    let context = context
+        .context("D3D11 returned no immediate context")?
+        .cast()?;
+    Ok((device, context))
+}
+
+fn create_duplication(
+    output: &IDXGIOutput1,
+    device: &ID3D11Device4,
+) -> Result<IDXGIOutputDuplication> {
+    let device: ID3D11Device = device.cast()?;
+    // SAFETY: output and device belong to the same selected adapter.
+    unsafe { output.DuplicateOutput(&device) }
+        .context("failed to create DXGI Desktop Duplication session")
 }
