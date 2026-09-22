@@ -36,8 +36,6 @@ pub struct Detector {
     session: Session,
     input_width: usize,
     input_height: usize,
-    pixel_count: usize,
-    input_element_count: usize,
     input_shape: [usize; 4],
     directml_device: DirectMlDevice,
     ep_assignment: EpAssignmentState,
@@ -120,8 +118,6 @@ impl Detector {
             session,
             input_width,
             input_height,
-            pixel_count,
-            input_element_count,
             input_shape: [1, 3, input_height, input_width],
             directml_device,
             ep_assignment,
@@ -141,12 +137,13 @@ impl Detector {
         &self.ep_assignment
     }
 
-    pub fn infer_bgra(&mut self, bgra: &[u8]) -> Result<InferenceResult> {
+    pub fn infer_bgra(&mut self, bgra: &[u8], row_pitch: usize) -> Result<InferenceResult> {
         let preprocess_started = Instant::now();
-        preprocess_bgra(
+        preprocess_bgra_rows(
             bgra,
-            self.pixel_count,
-            self.input_element_count,
+            row_pitch,
+            self.input_width,
+            self.input_height,
             &mut self.input,
         )?;
         let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
@@ -190,19 +187,32 @@ impl Detector {
     }
 }
 
-fn preprocess_bgra(
+fn preprocess_bgra_rows(
     bgra: &[u8],
-    pixels: usize,
-    expected_output: usize,
+    row_pitch: usize,
+    width: usize,
+    height: usize,
     output: &mut [f32],
 ) -> Result<()> {
-    let expected_bgra = pixels * 4;
-    if bgra.len() != expected_bgra {
+    let row_bytes = width.checked_mul(4).context("BGRA row size overflowed")?;
+    if row_pitch < row_bytes {
+        bail!("BGRA row pitch mismatch: expected at least {row_bytes}, got {row_pitch}");
+    }
+    let required_bgra = row_pitch
+        .checked_mul(height)
+        .context("BGRA input length overflowed")?;
+    if bgra.len() < required_bgra {
         bail!(
-            "BGRA input length mismatch: expected {expected_bgra}, got {}",
+            "BGRA input length mismatch: expected at least {required_bgra}, got {}",
             bgra.len()
         );
     }
+    let pixels = width
+        .checked_mul(height)
+        .context("input pixel count overflowed")?;
+    let expected_output = pixels
+        .checked_mul(3)
+        .context("NCHW buffer length overflowed")?;
     if output.len() != expected_output {
         bail!(
             "NCHW buffer length mismatch: expected {expected_output}, got {}",
@@ -211,10 +221,16 @@ fn preprocess_bgra(
     }
 
     const SCALE: f32 = 1.0 / 255.0;
-    for (pixel_index, pixel) in bgra.chunks_exact(4).enumerate() {
-        output[pixel_index] = pixel[2] as f32 * SCALE;
-        output[pixels + pixel_index] = pixel[1] as f32 * SCALE;
-        output[pixels * 2 + pixel_index] = pixel[0] as f32 * SCALE;
+    for y in 0..height {
+        let row_start = y * row_pitch;
+        let row = &bgra[row_start..row_start + row_bytes];
+        for x in 0..width {
+            let pixel = x * 4;
+            let index = y * width + x;
+            output[index] = row[pixel + 2] as f32 * SCALE;
+            output[pixels + index] = row[pixel + 1] as f32 * SCALE;
+            output[pixels * 2 + index] = row[pixel] as f32 * SCALE;
+        }
     }
     Ok(())
 }
@@ -275,10 +291,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bgra_preprocess_writes_rgb_nchw_without_allocation() {
-        let bgra = [10_u8, 20, 30, 255, 40, 50, 60, 255];
-        let mut output = [0.0_f32; 6];
-        preprocess_bgra(&bgra, 2, 6, &mut output).unwrap();
+    fn bgra_preprocess_skips_row_padding_and_writes_rgb_nchw() {
+        let bgra = [
+            10_u8, 20, 30, 255, 40, 50, 60, 255, 200, 201, 202, 203, 204, 205, 206, 207, 70, 80,
+            90, 255, 100, 110, 120, 255, 208, 209, 210, 211, 212, 213, 214, 215,
+        ];
+        let mut output = [0.0_f32; 12];
+        preprocess_bgra_rows(&bgra, 16, 2, 2, &mut output).unwrap();
 
         let scale = 1.0 / 255.0;
         assert_eq!(
@@ -286,10 +305,16 @@ mod tests {
             [
                 30.0 * scale,
                 60.0 * scale,
+                90.0 * scale,
+                120.0 * scale,
                 20.0 * scale,
                 50.0 * scale,
+                80.0 * scale,
+                110.0 * scale,
                 10.0 * scale,
-                40.0 * scale
+                40.0 * scale,
+                70.0 * scale,
+                100.0 * scale
             ]
         );
     }

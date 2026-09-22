@@ -1,6 +1,7 @@
 mod capture;
 
 pub use capture::DxgiCapture;
+pub(crate) use capture::MappedCaptureFrame;
 
 use std::{marker::PhantomData, rc::Rc};
 

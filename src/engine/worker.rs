@@ -19,7 +19,7 @@ use super::{
 use crate::{
     config::Config,
     detector::Detector,
-    graphics::{DxgiCapture, GraphicsThread},
+    graphics::{DxgiCapture, GraphicsThread, MappedCaptureFrame},
     mak::{MakClient, MakConnectionEvent, MakMetadata, MakRoutes, PhysicalControllerStatus},
     metrics::{Metrics, StageTimings},
     models,
@@ -754,15 +754,20 @@ impl Worker {
             .ok_or_else(|| anyhow!("DXGI capture is not initialized"))?;
 
         let scheduled_due = if one_shot { None } else { self.next_frame_due };
-        let frame = capture.capture_center(input_width, input_height)?;
+        let frame: MappedCaptureFrame<'_> = capture.capture_center(input_width, input_height)?;
+        let acquired_at = frame.acquired_at();
+        let frame_wait_ms = frame.frame_wait_ms();
+        let capture_ms = frame.capture_ms();
+        let desktop_size = frame.desktop_size();
         if !one_shot {
             self.next_frame_due = Some(next_frame_deadline(
                 scheduled_due,
-                frame.acquired_at,
+                acquired_at,
                 self.fps_limit.frame_interval(),
             ));
         }
-        let inference = detector.infer_bgra(capture.pixels())?;
+        let inference = detector.infer_bgra(frame.bytes(), frame.row_pitch())?;
+        drop(frame);
         let gain = self.sensitivity.gain();
 
         let (mak_write_ms, last_target, last_command, pulse_controller) =
@@ -809,21 +814,21 @@ impl Worker {
                 )
             };
 
-        let total_ms = frame.capture_ms
+        let total_ms = capture_ms
             + inference.preprocess_ms
             + inference.inference_ms
             + inference.postprocess_ms
             + mak_write_ms;
         let timings = StageTimings {
-            frame_wait_ms: frame.frame_wait_ms,
-            capture_ms: frame.capture_ms,
+            frame_wait_ms,
+            capture_ms,
             preprocess_ms: inference.preprocess_ms,
             inference_ms: inference.inference_ms,
             postprocess_ms: inference.postprocess_ms,
             mak_write_ms,
             total_ms,
         };
-        self.metrics.record(frame.acquired_at, timings);
+        self.metrics.record(acquired_at, timings);
         if inference.detection.is_some() {
             self.log_summary_detections += 1;
         }
@@ -838,7 +843,7 @@ impl Worker {
 
         if one_shot || performance.is_some() {
             self.edit_status(|status| {
-                status.capture.desktop_size = Some(frame.desktop_size);
+                status.capture.desktop_size = Some(desktop_size);
                 status.run.last_target = last_target;
                 status.run.last_command = last_command;
                 status.run.last_total_ms = Some(total_ms);
@@ -854,8 +859,8 @@ impl Worker {
         if crate::logging::frame_trace_enabled() {
             tracing::trace!(
                 one_shot,
-                frame_wait_ms = frame.frame_wait_ms,
-                capture_ms = frame.capture_ms,
+                frame_wait_ms,
+                capture_ms,
                 inference_ms = inference.inference_ms,
                 mak_write_ms,
                 target = ?last_target,

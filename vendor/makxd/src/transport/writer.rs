@@ -15,6 +15,18 @@ pub(crate) fn set_command_trace(enabled: bool) {
     COMMAND_TRACE.store(enabled, Ordering::Release);
 }
 
+fn write_records(
+    port: &mut dyn WirePort,
+    records: &[Vec<u8>],
+    response_expected: bool,
+) -> std::io::Result<()> {
+    match records {
+        [] => Ok(()),
+        [single] => port.write_all_wire(single, response_expected),
+        _ => port.write_queued_wire(records, response_expected),
+    }
+}
+
 pub(crate) enum WriteRequest {
     Command {
         data: Vec<u8>,
@@ -110,7 +122,7 @@ pub(crate) fn writer_thread(
                         }
                         let bytes = queued.iter().map(Vec::len).sum::<usize>();
                         let started = Instant::now();
-                        if let Err(error) = port.write_queued_wire(&queued, response_expected) {
+                        if let Err(error) = write_records(&mut *port, &queued, response_expected) {
                             let message = error.to_string();
                             for tx in completions.drain(..) {
                                 let _ = tx.send(Err(message.clone()));
@@ -167,7 +179,7 @@ pub(crate) fn writer_thread(
 
         let byte_count = queued.iter().map(Vec::len).sum::<usize>();
         let write_started = Instant::now();
-        if let Err(error) = port.write_queued_wire(&queued, response_expected) {
+        if let Err(error) = write_records(&mut *port, &queued, response_expected) {
             let write_elapsed = write_started.elapsed();
             if COMMAND_TRACE.load(Ordering::Acquire) {
                 tracing::trace!(
@@ -277,6 +289,80 @@ mod tests {
             Arc::new(ReaderSignal::new()),
         );
         assert_eq!(*writes.lock().unwrap(), [vec![1, 2], vec![3, 4]]);
+    }
+
+    struct FastPathCapturePort {
+        write_all_calls: Arc<Mutex<usize>>,
+        queued_calls: Arc<Mutex<usize>>,
+    }
+
+    impl WirePort for FastPathCapturePort {
+        fn try_clone_wire(&self) -> Result<Box<dyn WirePort>> {
+            Ok(Box::new(Self {
+                write_all_calls: Arc::clone(&self.write_all_calls),
+                queued_calls: Arc::clone(&self.queued_calls),
+            }))
+        }
+
+        fn write_coalescing_supported(&self) -> bool {
+            true
+        }
+
+        fn read_wire(&mut self, _bytes: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+
+        fn write_all_wire(
+            &mut self,
+            _bytes: &[u8],
+            _response_expected: bool,
+        ) -> std::io::Result<()> {
+            *self.write_all_calls.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        fn write_queued_wire(
+            &mut self,
+            _records: &[Vec<u8>],
+            _response_expected: bool,
+        ) -> std::io::Result<()> {
+            *self.queued_calls.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        fn drain_wire(&mut self, _timeout: Duration) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn single_record_uses_write_all_fast_path() {
+        let write_all_calls = Arc::new(Mutex::new(0));
+        let queued_calls = Arc::new(Mutex::new(0));
+        let mut port = FastPathCapturePort {
+            write_all_calls: Arc::clone(&write_all_calls),
+            queued_calls: Arc::clone(&queued_calls),
+        };
+
+        write_records(&mut port, &[vec![1]], false).unwrap();
+
+        assert_eq!(*write_all_calls.lock().unwrap(), 1);
+        assert_eq!(*queued_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn multiple_records_use_queued_write() {
+        let write_all_calls = Arc::new(Mutex::new(0));
+        let queued_calls = Arc::new(Mutex::new(0));
+        let mut port = FastPathCapturePort {
+            write_all_calls: Arc::clone(&write_all_calls),
+            queued_calls: Arc::clone(&queued_calls),
+        };
+
+        write_records(&mut port, &[vec![1], vec![2]], false).unwrap();
+
+        assert_eq!(*write_all_calls.lock().unwrap(), 0);
+        assert_eq!(*queued_calls.lock().unwrap(), 1);
     }
 
     struct DrainCapturePort {

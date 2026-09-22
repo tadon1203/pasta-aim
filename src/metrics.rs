@@ -101,12 +101,18 @@ impl Metrics {
     }
 
     pub fn snapshot(&self) -> PerformanceSnapshot {
-        let cadence: Vec<f64> = self.samples.iter().filter_map(|s| s.cadence_ms).collect();
-        let mean_cadence = if cadence.is_empty() {
+        let mut scratch = [0.0_f64; MAX_SAMPLES];
+        let (cadence_sum, cadence_count) = self
+            .samples
+            .iter()
+            .filter_map(|sample| sample.cadence_ms)
+            .fold((0.0, 0), |(sum, count), value| (sum + value, count + 1));
+        let mean_cadence = if cadence_count == 0 {
             None
         } else {
-            Some(cadence.iter().sum::<f64>() / cadence.len() as f64)
+            Some(cadence_sum / cadence_count as f64)
         };
+        let cadence = summarize_samples(&self.samples, &mut scratch, |sample| sample.cadence_ms);
 
         PerformanceSnapshot {
             sample_count: self.samples.len(),
@@ -114,14 +120,28 @@ impl Metrics {
                 .filter(|value| *value > 0.0)
                 .map(|value| 1000.0 / value)
                 .unwrap_or(0.0),
-            cadence: summarize(&cadence),
-            frame_wait: summarize_stage(&self.samples, |s| s.frame_wait_ms),
-            capture: summarize_stage(&self.samples, |s| s.capture_ms),
-            preprocess: summarize_stage(&self.samples, |s| s.preprocess_ms),
-            inference: summarize_stage(&self.samples, |s| s.inference_ms),
-            postprocess: summarize_stage(&self.samples, |s| s.postprocess_ms),
-            mak_write: summarize_stage(&self.samples, |s| s.mak_write_ms),
-            total: summarize_stage(&self.samples, |s| s.total_ms),
+            cadence,
+            frame_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.frame_wait_ms)
+            }),
+            capture: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.capture_ms)
+            }),
+            preprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.preprocess_ms)
+            }),
+            inference: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.inference_ms)
+            }),
+            postprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.postprocess_ms)
+            }),
+            mak_write: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.mak_write_ms)
+            }),
+            total: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.total_ms)
+            }),
             cold_run: self.cold_run,
         }
     }
@@ -133,28 +153,29 @@ impl Default for Metrics {
     }
 }
 
-fn summarize_stage(
+fn summarize_samples(
     samples: &VecDeque<Sample>,
-    select: impl Fn(StageTimings) -> f64,
+    scratch: &mut [f64; MAX_SAMPLES],
+    select: impl Fn(&Sample) -> Option<f64>,
 ) -> MetricSummary {
-    let values: Vec<f64> = samples
-        .iter()
-        .map(|sample| select(sample.timings))
-        .collect();
-    summarize(&values)
-}
-
-fn summarize(values: &[f64]) -> MetricSummary {
-    if values.is_empty() {
-        return MetricSummary::default();
+    let mut len = 0;
+    for sample in samples {
+        if let Some(value) = select(sample) {
+            scratch[len] = value;
+            len += 1;
+        }
     }
-
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    MetricSummary {
-        p50_ms: percentile(&sorted, 0.50),
-        p95_ms: percentile(&sorted, 0.95),
-    }
+    let summary = if len == 0 {
+        MetricSummary::default()
+    } else {
+        let values = &mut scratch[..len];
+        values.sort_unstable_by(f64::total_cmp);
+        MetricSummary {
+            p50_ms: percentile(values, 0.50),
+            p95_ms: percentile(values, 0.95),
+        }
+    };
+    summary
 }
 
 fn percentile(sorted: &[f64], fraction: f64) -> f64 {
@@ -200,8 +221,10 @@ mod tests {
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.sample_count, 20);
-        assert!(snapshot.total.p50_ms >= 10.0 && snapshot.total.p50_ms <= 11.0);
-        assert!(snapshot.total.p95_ms >= 19.0);
-        assert!(snapshot.fps > 90.0 && snapshot.fps < 110.0);
+        assert_eq!(snapshot.total.p50_ms, 11.0);
+        assert_eq!(snapshot.total.p95_ms, 19.0);
+        assert_eq!(snapshot.cadence.p50_ms, 10.0);
+        assert_eq!(snapshot.cadence.p95_ms, 10.0);
+        assert_eq!(snapshot.fps, 100.0);
     }
 }

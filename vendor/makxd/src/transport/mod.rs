@@ -345,14 +345,11 @@ impl TransportHandle {
         if !self.is_connected() {
             return Err(MakxdError::Disconnected);
         }
-        let record = {
-            let mut bytes = Vec::with_capacity(1 + payload.len());
-            bytes.push(opcode as u8);
-            bytes.extend_from_slice(payload);
-            bytes
-        };
         let (data, expected_nonce) =
             if let Some(encryption) = self.inner.transport_encryption.as_deref() {
+                let mut record = Vec::with_capacity(1 + payload.len());
+                record.push(opcode as u8);
+                record.extend_from_slice(payload);
                 let (frame, nonce) = encryption.encode_command(&record)?;
                 (frame, Some(nonce))
             } else {

@@ -14,7 +14,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, ResetEvent, WaitForSingleObject,
+};
 
 use super::wire::WirePort;
 use crate::error::{MakxdError, Result};
@@ -32,8 +34,18 @@ fn normalized_port_name(name: &str) -> String {
     }
 }
 
+fn create_io_event() -> io::Result<HANDLE> {
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(event)
+    }
+}
+
 pub(crate) struct WindowsSerialPort {
     handle: HANDLE,
+    event: HANDLE,
 }
 unsafe impl Send for WindowsSerialPort {}
 
@@ -57,7 +69,14 @@ impl WindowsSerialPort {
         if handle == INVALID_HANDLE_VALUE {
             return Err(MakxdError::Io(io::Error::last_os_error()));
         }
-        let port = Self { handle };
+        let event = match create_io_event() {
+            Ok(event) => event,
+            Err(error) => {
+                unsafe { CloseHandle(handle) };
+                return Err(MakxdError::Io(error));
+            }
+        };
+        let port = Self { handle, event };
         port.configure(baud)?;
         Ok(port)
     }
@@ -121,44 +140,46 @@ impl WindowsSerialPort {
         }
     }
 
-    fn io(&self, bytes: *mut u8, len: u32, write: bool) -> io::Result<usize> {
+    fn io(&mut self, bytes: *mut u8, len: u32, write: bool) -> io::Result<usize> {
         unsafe {
-            let event = CreateEventW(std::ptr::null(), 1, 0, std::ptr::null());
-            if event.is_null() {
+            if ResetEvent(self.event) == 0 {
                 return Err(io::Error::last_os_error());
             }
             let mut overlapped: OVERLAPPED = std::mem::zeroed();
-            overlapped.hEvent = event;
+            overlapped.hEvent = self.event;
             let ok = if write {
-                WriteFile(self.handle, bytes, len, std::ptr::null_mut(), &mut overlapped)
+                WriteFile(
+                    self.handle,
+                    bytes,
+                    len,
+                    std::ptr::null_mut(),
+                    &mut overlapped,
+                )
             } else {
-                ReadFile(self.handle, bytes, len, std::ptr::null_mut(), &mut overlapped)
+                ReadFile(
+                    self.handle,
+                    bytes,
+                    len,
+                    std::ptr::null_mut(),
+                    &mut overlapped,
+                )
             };
             let mut pending = false;
             if ok == 0 {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
-                    CloseHandle(event);
                     return Err(error);
                 }
                 pending = true;
-                let watchdog = if write {
-                    WRITE_WATCHDOG
-                } else {
-                    READ_WATCHDOG
-                };
-                match WaitForSingleObject(event, watchdog.as_millis() as u32) {
+                let watchdog = if write { WRITE_WATCHDOG } else { READ_WATCHDOG };
+                match WaitForSingleObject(self.event, watchdog.as_millis() as u32) {
                     WAIT_OBJECT_0 => {}
                     WAIT_TIMEOUT => {
                         let _ = CancelIoEx(self.handle, &overlapped);
                         let mut transferred = 0u32;
-                        let completed = GetOverlappedResult(
-                            self.handle,
-                            &mut overlapped,
-                            &mut transferred,
-                            1,
-                        ) != 0;
-                        CloseHandle(event);
+                        let completed =
+                            GetOverlappedResult(self.handle, &mut overlapped, &mut transferred, 1)
+                                != 0;
                         return if completed {
                             Ok(transferred as usize)
                         } else {
@@ -172,13 +193,8 @@ impl WindowsSerialPort {
                         let error = io::Error::last_os_error();
                         let _ = CancelIoEx(self.handle, &overlapped);
                         let mut transferred = 0u32;
-                        let _ = GetOverlappedResult(
-                            self.handle,
-                            &mut overlapped,
-                            &mut transferred,
-                            1,
-                        );
-                        CloseHandle(event);
+                        let _ =
+                            GetOverlappedResult(self.handle, &mut overlapped, &mut transferred, 1);
                         return Err(error);
                     }
                 }
@@ -191,11 +207,8 @@ impl WindowsSerialPort {
                 pending as i32,
             ) == 0
             {
-                let error = io::Error::last_os_error();
-                CloseHandle(event);
-                return Err(error);
+                return Err(io::Error::last_os_error());
             }
-            CloseHandle(event);
             Ok(transferred as usize)
         }
     }
@@ -204,6 +217,7 @@ impl WindowsSerialPort {
 impl Drop for WindowsSerialPort {
     fn drop(&mut self) {
         unsafe {
+            CloseHandle(self.event);
             CloseHandle(self.handle);
         }
     }
@@ -225,7 +239,17 @@ impl WirePort for WindowsSerialPort {
             {
                 return Err(MakxdError::Io(io::Error::last_os_error()));
             }
-            Ok(Box::new(Self { handle: duplicate }))
+            let event = match create_io_event() {
+                Ok(event) => event,
+                Err(error) => {
+                    CloseHandle(duplicate);
+                    return Err(MakxdError::Io(error));
+                }
+            };
+            Ok(Box::new(Self {
+                handle: duplicate,
+                event,
+            }))
         }
     }
     fn write_coalescing_supported(&self) -> bool {
