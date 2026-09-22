@@ -3,26 +3,32 @@
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
-mod capture;
-#[cfg(windows)]
 mod config;
 #[cfg(windows)]
 mod detector;
 #[cfg(windows)]
 mod engine;
 #[cfg(windows)]
+mod graphics;
+#[cfg(windows)]
 mod hotkeys;
 #[cfg(windows)]
-mod mak_output;
+mod logging;
+#[cfg(windows)]
+mod mak;
 #[cfg(windows)]
 mod metrics;
 #[cfg(windows)]
 mod models;
 #[cfg(windows)]
 mod paths;
+#[cfg(windows)]
+mod settings;
 
 #[cfg(windows)]
 fn main() -> eframe::Result {
+    let _logging = logging::init();
+    tracing::info!("nice-aimassist starting");
     win_desktop_duplication::set_process_dpi_awareness();
 
     let options = eframe::NativeOptions {
@@ -32,11 +38,13 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "nice-aimassist",
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
-    )
+    );
+    tracing::info!(?result, "nice-aimassist exiting");
+    result
 }
 
 #[cfg(not(windows))]

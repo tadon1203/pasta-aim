@@ -40,16 +40,16 @@ fn controller_state_check(state: ControllerState) -> Result<()> {
     )
 }
 
-fn controller_state_payload(state: ControllerState) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(20);
-    payload.extend_from_slice(&state.digital_low.to_le_bytes());
-    payload.extend_from_slice(&state.digital_high.to_le_bytes());
-    payload.extend_from_slice(&state.left_trigger.to_le_bytes());
-    payload.extend_from_slice(&state.right_trigger.to_le_bytes());
-    payload.extend_from_slice(&state.left_stick_x.to_le_bytes());
-    payload.extend_from_slice(&state.left_stick_y.to_le_bytes());
-    payload.extend_from_slice(&state.right_stick_x.to_le_bytes());
-    payload.extend_from_slice(&state.right_stick_y.to_le_bytes());
+fn controller_state_payload(state: ControllerState) -> [u8; 20] {
+    let mut payload = [0u8; 20];
+    payload[0..4].copy_from_slice(&state.digital_low.to_le_bytes());
+    payload[4..8].copy_from_slice(&state.digital_high.to_le_bytes());
+    payload[8..10].copy_from_slice(&state.left_trigger.to_le_bytes());
+    payload[10..12].copy_from_slice(&state.right_trigger.to_le_bytes());
+    payload[12..14].copy_from_slice(&state.left_stick_x.to_le_bytes());
+    payload[14..16].copy_from_slice(&state.left_stick_y.to_le_bytes());
+    payload[16..18].copy_from_slice(&state.right_stick_x.to_le_bytes());
+    payload[18..20].copy_from_slice(&state.right_stick_y.to_le_bytes());
 
     payload
 }
@@ -179,7 +179,7 @@ mod tests {
             right_stick_y: 32767,
             ..Default::default()
         };
-        let mut raw = controller_state_payload(state);
+        let mut raw = controller_state_payload(state).to_vec();
         raw.extend_from_slice(&u32::MAX.to_le_bytes());
         raw.extend_from_slice(&1234u32.to_le_bytes());
         raw.extend_from_slice(&8u16.to_le_bytes());

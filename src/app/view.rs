@@ -1,171 +1,22 @@
 use eframe::egui;
 
+use super::App;
 use crate::{
-    config::{Config, FpsLimit, HotkeyAction, HotkeyBinding, OutputMode, Sensitivity},
-    engine::{CapturePhase, Engine, EngineStatus, MakPhase, ModelPhase, RunPhase},
-    hotkeys::{
-        CaptureResult, HotkeyRegistry, canonical_shortcut, capture_from_events, display_shortcut,
+    config::Config,
+    detector::EpAssignmentState,
+    engine::{
+        CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
+        provider_display_name,
     },
-    mak_output::PhysicalControllerStatus,
+    graphics::{AdapterInfo, DisplayInfo},
+    hotkeys::{CaptureResult, capture_from_events, display_shortcut},
+    mak::PhysicalControllerStatus,
     metrics::{MetricSummary, PerformanceSnapshot},
-    models::{self, ModelCatalog},
+    models,
+    settings::{DirectMlDevice, FpsLimit, HotkeyAction, OutputMode, Sensitivity},
 };
 
-pub struct App {
-    config: Config,
-    engine: Engine,
-    models: ModelCatalog,
-    hotkeys: HotkeyRegistry,
-    capturing_hotkey: Option<HotkeyAction>,
-    hotkey_capture_armed: bool,
-    hotkey_capture_error: Option<String>,
-    hotkey_error: Option<String>,
-    model_catalog_error: Option<String>,
-    config_error: Option<String>,
-}
-
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let config = Config::load();
-        let (models, model_catalog_error) = match ModelCatalog::scan() {
-            Ok(catalog) => (catalog, None),
-            Err(error) => (ModelCatalog::default(), Some(format!("{error:#}"))),
-        };
-
-        let engine = Engine::new(&config, cc.egui_ctx.clone());
-        let mut hotkeys = HotkeyRegistry::new(engine.control(), cc.egui_ctx.clone());
-        let hotkey_error = hotkeys.replace_bindings(&config.hotkeys).err();
-
-        let app = Self {
-            config,
-            engine,
-            models,
-            hotkeys,
-            capturing_hotkey: None,
-            hotkey_capture_armed: false,
-            hotkey_capture_error: None,
-            hotkey_error,
-            model_catalog_error,
-            config_error: None,
-        };
-
-        if app.config.model.is_none()
-            && let Some(entry) = app.models.sole_model()
-        {
-            app.engine
-                .load_model(entry.name.clone(), entry.path.clone());
-        }
-
-        app
-    }
-
-    fn persist(&mut self) {
-        match self.config.save() {
-            Ok(()) => self.config_error = None,
-            Err(error) => self.config_error = Some(format!("Settings save failed: {error:#}")),
-        }
-    }
-
-    fn commit_loaded_model(&mut self, status: &EngineStatus) {
-        let Some(active) = &status.model.active_name else {
-            return;
-        };
-        if self.config.model.as_ref() != Some(active) {
-            self.config.model = Some(active.clone());
-            self.persist();
-        }
-    }
-
-    fn rescan_models(&mut self) {
-        match ModelCatalog::scan() {
-            Ok(catalog) => {
-                self.models = catalog;
-                self.model_catalog_error = None;
-                if self.config.model.is_none()
-                    && let Some(entry) = self.models.sole_model()
-                {
-                    self.engine
-                        .load_model(entry.name.clone(), entry.path.clone());
-                }
-            }
-            Err(error) => self.model_catalog_error = Some(format!("{error:#}")),
-        }
-    }
-
-    fn select_model(&mut self, name: String) {
-        if let Some(path) = self.models.path_for(&name) {
-            self.engine.load_model(name, path);
-        }
-    }
-
-    fn set_sensitivity(&mut self, sensitivity: Sensitivity, persist: bool) {
-        self.config.sensitivity = sensitivity;
-        self.engine.set_sensitivity(sensitivity);
-        if persist {
-            self.persist();
-        }
-    }
-
-    fn set_fps_limit(&mut self, fps_limit: FpsLimit, persist: bool) {
-        self.config.fps_limit = fps_limit;
-        self.engine.set_fps_limit(fps_limit);
-        if persist {
-            self.persist();
-        }
-    }
-
-    fn begin_hotkey_capture(&mut self, action: HotkeyAction) {
-        self.capturing_hotkey = Some(action);
-        self.hotkey_capture_armed = false;
-        self.hotkey_capture_error = None;
-        self.hotkeys.begin_capture();
-    }
-
-    fn cancel_hotkey_capture(&mut self) {
-        self.capturing_hotkey = None;
-        self.hotkey_capture_armed = false;
-        self.hotkey_capture_error = None;
-        self.hotkeys.end_capture();
-    }
-
-    fn add_hotkey(&mut self, action: HotkeyAction, shortcut: String) {
-        let shortcut = match canonical_shortcut(&shortcut) {
-            Ok(shortcut) => shortcut,
-            Err(error) => {
-                self.hotkey_capture_error = Some(error);
-                return;
-            }
-        };
-
-        let mut candidate = self.config.clone();
-        candidate.add_binding(HotkeyBinding { action, shortcut });
-        match self.hotkeys.replace_bindings(&candidate.hotkeys) {
-            Ok(()) => {
-                self.config = candidate;
-                self.hotkey_error = None;
-                self.persist();
-                self.cancel_hotkey_capture();
-            }
-            Err(error) => self.hotkey_capture_error = Some(error),
-        }
-    }
-
-    fn remove_hotkey(&mut self, action: HotkeyAction, shortcut: &str) {
-        let mut candidate = self.config.clone();
-        candidate.remove_binding(action, shortcut);
-        self.hotkeys.suspend();
-        let result = self.hotkeys.replace_bindings(&candidate.hotkeys);
-        self.hotkeys.resume();
-        match result {
-            Ok(()) => {
-                self.config = candidate;
-                self.hotkey_error = None;
-                self.persist();
-            }
-            Err(error) => self.hotkey_error = Some(error),
-        }
-    }
-
     fn draw_model(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
         ui.group(|ui| {
             ui.horizontal(|ui| {
@@ -214,6 +65,42 @@ impl App {
                 }
             });
 
+            ui.horizontal(|ui| {
+                ui.label("DirectML");
+                let selected = self.directml_device_label(status.model.directml_device, status);
+                let can_change =
+                    status.model.phase != ModelPhase::Loading && status.run.phase == RunPhase::Idle;
+                ui.add_enabled_ui(can_change, |ui| {
+                    egui::ComboBox::from_id_salt("directml_device_selector")
+                        .selected_text(selected)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    status.model.directml_device
+                                        == DirectMlDevice::AutoHighPerformance,
+                                    "Auto (high performance)",
+                                )
+                                .clicked()
+                            {
+                                self.select_directml_device(DirectMlDevice::AutoHighPerformance);
+                            }
+                            for adapter in &status.graphics.adapters {
+                                let device = DirectMlDevice::Device(adapter.index as i32);
+                                if ui
+                                    .selectable_label(
+                                        status.model.directml_device == device,
+                                        adapter.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    self.select_directml_device(device);
+                                }
+                            }
+                        });
+                });
+                ui.small("DirectML requested; actual EP assignment is shown in Diagnostics");
+            });
+
             if self.models.is_empty() {
                 ui.small("No .onnx models found in the models folder.");
             }
@@ -232,6 +119,38 @@ impl App {
     fn draw_devices(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
         ui.group(|ui| {
             ui.strong("Devices");
+            ui.horizontal(|ui| {
+                ui.label("Capture");
+                let selected_text = status
+                    .capture
+                    .selected
+                    .as_ref()
+                    .map(DisplayInfo::label)
+                    .unwrap_or_else(|| "Select a display".to_owned());
+                let can_change = status.run.phase == RunPhase::Idle;
+                ui.add_enabled_ui(can_change, |ui| {
+                    egui::ComboBox::from_id_salt("capture_display_selector")
+                        .selected_text(selected_text)
+                        .width(430.0)
+                        .show_ui(ui, |ui| {
+                            for display in &status.graphics.displays {
+                                let active = status.capture.selected.as_ref().is_some_and(|selected| {
+                                    selected.adapter_index == display.adapter_index
+                                        && selected.output_index == display.output_index
+                                });
+                                if ui.selectable_label(active, display.label()).clicked() {
+                                    self.select_display(display.adapter_index, display.output_index);
+                                }
+                            }
+                        });
+                });
+                if ui.small_button("Refresh").clicked() {
+                    self.rescan_displays();
+                }
+            });
+            if let Some(error) = &status.graphics.catalog_error {
+                ui.colored_label(ui.visuals().error_fg_color, format!("Displays: {error}"));
+            }
             egui::Grid::new("device_status_grid")
                 .num_columns(2)
                 .spacing([18.0, 6.0])
@@ -284,6 +203,15 @@ impl App {
                             self.engine.probe_controller();
                         }
                     });
+                    ui.end_row();
+
+                    ui.label("XInput hotkey pad");
+                    ui.label(
+                        self.hotkeys
+                            .xinput_slot()
+                            .map(|slot| format!("● Connected · slot {slot}"))
+                            .unwrap_or_else(|| "○ Not connected".to_owned()),
+                    );
                     ui.end_row();
                 });
 
@@ -377,9 +305,11 @@ impl App {
                         .range(Sensitivity::MIN..=Sensitivity::MAX),
                 );
                 if response.changed() {
+                    self.sensitivity_dirty = true;
                     self.set_sensitivity(Sensitivity::new(value), false);
                 }
-                if response.drag_stopped() || response.lost_focus() {
+                if self.sensitivity_dirty && (response.drag_stopped() || response.lost_focus()) {
+                    self.sensitivity_dirty = false;
                     self.persist();
                 }
                 ui.label("%");
@@ -465,9 +395,11 @@ impl App {
                         .range(FpsLimit::MIN..=FpsLimit::MAX),
                 );
                 if response.changed() {
+                    self.fps_limit_dirty = true;
                     self.set_fps_limit(FpsLimit::new(value), false);
                 }
-                if response.drag_stopped() || response.lost_focus() {
+                if self.fps_limit_dirty && (response.drag_stopped() || response.lost_focus()) {
+                    self.fps_limit_dirty = false;
                     self.persist();
                 }
                 ui.small("Continuous only");
@@ -538,6 +470,24 @@ impl App {
         egui::CollapsingHeader::new("Diagnostics")
             .default_open(false)
             .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("Trace logging");
+                    let frame_changed = ui
+                        .checkbox(&mut self.config.diagnostics.frame_trace, "Frames")
+                        .changed();
+                    let mak_changed = ui
+                        .checkbox(
+                            &mut self.config.diagnostics.mak_command_trace,
+                            "MAK commands",
+                        )
+                        .changed();
+                    if frame_changed || mak_changed {
+                        crate::logging::set_diagnostics(self.config.diagnostics);
+                        self.persist();
+                    }
+                });
+                ui.small("Detailed traces are off by default and can affect log volume.");
+                ui.add_space(6.0);
                 egui::Grid::new("diagnostics_state")
                     .num_columns(2)
                     .spacing([16.0, 5.0])
@@ -557,8 +507,28 @@ impl App {
                         ui.end_row();
 
                         ui.label("Capture source");
-                        ui.label("DXGI adapter 0 / output 0");
+                        ui.label(
+                            status
+                                .capture
+                                .selected
+                                .as_ref()
+                                .map(DisplayInfo::label)
+                                .unwrap_or_else(|| "Unavailable".to_owned()),
+                        );
                         ui.end_row();
+
+                        ui.label("Requested EP");
+                        ui.label(format!(
+                            "DirectML · {}",
+                            self.directml_device_label(status.model.directml_device, status)
+                        ));
+                        ui.end_row();
+
+                        if let Some(assignment) = &status.model.ep_assignment {
+                            ui.label("Actual assignment");
+                            ui.label(actual_backend_label(assignment));
+                            ui.end_row();
+                        }
 
                         if let Some((width, height)) = status.capture.desktop_size {
                             ui.label("Desktop frame");
@@ -585,12 +555,65 @@ impl App {
                         ui.label(physical_controller_label(status.mak.physical_controller));
                         ui.end_row();
 
+                        ui.label("Controller release");
+                        ui.label(if status.mak.controller_release_pending {
+                            "Pending zero-state handoff"
+                        } else {
+                            "Clear"
+                        });
+                        ui.end_row();
+
+                        ui.label("XInput hotkey pad");
+                        ui.label(
+                            self.hotkeys
+                                .xinput_slot()
+                                .map(|slot| format!("Slot {slot}"))
+                                .unwrap_or_else(|| "Not connected".to_owned()),
+                        );
+                        ui.end_row();
+
+                        let release_latency = self.hotkeys.keyboard_release_latency();
+                        ui.label("Keyboard release lag");
+                        if release_latency.samples == 0 {
+                            ui.label("No measured hold releases");
+                        } else {
+                            ui.label(format!(
+                                "{:.1}/{:.1} ms p50/p95 · {} samples{}",
+                                release_latency.p50_ms,
+                                release_latency.p95_ms,
+                                release_latency.samples,
+                                if release_latency.assist_active {
+                                    " · release assist active"
+                                } else {
+                                    ""
+                                }
+                            ));
+                        }
+                        ui.end_row();
+
+                        ui.label("FPS limit");
+                        ui.label(self.config.fps_limit.value().to_string());
+                        ui.end_row();
+
                         if let Some((_, _, confidence, class_id)) = status.run.last_target {
                             ui.label("Last detection");
                             ui.label(format!("conf={confidence:.3}, class={class_id}"));
                             ui.end_row();
                         }
                     });
+
+                draw_ep_assignment_diagnostics(ui, status);
+
+                let release_latency = self.hotkeys.keyboard_release_latency();
+                if release_latency.samples >= 8 && release_latency.p95_ms > 25.0 {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!(
+                            "Keyboard Hold release lag is high: {:.1} ms p95",
+                            release_latency.p95_ms
+                        ),
+                    );
+                }
 
                 if let Some(error) = &status.capture.error {
                     ui.colored_label(ui.visuals().error_fg_color, format!("Capture: {error}"));
@@ -602,7 +625,93 @@ impl App {
                 ui.add_space(6.0);
                 ui.strong("Performance");
                 draw_performance(ui, &status.performance);
+
+                ui.add_space(8.0);
+                if ui.button("Copy diagnostics").clicked() {
+                    ui.ctx().copy_text(self.diagnostics_text(status));
+                }
             });
+    }
+
+    fn directml_device_label(&self, device: DirectMlDevice, status: &EngineStatus) -> String {
+        match device {
+            DirectMlDevice::AutoHighPerformance => "Auto (high performance)".to_owned(),
+            DirectMlDevice::Device(index) => status
+                .graphics
+                .adapters
+                .iter()
+                .find(|adapter| adapter.index as i32 == index)
+                .map(AdapterInfo::label)
+                .unwrap_or_else(|| format!("Device {index}")),
+        }
+    }
+
+    fn diagnostics_text(&self, status: &EngineStatus) -> String {
+        let display = status
+            .capture
+            .selected
+            .as_ref()
+            .map(DisplayInfo::label)
+            .unwrap_or_else(|| "Unavailable".to_owned());
+        let model = status
+            .model
+            .active_name
+            .clone()
+            .unwrap_or_else(|| "None".to_owned());
+        let input = status
+            .model
+            .input_size
+            .map(|(w, h)| format!("{w}x{h}"))
+            .unwrap_or_else(|| "Unknown".to_owned());
+        let controller_routes = status
+            .mak
+            .routes
+            .controllers
+            .iter()
+            .map(|kind| kind.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mak_routes = format!(
+            "mouse={}, controllers=[{}]",
+            status.mak.routes.mouse, controller_routes
+        );
+        let xinput = self
+            .hotkeys
+            .xinput_slot()
+            .map(|slot| format!("slot {slot}"))
+            .unwrap_or_else(|| "not connected".to_owned());
+        let warning = self.config_load_warning.as_deref().unwrap_or("none");
+        let save_error = self.config_save_error.as_deref().unwrap_or("none");
+        let keyboard_release = self.hotkeys.keyboard_release_latency();
+        format!(
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\nrequested EP: DirectML · {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\ncontroller release pending: {}\nphysical controller: {}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nframe wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
+            env!("CARGO_PKG_VERSION"),
+            self.directml_device_label(status.model.directml_device, status),
+            ep_assignment_copy_text(status),
+            mak_phase_label(status.mak.phase),
+            status.mak.port.as_deref().unwrap_or("unknown"),
+            status
+                .mak
+                .firmware
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            status.mak.controller_release_pending,
+            physical_controller_label(status.mak.physical_controller),
+            keyboard_release.p50_ms,
+            keyboard_release.p95_ms,
+            keyboard_release.samples,
+            keyboard_release.assist_active,
+            self.config.fps_limit.value(),
+            status.performance.sample_count,
+            status.performance.total.p50_ms,
+            status.performance.total.p95_ms,
+            status.performance.frame_wait.p50_ms,
+            status.performance.frame_wait.p95_ms,
+            status.performance.capture.p50_ms,
+            status.performance.capture.p95_ms,
+            status.performance.inference.p50_ms,
+            status.performance.inference.p95_ms,
+        )
     }
 
     fn draw_hotkey_capture(&mut self, ctx: &egui::Context) {
@@ -669,6 +778,153 @@ impl App {
     }
 }
 
+fn actual_backend_label(state: &EpAssignmentState) -> String {
+    match state {
+        EpAssignmentState::Unavailable(_) => "Unavailable".to_owned(),
+        EpAssignmentState::Available(report) => {
+            let names = report
+                .providers
+                .iter()
+                .filter(|provider| !provider.nodes.is_empty())
+                .map(provider_display_name)
+                .collect::<Vec<_>>();
+            if names.is_empty() {
+                "No assigned nodes".to_owned()
+            } else {
+                names.join(" + ")
+            }
+        }
+    }
+}
+
+fn draw_ep_assignment_diagnostics(ui: &mut egui::Ui, status: &EngineStatus) {
+    let Some(state) = &status.model.ep_assignment else {
+        return;
+    };
+    ui.add_space(6.0);
+    ui.strong("Execution");
+    match state {
+        EpAssignmentState::Unavailable(error) => {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("Assignment info unavailable: {error}"),
+            );
+        }
+        EpAssignmentState::Available(report) => {
+            ui.label(format!("Backend: {}", actual_backend_label(state)));
+            ui.label(format!("Assigned nodes: {}", report.total_nodes));
+            if let Some(summary) = &status.model.ep_assignment_summary {
+                for (name, nodes, subgraphs) in [
+                    (
+                        "DirectML",
+                        summary.directml_nodes,
+                        summary.directml_subgraphs,
+                    ),
+                    ("CPU", summary.cpu_nodes, summary.cpu_subgraphs),
+                ] {
+                    let percent = if summary.total_nodes == 0 {
+                        0.0
+                    } else {
+                        nodes as f64 / summary.total_nodes as f64 * 100.0
+                    };
+                    ui.label(format!(
+                        "{name}: {nodes} nodes · {subgraphs} subgraphs · {percent:.1}%"
+                    ));
+                }
+            }
+            for provider in report.providers.iter().filter(|provider| {
+                provider.name != "DmlExecutionProvider" && provider.name != "CPUExecutionProvider"
+            }) {
+                let percent = if report.total_nodes == 0 {
+                    0.0
+                } else {
+                    provider.nodes.len() as f64 / report.total_nodes as f64 * 100.0
+                };
+                ui.label(format!(
+                    "{}: {} nodes · {} subgraphs · {:.1}%",
+                    provider_display_name(provider),
+                    provider.nodes.len(),
+                    provider.subgraph_count,
+                    percent
+                ));
+            }
+            ui.small("Node percentages describe assignment counts, not GPU work or performance.");
+
+            let cpu_nodes = cpu_fallback_nodes(state);
+            if cpu_nodes.is_empty() {
+                ui.label("CPU fallback: None");
+            } else {
+                egui::CollapsingHeader::new(format!("CPU fallback nodes ({})", cpu_nodes.len()))
+                    .default_open(false)
+                    .show(ui, |ui| draw_assigned_nodes(ui, cpu_nodes));
+            }
+
+            egui::CollapsingHeader::new("All EP assignments")
+                .default_open(false)
+                .show(ui, |ui| {
+                    for provider in &report.providers {
+                        ui.strong(format!(
+                            "{} ({})",
+                            provider_display_name(provider),
+                            provider.name
+                        ));
+                        draw_assigned_nodes(ui, &provider.nodes);
+                    }
+                });
+        }
+    }
+}
+
+fn draw_assigned_nodes(ui: &mut egui::Ui, nodes: &[crate::detector::EpAssignedNode]) {
+    for node in nodes {
+        ui.horizontal_wrapped(|ui| {
+            ui.monospace(&node.op_type);
+            ui.label(&node.name);
+            if !node.domain.is_empty() {
+                ui.small(format!("domain: {}", node.domain));
+            }
+        });
+    }
+}
+
+fn ep_assignment_copy_text(status: &EngineStatus) -> String {
+    let Some(state) = &status.model.ep_assignment else {
+        return "Actual assignment: not available (no active model session)".to_owned();
+    };
+    match state {
+        EpAssignmentState::Unavailable(error) => format!("Assignment info unavailable: {error}"),
+        EpAssignmentState::Available(report) => {
+            let mut lines = vec![
+                format!("Inference backend: {}", actual_backend_label(state)),
+                format!("Total assigned nodes: {}", report.total_nodes),
+            ];
+            for provider in &report.providers {
+                lines.push(format!(
+                    "{}: {} nodes / {} subgraphs",
+                    provider.name,
+                    provider.nodes.len(),
+                    provider.subgraph_count
+                ));
+            }
+            let cpu_nodes = cpu_fallback_nodes(state);
+            if cpu_nodes.is_empty() {
+                lines.push("CPU fallback: None".to_owned());
+            } else {
+                lines.push("CPU fallback:".to_owned());
+                for node in cpu_nodes {
+                    let domain = if node.domain.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", node.domain)
+                    };
+                    lines.push(format!("- {}: {}{}", node.op_type, node.name, domain));
+                }
+            }
+            lines.join("\n")
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let regained_focus = ui.input(|input| {
@@ -679,10 +935,11 @@ impl eframe::App for App {
         });
         if regained_focus {
             self.rescan_models();
+            self.rescan_displays();
         }
 
+        self.process_engine_events();
         let status = self.engine.status();
-        self.commit_loaded_model(&status);
 
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -720,7 +977,11 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                     self.draw_diagnostics(ui, &status);
 
-                    if let Some(error) = &self.config_error {
+                    if let Some(warning) = &self.config_load_warning {
+                        ui.add_space(6.0);
+                        ui.colored_label(ui.visuals().warn_fg_color, warning);
+                    }
+                    if let Some(error) = &self.config_save_error {
                         ui.add_space(6.0);
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
@@ -728,12 +989,6 @@ impl eframe::App for App {
         });
 
         self.draw_hotkey_capture(ui.ctx());
-    }
-}
-
-impl Drop for App {
-    fn drop(&mut self) {
-        let _ = self.config.save();
     }
 }
 
@@ -768,11 +1023,12 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
             ui.strong("p95");
             ui.end_row();
             metric_row(ui, "Pipeline", performance.total);
+            metric_row(ui, "Frame wait", performance.frame_wait);
             metric_row(ui, "Capture", performance.capture);
             metric_row(ui, "Preprocess", performance.preprocess);
             metric_row(ui, "Inference", performance.inference);
             metric_row(ui, "Postprocess", performance.postprocess);
-            metric_row(ui, "Output submit", performance.output);
+            metric_row(ui, "MAK write", performance.mak_write);
             metric_row(ui, "Cadence", performance.cadence);
         });
 

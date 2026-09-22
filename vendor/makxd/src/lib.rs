@@ -39,6 +39,12 @@ pub use types::{
     DeviceKind, DeviceKinds, KeyboardKey, UdpWireMode,
 };
 
+/// Enables per-command carrier `write_all` and `flush` timing at TRACE level.
+/// This is disabled by default to avoid high-rate logging overhead.
+pub fn set_command_trace(enabled: bool) {
+    transport::writer::set_command_trace(enabled);
+}
+
 #[cfg(feature = "async")]
 pub use device::AsyncDevice;
 

@@ -4,11 +4,13 @@ pub mod mock;
 pub(crate) mod monitor;
 pub(crate) mod reader;
 pub(crate) mod serial;
+#[cfg(windows)]
+pub(crate) mod windows_serial;
 pub(crate) mod wire;
 pub(crate) mod writer;
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -23,9 +25,10 @@ use crate::types::{
 
 use self::encryption::TransportEncryption;
 use self::reader::ReaderSignal;
-use self::writer::WritePayload;
+use self::writer::WriteRequest;
 
 pub(crate) struct PendingResponse {
+    pub id: u64,
     pub response_tx: channel::Sender<Vec<u8>>,
     pub expected_nonce: Option<[u8; 12]>,
     pub expected_opcode: Option<u8>,
@@ -52,12 +55,16 @@ pub(crate) struct TransportInner {
     // Channel for sending commands to the writer thread.
     // Wrapped in Mutex<Option<>> so shutdown() can drop the sender to unblock
     // the writer thread (which blocks on recv).
-    write_tx: Mutex<Option<channel::Sender<WritePayload>>>,
+    write_tx: Mutex<Option<channel::Sender<WriteRequest>>>,
     // Receiver clone for spawning new writer threads on reconnect.
-    write_rx: channel::Receiver<WritePayload>,
+    write_rx: channel::Receiver<WriteRequest>,
 
     // Pending response oneshots: writer pushes, reader pops. Shared Arc.
     pending_responses: Arc<Mutex<VecDeque<PendingResponse>>>,
+    next_response_id: AtomicU64,
+    // Only one request/response transaction is in flight. A late response
+    // can therefore never be matched to a newer query after a timeout.
+    query_lock: Mutex<()>,
     pub transport_encryption: Option<Arc<TransportEncryption>>,
 
     // Button event subscribers.
@@ -72,6 +79,7 @@ pub(crate) struct TransportInner {
 
     // Thread handles (for join on shutdown).
     threads: Mutex<Vec<JoinHandle<()>>>,
+    monitor_thread: Mutex<Option<JoinHandle<()>>>,
 
     // Reconnection backoff (initial value; doubles up to 5s).
     pub reconnect_backoff: Duration,
@@ -90,10 +98,11 @@ impl TransportInner {
         // Spawn writer.
         let write_rx = self.write_rx.clone();
         let pending = Arc::clone(&self.pending_responses);
+        let writer_signal = Arc::clone(&signal);
         let writer_handle = std::thread::Builder::new()
             .name("makxd-writer".into())
             .spawn(move || {
-                writer::writer_thread(writer_port, write_rx, pending);
+                writer::writer_thread(writer_port, write_rx, pending, writer_signal);
             })
             .map_err(MakxdError::Io)?;
 
@@ -140,7 +149,7 @@ impl TransportInner {
 
     /// Send a payload through the write channel. Returns Disconnected if the
     /// channel has been shut down.
-    fn send_payload(&self, payload: WritePayload) -> Result<()> {
+    fn send_payload(&self, payload: WriteRequest) -> Result<()> {
         let guard = self.write_tx.lock().unwrap();
         if let Some(tx) = guard.as_ref() {
             tx.send(payload).map_err(|_| MakxdError::Disconnected)
@@ -194,7 +203,9 @@ impl TransportHandle {
                 (port, kinds, format!("ble://{address}"))
             }
         };
-        let (write_tx, write_rx) = channel::unbounded::<WritePayload>();
+        // Keep memory bounded when a device or driver stalls. Synchronous SET
+        // calls wait for writer completion, so normal callers apply backpressure.
+        let (write_tx, write_rx) = channel::bounded::<WriteRequest>(64);
 
         let inner = Arc::new(TransportInner {
             settings_lock: Mutex::new(()),
@@ -205,12 +216,15 @@ impl TransportHandle {
             write_tx: Mutex::new(Some(write_tx)),
             write_rx,
             pending_responses: Arc::new(Mutex::new(VecDeque::new())),
+            next_response_id: AtomicU64::new(1),
+            query_lock: Mutex::new(()),
             transport_encryption,
             button_subs: Arc::new(Mutex::new(Vec::new())),
             change_subs: Arc::new(Mutex::new(Vec::new())),
             state_subs: Mutex::new(Vec::new()),
             reader_signal: Mutex::new(None),
             threads: Mutex::new(Vec::new()),
+            monitor_thread: Mutex::new(None),
             reconnect_backoff,
             connection,
         });
@@ -224,12 +238,13 @@ impl TransportHandle {
         // Spawn monitor if reconnection is enabled.
         if reconnect {
             let monitor_inner = Arc::clone(&handle.inner);
-            std::thread::Builder::new()
+            let monitor = std::thread::Builder::new()
                 .name("makxd-monitor".into())
                 .spawn(move || {
                     monitor::monitor_thread(monitor_inner);
                 })
                 .map_err(MakxdError::Io)?;
+            *handle.inner.monitor_thread.lock().unwrap() = Some(monitor);
         }
 
         Ok(handle)
@@ -239,7 +254,7 @@ impl TransportHandle {
     /// Spawns a mock worker thread that routes commands through MockTransport.
     #[cfg(feature = "mock")]
     pub fn from_mock() -> (Self, Arc<mock::MockTransport>) {
-        let (write_tx, write_rx) = channel::unbounded::<WritePayload>();
+        let (write_tx, write_rx) = channel::bounded::<WriteRequest>(64);
         let mock_transport = Arc::new(mock::MockTransport::new());
         let button_subs = Arc::new(Mutex::new(Vec::new()));
 
@@ -252,12 +267,15 @@ impl TransportHandle {
             write_tx: Mutex::new(Some(write_tx)),
             write_rx: write_rx.clone(),
             pending_responses: Arc::new(Mutex::new(VecDeque::new())),
+            next_response_id: AtomicU64::new(1),
+            query_lock: Mutex::new(()),
             transport_encryption: None,
             button_subs: Arc::clone(&button_subs),
             change_subs: Arc::new(Mutex::new(Vec::new())),
             state_subs: Mutex::new(Vec::new()),
             reader_signal: Mutex::new(None),
             threads: Mutex::new(Vec::new()),
+            monitor_thread: Mutex::new(None),
             reconnect_backoff: Duration::from_millis(100),
             connection: ConnectionConfig::com(None),
         });
@@ -283,6 +301,11 @@ impl TransportHandle {
         payload: &[u8],
         timeout: Duration,
     ) -> Result<Vec<u8>> {
+        let _query = self
+            .inner
+            .query_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         self.send_mak_api_submit(opcode, payload, false, timeout)
     }
     pub(crate) fn settings_guard(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -302,7 +325,7 @@ impl TransportHandle {
         Ok(learned)
     }
 
-    pub fn send_mak_api_no_response(
+    pub fn write_mak_api(
         &self,
         opcode: ApiOpcode,
         payload: &[u8],
@@ -336,18 +359,29 @@ impl TransportHandle {
                 (mak_api_command(opcode, payload)?, None)
             };
         if fire_and_forget {
-            self.inner.send_payload(WritePayload {
+            let (completion_tx, completion_rx) = channel::bounded(1);
+            self.inner.send_payload(WriteRequest::Command {
                 data,
                 response_tx: None,
+                write_completion: Some(completion_tx),
+                response_id: None,
                 expected_nonce,
                 expected_opcode: Some(opcode as u8),
             })?;
-            return Ok(Vec::new());
+            return match completion_rx.recv_timeout(timeout) {
+                Ok(Ok(())) => Ok(Vec::new()),
+                Ok(Err(message)) => Err(MakxdError::Io(std::io::Error::other(message))),
+                Err(channel::RecvTimeoutError::Timeout) => Err(MakxdError::Timeout),
+                Err(channel::RecvTimeoutError::Disconnected) => Err(MakxdError::Disconnected),
+            };
         }
         let (tx, rx) = channel::bounded(1);
-        self.inner.send_payload(WritePayload {
+        let response_id = self.inner.next_response_id.fetch_add(1, Ordering::Relaxed);
+        self.inner.send_payload(WriteRequest::Command {
             data,
             response_tx: Some(tx),
+            write_completion: None,
+            response_id: Some(response_id),
             expected_nonce,
             expected_opcode: Some(opcode as u8),
         })?;
@@ -357,7 +391,14 @@ impl TransportHandle {
             ),
             Ok(response) if response.len() >= 2 => Ok(response[1..].to_vec()),
             Ok(_) => Err(MakxdError::Protocol("MAK_API response is malformed".into())),
-            Err(channel::RecvTimeoutError::Timeout) => Err(MakxdError::Timeout),
+            Err(channel::RecvTimeoutError::Timeout) => {
+                self.inner
+                    .pending_responses
+                    .lock()
+                    .unwrap()
+                    .retain(|pending| pending.id != response_id);
+                Err(MakxdError::Timeout)
+            }
             Err(channel::RecvTimeoutError::Disconnected) => Err(MakxdError::Disconnected),
         }
     }
@@ -377,7 +418,7 @@ impl TransportHandle {
     }
 
     #[cfg(feature = "async")]
-    pub async fn send_mak_api_no_response_async(
+    pub async fn write_mak_api_async(
         &self,
         opcode: ApiOpcode,
         payload: &[u8],
@@ -385,11 +426,23 @@ impl TransportHandle {
     ) -> Result<()> {
         let handle = self.clone();
         let payload = payload.to_vec();
-        tokio::task::spawn_blocking(move || {
-            handle.send_mak_api_no_response(opcode, &payload, timeout)
-        })
-        .await
-        .map_err(|error| MakxdError::Protocol(format!("tokio join error: {error}")))?
+        tokio::task::spawn_blocking(move || handle.write_mak_api(opcode, &payload, timeout))
+            .await
+            .map_err(|error| MakxdError::Protocol(format!("tokio join error: {error}")))?
+    }
+
+    pub fn drain(&self, timeout: Duration) -> Result<()> {
+        let (completion, response) = channel::bounded(1);
+        self.inner.send_payload(WriteRequest::Drain {
+            completion,
+            timeout,
+        })?;
+        match response.recv_timeout(timeout) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(MakxdError::Io(std::io::Error::other(message))),
+            Err(channel::RecvTimeoutError::Timeout) => Err(MakxdError::Timeout),
+            Err(channel::RecvTimeoutError::Disconnected) => Err(MakxdError::Disconnected),
+        }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -437,11 +490,7 @@ impl TransportHandle {
         // Signal reader thread to exit (it checks this on timeout).
         // Wake monitor if waiting.
         if let Some(sig) = self.inner.reader_signal.lock().unwrap().as_ref() {
-            sig.alive.store(false, Ordering::Release);
-            let (lock, cvar) = &sig.disconnect_notify;
-            let mut d = lock.lock().unwrap();
-            *d = true;
-            cvar.notify_all();
+            sig.signal_disconnect();
         }
 
         // Note: we do NOT join threads here — the reader thread will exit
@@ -449,6 +498,47 @@ impl TransportHandle {
         // thread will exit because we dropped write_tx above. The reader
         // thread will exit on its next port read error or timeout. Thread
         // handles are cleaned up when TransportInner is dropped.
+    }
+
+    /// Stop I/O and wait until the reader and writer have released their
+    /// carrier handles. This is intended for callers that will reopen a COM
+    /// port immediately afterwards.
+    pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<()> {
+        self.shutdown();
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let finished = {
+                let io_done = self
+                    .inner
+                    .threads
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(JoinHandle::is_finished);
+                let monitor_done = self
+                    .inner
+                    .monitor_thread
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_none_or(JoinHandle::is_finished);
+                io_done && monitor_done
+            };
+            if finished {
+                let handles: Vec<_> = self.inner.threads.lock().unwrap().drain(..).collect();
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = self.inner.monitor_thread.lock().unwrap().take() {
+                    let _ = handle.join();
+                }
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(MakxdError::Timeout);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 }
 

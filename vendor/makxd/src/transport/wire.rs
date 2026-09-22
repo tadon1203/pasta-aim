@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+#[cfg(not(windows))]
 use std::io::{Read, Write};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -26,19 +27,22 @@ pub(crate) trait WirePort: Send {
         }
         self.write_all_wire(&coalesced, response_expected)
     }
-    fn flush_wire(&mut self) -> std::io::Result<()>;
+    fn drain_wire(&mut self, timeout: Duration) -> std::io::Result<()>;
 }
 
+#[cfg(not(windows))]
 pub(crate) struct SerialWirePort {
     port: Box<dyn serialport::SerialPort>,
 }
 
+#[cfg(not(windows))]
 impl SerialWirePort {
     pub fn new(port: Box<dyn serialport::SerialPort>) -> Self {
         Self { port }
     }
 }
 
+#[cfg(not(windows))]
 impl WirePort for SerialWirePort {
     fn try_clone_wire(&self) -> Result<Box<dyn WirePort>> {
         Ok(Box::new(Self::new(
@@ -58,7 +62,7 @@ impl WirePort for SerialWirePort {
         self.port.write_all(bytes)
     }
 
-    fn flush_wire(&mut self) -> std::io::Result<()> {
+    fn drain_wire(&mut self, _timeout: Duration) -> std::io::Result<()> {
         self.port.flush()
     }
 }
@@ -209,7 +213,7 @@ impl WirePort for UdpWirePort {
         }
     }
 
-    fn flush_wire(&mut self) -> std::io::Result<()> {
+    fn drain_wire(&mut self, _timeout: Duration) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -478,7 +482,7 @@ impl WirePort for BleWirePort {
         Ok(())
     }
 
-    fn flush_wire(&mut self) -> std::io::Result<()> {
+    fn drain_wire(&mut self, _timeout: Duration) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -682,7 +686,7 @@ pub(crate) fn establish_network_connection(
             (vec![0xde, 0xad, 0, 0, command[0]], None)
         };
         port.write_all_wire(&wire, true)?;
-        port.flush_wire()?;
+        // Datagram and BLE transports have no meaningful carrier drain.
         let deadline = std::time::Instant::now() + Duration::from_millis(750);
         let mut response = Vec::new();
         let mut decoder = EncryptedFrameDecoder::new();

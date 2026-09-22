@@ -163,6 +163,16 @@ impl Device {
         self.transport.shutdown();
     }
 
+    /// Disconnect and wait for active I/O threads to release the transport.
+    pub fn disconnect_wait(&self, timeout: Duration) -> Result<()> {
+        self.transport.shutdown_and_wait(timeout)
+    }
+
+    /// Wait until the carrier has accepted all prior writes.
+    pub fn drain(&self) -> Result<()> {
+        self.transport.drain(self.config.command_timeout)
+    }
+
     /// Check if the device is currently connected.
     pub fn is_connected(&self) -> bool {
         self.transport.is_connected()
@@ -191,7 +201,7 @@ impl Device {
 
     pub(crate) fn write_api(&self, opcode: ApiOpcode, payload: &[u8]) -> Result<()> {
         self.transport
-            .send_mak_api_no_response(opcode, payload, self.config.command_timeout)
+            .write_mak_api(opcode, payload, self.config.command_timeout)
     }
 
     pub(crate) fn query_api(&self, opcode: ApiOpcode, payload: &[u8]) -> Result<Vec<u8>> {
@@ -284,6 +294,14 @@ impl AsyncDevice {
         self.transport.shutdown();
     }
 
+    pub async fn drain(&self) -> Result<()> {
+        let transport = self.transport.clone();
+        let timeout = self.config.command_timeout;
+        tokio::task::spawn_blocking(move || transport.drain(timeout))
+            .await
+            .map_err(|error| MakxdError::Protocol(format!("tokio join error: {error}")))?
+    }
+
     /// Check if the device is currently connected.
     pub fn is_connected(&self) -> bool {
         self.transport.is_connected()
@@ -312,7 +330,7 @@ impl AsyncDevice {
 
     pub(crate) async fn write_api(&self, opcode: ApiOpcode, payload: &[u8]) -> Result<()> {
         self.transport
-            .send_mak_api_no_response_async(opcode, payload, self.config.command_timeout)
+            .write_mak_api_async(opcode, payload, self.config.command_timeout)
             .await
     }
 

@@ -31,7 +31,11 @@ aes = "0.8"
 ccm = "0.5"
 getrandom = "0.3"
 sha2 = "0.10"
+tracing = "0.1"
 socket2 = { version = "0.6", features = ["all"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Devices_Communication", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
 
 # Optional (async feature)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"], optional = true }

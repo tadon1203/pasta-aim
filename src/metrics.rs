@@ -8,11 +8,12 @@ const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StageTimings {
+    pub frame_wait_ms: f64,
     pub capture_ms: f64,
     pub preprocess_ms: f64,
     pub inference_ms: f64,
     pub postprocess_ms: f64,
-    pub output_ms: f64,
+    pub mak_write_ms: f64,
     pub total_ms: f64,
 }
 
@@ -27,11 +28,12 @@ pub struct PerformanceSnapshot {
     pub sample_count: usize,
     pub fps: f64,
     pub cadence: MetricSummary,
+    pub frame_wait: MetricSummary,
     pub capture: MetricSummary,
     pub preprocess: MetricSummary,
     pub inference: MetricSummary,
     pub postprocess: MetricSummary,
-    pub output: MetricSummary,
+    pub mak_write: MetricSummary,
     pub total: MetricSummary,
     pub cold_run: Option<StageTimings>,
 }
@@ -113,11 +115,12 @@ impl Metrics {
                 .map(|value| 1000.0 / value)
                 .unwrap_or(0.0),
             cadence: summarize(&cadence),
+            frame_wait: summarize_stage(&self.samples, |s| s.frame_wait_ms),
             capture: summarize_stage(&self.samples, |s| s.capture_ms),
             preprocess: summarize_stage(&self.samples, |s| s.preprocess_ms),
             inference: summarize_stage(&self.samples, |s| s.inference_ms),
             postprocess: summarize_stage(&self.samples, |s| s.postprocess_ms),
-            output: summarize_stage(&self.samples, |s| s.output_ms),
+            mak_write: summarize_stage(&self.samples, |s| s.mak_write_ms),
             total: summarize_stage(&self.samples, |s| s.total_ms),
             cold_run: self.cold_run,
         }

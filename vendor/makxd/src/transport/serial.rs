@@ -1,10 +1,9 @@
-use std::io::Write;
 use std::time::Duration;
 
-use serialport::SerialPort;
-
 use super::encryption::{EncryptedFrameDecoder, TransportEncryption};
-use super::wire::{SerialWirePort, WirePort};
+#[cfg(windows)]
+use super::windows_serial::WindowsSerialPort;
+use super::wire::WirePort;
 use crate::error::{MakxdError, Result};
 use crate::protocol::api::ApiOpcode;
 use crate::protocol::constants::*;
@@ -15,15 +14,35 @@ pub fn establish_connection(
     port_name: &str,
     transport_encryption: Option<&TransportEncryption>,
 ) -> Result<(Box<dyn WirePort>, u8)> {
+    let mut failures = Vec::new();
     for baud in BAUD_CANDIDATES {
-        if let Ok(result) = try_connect(port_name, baud, transport_encryption) {
-            return Ok(result);
+        match try_connect(port_name, baud, transport_encryption) {
+            Ok(result) => return Ok(result),
+            Err(failure) => failures.push((baud, failure.stage, failure.error.to_string())),
         }
         std::thread::sleep(Duration::from_millis(120));
     }
-    Err(MakxdError::Protocol(
-        "device identity probe failed at every supported baud".into(),
-    ))
+    Err(MakxdError::Protocol(format_probe_failures(&failures)))
+}
+
+struct ProbeFailure {
+    stage: &'static str,
+    error: MakxdError,
+}
+
+impl ProbeFailure {
+    fn new(stage: &'static str, error: MakxdError) -> Self {
+        Self { stage, error }
+    }
+}
+
+fn format_probe_failures(failures: &[(u32, &'static str, String)]) -> String {
+    let details = failures
+        .iter()
+        .map(|(baud, stage, error)| format!("{baud} baud {stage}: {error}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("device identity probe failed at every supported baud: {details}")
 }
 
 /// Find the first serial port matching the MAKXD VID/PID.
@@ -50,33 +69,48 @@ fn try_connect(
     port_name: &str,
     baud: u32,
     transport_encryption: Option<&TransportEncryption>,
-) -> Result<(Box<dyn WirePort>, u8)> {
-    let mut port = serialport::new(port_name, baud)
-        .timeout(Duration::from_millis(50))
-        .open()
-        .map_err(MakxdError::Port)?;
+) -> std::result::Result<(Box<dyn WirePort>, u8), ProbeFailure> {
+    #[cfg(windows)]
+    let mut port = WindowsSerialPort::open(port_name, baud)
+        .map_err(|error| ProbeFailure::new("open/configure", error))?;
+    #[cfg(not(windows))]
+    let mut port = super::wire::SerialWirePort::new(
+        serialport::new(port_name, baud)
+            .timeout(Duration::from_millis(50))
+            .open()
+            .map_err(MakxdError::Port)
+            .map_err(|error| ProbeFailure::new("open/configure", error))?,
+    );
 
     std::thread::sleep(Duration::from_millis(180));
-    let _ = port.clear(serialport::ClearBuffer::Input);
+    #[cfg(windows)]
+    port.clear_input()
+        .map_err(|error| ProbeFailure::new("input reset", error))?;
     let command = if transport_encryption.is_some() {
         vec![ApiOpcode::Device as u8]
     } else {
         vec![0xde, 0xad, 0, 0, ApiOpcode::Device as u8]
     };
-    let (device_command, expected_nonce) = encode_command(&command, transport_encryption)?;
-    port.write_all(&device_command)?;
-    port.flush()?;
+    let (device_command, expected_nonce) = encode_command(&command, transport_encryption)
+        .map_err(|error| ProbeFailure::new("command encode", error))?;
+    port.write_all_wire(&device_command, true)
+        .map_err(MakxdError::Io)
+        .map_err(|error| ProbeFailure::new("write", error))?;
 
     let raw = read_response(
-        &mut *port,
+        &mut port,
         Duration::from_millis(750),
         transport_encryption,
         expected_nonce.as_ref(),
-    )?;
+    )
+    .map_err(|error| ProbeFailure::new("read", error))?;
     if let Some(kinds) = device_response_kinds(&raw, transport_encryption.is_none()) {
-        Ok((Box::new(SerialWirePort::new(port)), kinds))
+        Ok((Box::new(port), kinds))
     } else {
-        Err(MakxdError::Protocol("device identity probe failed".into()))
+        Err(ProbeFailure::new(
+            "identity validation",
+            MakxdError::Protocol("device identity probe failed".into()),
+        ))
     }
 }
 
@@ -107,7 +141,7 @@ fn encode_command(
 }
 
 fn read_response(
-    port: &mut dyn SerialPort,
+    port: &mut dyn WirePort,
     timeout: Duration,
     transport_encryption: Option<&TransportEncryption>,
     expected_nonce: Option<&[u8; 12]>,
@@ -122,7 +156,7 @@ fn read_response(
         if std::time::Instant::now() > deadline {
             return Err(MakxdError::Timeout);
         }
-        match port.read(&mut tmp) {
+        match port.read_wire(&mut tmp) {
             Ok(n) => {
                 for (plaintext, transaction_nonce) in decoder.feed(encryption, &tmp[..n])? {
                     if expected_nonce.is_some_and(|expected| expected != &transaction_nonce) {
@@ -139,7 +173,7 @@ fn read_response(
     }
 }
 
-fn read_device_frame(port: &mut dyn SerialPort, timeout: Duration) -> Result<Vec<u8>> {
+fn read_device_frame(port: &mut dyn WirePort, timeout: Duration) -> Result<Vec<u8>> {
     let deadline = std::time::Instant::now() + timeout;
     let mut buf = Vec::new();
     let mut tmp = [0u8; 64];
@@ -147,7 +181,7 @@ fn read_device_frame(port: &mut dyn SerialPort, timeout: Duration) -> Result<Vec
         if std::time::Instant::now() > deadline {
             return Err(MakxdError::Timeout);
         }
-        match port.read(&mut tmp) {
+        match port.read_wire(&mut tmp) {
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
                 if device_response_kinds(&buf, true).is_some() {
@@ -162,7 +196,7 @@ fn read_device_frame(port: &mut dyn SerialPort, timeout: Duration) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
-    use super::device_response_kinds;
+    use super::{device_response_kinds, format_probe_failures};
     use crate::protocol::constants::{BAUD_CANDIDATES, SUPPORTED_USB_IDS};
 
     #[test]
@@ -185,5 +219,16 @@ mod tests {
             device_response_kinds(&[0xde, 0xad, 1, 0, 2, 0xff], true),
             None
         );
+    }
+
+    #[test]
+    fn probe_failure_summary_preserves_baud_stage_and_error() {
+        let failures = [
+            (115_200, "open/configure", "access denied".to_owned()),
+            (1_000_000, "read", "command timed out".to_owned()),
+        ];
+        let summary = format_probe_failures(&failures);
+        assert!(summary.contains("115200 baud open/configure: access denied"));
+        assert!(summary.contains("1000000 baud read: command timed out"));
     }
 }

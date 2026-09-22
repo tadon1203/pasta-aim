@@ -26,6 +26,14 @@ impl ReaderSignal {
             disconnect_notify: (Mutex::new(false), Condvar::new()),
         }
     }
+
+    pub fn signal_disconnect(&self) {
+        self.alive.store(false, Ordering::Release);
+        let (lock, cvar) = &self.disconnect_notify;
+        let mut disconnected = lock.lock().unwrap();
+        *disconnected = true;
+        cvar.notify_all();
+    }
 }
 
 pub(crate) fn reader_thread(
@@ -91,11 +99,7 @@ pub(crate) fn reader_thread(
     }
 
     // Signal disconnection.
-    signal.alive.store(false, Ordering::Release);
-    let (lock, cvar) = &signal.disconnect_notify;
-    let mut disconnected = lock.lock().unwrap();
-    *disconnected = true;
-    cvar.notify_all();
+    signal.signal_disconnect();
 }
 
 struct EventSink {
@@ -225,6 +229,7 @@ mod tests {
         let pending = Arc::new(Mutex::new(VecDeque::new()));
         let (tx, rx) = channel::bounded(1);
         pending.lock().unwrap().push_back(PendingResponse {
+            id: 1,
             response_tx: tx,
             expected_nonce: None,
             expected_opcode: Some(0x25),
@@ -251,6 +256,7 @@ mod tests {
             mouse: 0,
         };
         pending.lock().unwrap().push_back(PendingResponse {
+            id: 1,
             response_tx: reply_tx,
             expected_nonce: Some([1; 12]),
             expected_opcode: Some(0x52),

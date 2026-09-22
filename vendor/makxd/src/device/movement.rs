@@ -56,9 +56,9 @@ impl Device {
         timed!("move_xy", {
             movement_range_check(x)?;
             movement_range_check(y)?;
-            let mut payload = Vec::with_capacity(4);
-            payload.extend_from_slice(&(x as i16).to_le_bytes());
-            payload.extend_from_slice(&(y as i16).to_le_bytes());
+            let mut payload = [0u8; 4];
+            payload[..2].copy_from_slice(&(x as i16).to_le_bytes());
+            payload[2..].copy_from_slice(&(y as i16).to_le_bytes());
             self.write_api(ApiOpcode::Move, &payload)
         })
     }

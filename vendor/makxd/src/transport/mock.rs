@@ -5,7 +5,7 @@ use crossbeam_channel as channel;
 
 use crate::types::ButtonMask;
 
-use super::writer::WritePayload;
+use super::writer::WriteRequest;
 
 /// A mock transport for testing without hardware.
 ///
@@ -75,19 +75,27 @@ impl MockTransport {
 /// Worker thread that processes commands through the MockTransport.
 #[cfg(feature = "mock")]
 pub(crate) fn mock_worker(
-    rx: channel::Receiver<WritePayload>,
+    rx: channel::Receiver<WriteRequest>,
     mock: Arc<MockTransport>,
     button_subs: Arc<Mutex<Vec<channel::Sender<ButtonMask>>>>,
 ) {
     loop {
         match rx.recv() {
-            Ok(payload) => {
+            Ok(WriteRequest::Command {
+                data,
+                response_tx,
+                write_completion,
+                ..
+            }) => {
                 // Process command and get response.
-                let response = mock.process_command(&payload.data);
+                let response = mock.process_command(&data);
 
                 // Send response to waiting caller if confirmed (not F&F).
-                if let Some(tx) = payload.response_tx {
+                if let Some(tx) = response_tx {
                     let _ = tx.send(response);
+                }
+                if let Some(tx) = write_completion {
+                    let _ = tx.send(Ok(()));
                 }
 
                 // Dispatch any queued button events.
@@ -98,6 +106,9 @@ pub(crate) fn mock_worker(
                         subs.retain(|sub| sub.send(*event).is_ok());
                     }
                 }
+            }
+            Ok(WriteRequest::Drain { completion, .. }) => {
+                let _ = completion.send(Ok(()));
             }
             Err(_) => return,
         }
