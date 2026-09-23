@@ -25,7 +25,7 @@ use crate::{
     mak::{MakClient, MakConnectionEvent, MakMetadata, MakRoutes, PhysicalControllerStatus},
     metrics::{Metrics, StageTimings},
     models,
-    settings::{DirectMlDevice, FpsLimit, OutputMode, Sensitivity},
+    settings::{DirectMlDevice, FpsLimit, OutputMode, Sensitivity, TargetYOffset},
     timing::QpcClock,
 };
 
@@ -54,6 +54,7 @@ struct Worker {
     mak: MakClient,
     metrics: Metrics,
     sensitivity: Sensitivity,
+    target_y_offset: TargetYOffset,
     fps_limit: FpsLimit,
     output_mode: OutputMode,
     continuous: bool,
@@ -116,7 +117,11 @@ pub(super) fn run_worker(
             return;
         }
     };
-    let inference_worker = match InferenceWorker::spawn(qpc, frame_consumer) {
+    let inference_worker = match InferenceWorker::spawn(
+        qpc,
+        frame_consumer,
+        config.confidence_threshold,
+    ) {
         Ok(worker) => worker,
         Err(error) => {
             tracing::error!(error = %format!("{error:#}"), "inference worker initialization failed");
@@ -137,6 +142,7 @@ pub(super) fn run_worker(
         mak: MakClient::new(),
         metrics: Metrics::new(),
         sensitivity: config.sensitivity,
+        target_y_offset: config.target_y_offset,
         fps_limit: config.fps_limit,
         output_mode: config.output_mode,
         continuous: false,
@@ -201,6 +207,10 @@ impl Worker {
         match command {
             Command::LoadModel { name, path, notify } => self.load_model(notify, name, path),
             Command::SetSensitivity(value) => self.sensitivity = value,
+            Command::SetConfidenceThreshold(value) => {
+                self.inference_worker.set_confidence_threshold(value)
+            }
+            Command::SetTargetYOffset(value) => self.target_y_offset = value,
             Command::SetFpsLimit(value) => {
                 self.fps_limit = value;
                 if let Err(error) = self.capture_worker.set_fps_limit(value) {
@@ -988,7 +998,8 @@ impl Worker {
         let dx = detection.center_x - width as f32 * 0.5;
         let dy = detection.center_y - height as f32 * 0.5;
         let command_x = quantize(dx * self.sensitivity.gain());
-        let command_y = quantize(dy * self.sensitivity.gain());
+        let relative_y_offset = detection.box_height * self.target_y_offset.value() as f32 / 100.0;
+        let command_y = quantize(dy * self.sensitivity.gain() + relative_y_offset);
         if command_x == 0 && command_y == 0 {
             self.mak.release_controller()?;
             return Ok((
@@ -1091,6 +1102,15 @@ mod tests {
         assert_eq!(quantize(-1.6), -2);
         assert_eq!(quantize(99999.0), i16::MAX as i32);
         assert_eq!(quantize(-99999.0), i16::MIN as i32);
+    }
+
+    #[test]
+    fn target_y_offset_is_relative_to_target_height_and_added_after_sensitivity() {
+        let sensitivity = Sensitivity::new(50);
+        let target_height = 40.0;
+        let offset = target_height * TargetYOffset::new(25).value() as f32 / 100.0;
+        let command_y = quantize(20.0 * sensitivity.gain() + offset);
+        assert_eq!(command_y, 20);
     }
 
     #[test]

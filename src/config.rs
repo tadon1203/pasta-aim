@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     models, paths,
     settings::{
-        DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, OutputMode,
-        Sensitivity,
+        ConfidenceThreshold, DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi,
+        OutputMode, Sensitivity, TargetYOffset,
     },
 };
 
@@ -16,6 +16,8 @@ use crate::{
 pub struct Config {
     pub model: Option<String>,
     pub sensitivity: Sensitivity,
+    pub confidence_threshold: ConfidenceThreshold,
+    pub target_y_offset: TargetYOffset,
     pub fps_limit: FpsLimit,
     pub output_mode: OutputMode,
     #[serde(default)]
@@ -28,11 +30,47 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiagnosticsConfig {
-    pub frame_trace: bool,
-    pub mak_command_trace: bool,
+    pub level: LogLevel,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+impl<'de> Deserialize<'de> for DiagnosticsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawDiagnostics {
+            level: Option<LogLevel>,
+            frame_trace: Option<bool>,
+            mak_command_trace: Option<bool>,
+        }
+
+        let raw = RawDiagnostics::deserialize(deserializer)?;
+        let level = raw.level.unwrap_or_else(|| {
+            if raw.frame_trace.unwrap_or(false) || raw.mak_command_trace.unwrap_or(false) {
+                LogLevel::Trace
+            } else {
+                LogLevel::Info
+            }
+        });
+        Ok(Self { level })
+    }
 }
 
 impl Default for Config {
@@ -40,6 +78,8 @@ impl Default for Config {
         Self {
             model: None,
             sensitivity: Sensitivity::default(),
+            confidence_threshold: ConfidenceThreshold::default(),
+            target_y_offset: TargetYOffset::default(),
             fps_limit: FpsLimit::default(),
             output_mode: OutputMode::Mouse,
             injection_api: InjectionApi::default(),
@@ -65,7 +105,7 @@ impl Config {
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tracing::info!(path = %path.display(), "settings file not found; using defaults");
+                tracing::debug!(path = %path.display(), "settings file not found; using defaults");
                 return ConfigLoad {
                     config: Self::default(),
                     warning: None,
@@ -134,6 +174,20 @@ impl Config {
                 Sensitivity::MAX
             );
         }
+        if !self.confidence_threshold.is_valid() {
+            bail!(
+                "confidence_threshold must be in {}..={}",
+                ConfidenceThreshold::MIN,
+                ConfidenceThreshold::MAX
+            );
+        }
+        if !self.target_y_offset.is_valid() {
+            bail!(
+                "target_y_offset must be in {}..={}",
+                TargetYOffset::MIN,
+                TargetYOffset::MAX
+            );
+        }
         if !self.fps_limit.is_valid() {
             bail!("fps_limit must be in {}..={}", FpsLimit::MIN, FpsLimit::MAX);
         }
@@ -179,6 +233,8 @@ mod tests {
         let json = r#"{
             "model": null,
             "sensitivity": 100,
+            "confidence_threshold": 50,
+            "target_y_offset": 0,
             "fps_limit": 240,
             "output_mode": "mouse",
             "hotkeys": [
@@ -198,6 +254,23 @@ mod tests {
     }
 
     #[test]
+    fn confidence_threshold_is_required_in_the_current_config_format() {
+        let json = r#"{
+            "model": null,
+            "sensitivity": 100,
+            "target_y_offset": 0,
+            "fps_limit": 240,
+            "output_mode": "mouse",
+            "hotkeys": [],
+            "capture_adapter": 0,
+            "capture_output": 0,
+            "directml_device": "auto_high_performance"
+        }"#;
+
+        assert!(serde_json::from_str::<Config>(json).is_err());
+    }
+
+    #[test]
     fn missing_required_fields_are_rejected() {
         let incomplete = r#"{"model":null,"sensitivity":100,"output_mode":"mouse","hotkeys":[]}"#;
         assert!(serde_json::from_str::<Config>(incomplete).is_err());
@@ -209,5 +282,64 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value["unexpected"] = serde_json::Value::Bool(true);
         assert!(serde_json::from_value::<Config>(value).is_err());
+    }
+
+    #[test]
+    fn target_y_offset_is_required() {
+        let json = r#"{
+            "model": null,
+            "sensitivity": 100,
+            "fps_limit": 240,
+            "output_mode": "mouse",
+            "hotkeys": [],
+            "capture_adapter": 0,
+            "capture_output": 0,
+            "directml_device": "auto_high_performance"
+        }"#;
+
+        assert!(serde_json::from_str::<Config>(json).is_err());
+    }
+
+    #[test]
+    fn target_y_offset_range_is_validated() {
+        let config = Config {
+            target_y_offset: serde_json::from_value(serde_json::json!(101)).unwrap(),
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn diagnostics_default_to_info_and_round_trip_level() {
+        let config = Config::default();
+        assert_eq!(config.diagnostics.level, LogLevel::Info);
+
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.diagnostics.level, LogLevel::Info);
+    }
+
+    #[test]
+    fn legacy_trace_flags_are_migrated_to_trace_level() {
+        let json = r#"{
+            "level": null,
+            "frame_trace": true,
+            "mak_command_trace": false
+        }"#;
+
+        let diagnostics: DiagnosticsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(diagnostics.level, LogLevel::Trace);
+    }
+
+    #[test]
+    fn explicit_level_takes_precedence_over_legacy_trace_flags() {
+        let json = r#"{
+            "level": "warn",
+            "frame_trace": true,
+            "mak_command_trace": true
+        }"#;
+
+        let diagnostics: DiagnosticsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(diagnostics.level, LogLevel::Warn);
     }
 }

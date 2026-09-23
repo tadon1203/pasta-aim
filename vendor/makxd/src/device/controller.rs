@@ -168,8 +168,7 @@ impl AsyncDevice {
     ) -> Result<()> {
         controller_state_check(state)?;
         let encoded = encode_input_command(api, InputCommand::ControllerState(state));
-        self.write_framed(encoded.command, &encoded.payload)
-            .await
+        self.write_framed(encoded.command, &encoded.payload).await
     }
 }
 
@@ -185,11 +184,8 @@ mod tests {
             right_stick_y: 32767,
             ..Default::default()
         };
-        let mut raw = encode_input_command(
-            CommandApi::Mak,
-            InputCommand::ControllerState(state),
-        )
-        .payload;
+        let mut raw =
+            encode_input_command(CommandApi::Mak, InputCommand::ControllerState(state)).payload;
         raw.extend_from_slice(&u32::MAX.to_le_bytes());
         raw.extend_from_slice(&1234u32.to_le_bytes());
         raw.extend_from_slice(&8u16.to_le_bytes());
@@ -250,9 +246,7 @@ mod tests {
     #[test]
     fn api_specific_input_commands_send_expected_km_frames() {
         let (device, mock) = Device::mock();
-        device
-            .move_xy_with_api(CommandApi::Km, 12, -7)
-            .unwrap();
+        device.move_xy_with_api(CommandApi::Km, 12, -7).unwrap();
         device
             .set_controller_state_with_api(
                 CommandApi::Km,
@@ -269,10 +263,7 @@ mod tests {
         assert_eq!(&commands[0][..5], &[0xde, 0xad, 13, 0, b'k']);
         assert_eq!(&commands[0][5..], b"m.move(12,-7)");
         assert_eq!(&commands[1][..5], &[0xde, 0xad, 36, 0, b'k']);
-        assert_eq!(
-            &commands[1][5..],
-            b"m.controller_state(0,0,0,0,0,0,-5,8)"
-        );
+        assert_eq!(&commands[1][5..], b"m.controller_state(0,0,0,0,0,0,-5,8)");
     }
 
     #[cfg(feature = "mock")]
@@ -285,12 +276,16 @@ mod tests {
             left_trigger: 1024,
             ..Default::default()
         };
-        assert!(device
-            .set_controller_state_with_api(CommandApi::Mak, invalid)
-            .is_err());
-        assert!(device
-            .set_controller_state_with_api(CommandApi::Km, invalid)
-            .is_err());
+        assert!(
+            device
+                .set_controller_state_with_api(CommandApi::Mak, invalid)
+                .is_err()
+        );
+        assert!(
+            device
+                .set_controller_state_with_api(CommandApi::Km, invalid)
+                .is_err()
+        );
     }
 
     #[test]
@@ -325,8 +320,8 @@ mod tests {
                 &encode_input_command(CommandApi::Mak, InputCommand::ControllerState(state))
                     .payload,
             )
-                .unwrap()
-                .left_trigger,
+            .unwrap()
+            .left_trigger,
             1023
         );
     }

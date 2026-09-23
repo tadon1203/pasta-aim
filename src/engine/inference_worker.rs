@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     detector::{Detection, Detector},
-    settings::DirectMlDevice,
+    settings::{ConfidenceThreshold, DirectMlDevice},
     timing::QpcClock,
 };
 
@@ -45,6 +45,7 @@ enum InferenceCommand {
         device: DirectMlDevice,
         reply: Sender<Result<LoadedModelInfo, String>>,
     },
+    SetConfidenceThreshold(ConfidenceThreshold),
     Start {
         generation: RunGeneration,
     },
@@ -66,12 +67,18 @@ pub(super) struct InferenceWorker {
 }
 
 impl InferenceWorker {
-    pub(super) fn spawn(qpc: QpcClock, consumer: FrameConsumer) -> Result<Self> {
+    pub(super) fn spawn(
+        qpc: QpcClock,
+        consumer: FrameConsumer,
+        confidence_threshold: ConfidenceThreshold,
+    ) -> Result<Self> {
         let (control_tx, control_rx) = unbounded();
         let (event_tx, event_rx) = unbounded();
         let join = thread::Builder::new()
             .name("nice-aimassist-inference".to_owned())
-            .spawn(move || inference_loop(control_rx, event_tx, consumer, qpc))?;
+            .spawn(move || {
+                inference_loop(control_rx, event_tx, consumer, qpc, confidence_threshold)
+            })?;
         Ok(Self {
             control_tx,
             event_rx,
@@ -99,6 +106,12 @@ impl InferenceWorker {
         Ok(())
     }
 
+    pub(super) fn set_confidence_threshold(&self, value: ConfidenceThreshold) {
+        let _ = self
+            .control_tx
+            .send(InferenceCommand::SetConfidenceThreshold(value));
+    }
+
     pub(super) fn stop(&self, generation: RunGeneration) -> Result<()> {
         self.control_tx
             .send(InferenceCommand::Stop { generation })?;
@@ -124,6 +137,7 @@ fn inference_loop(
     event_tx: Sender<InferenceEvent>,
     consumer: FrameConsumer,
     qpc: QpcClock,
+    mut confidence_threshold: ConfidenceThreshold,
 ) {
     let mut detector: Option<Detector> = None;
     let mut state = InferenceRunState::Idle;
@@ -131,7 +145,13 @@ fn inference_loop(
         if matches!(state, InferenceRunState::Idle) {
             match control_rx.recv() {
                 Ok(command) => {
-                    if !handle_command(command, &mut detector, &mut state, &consumer) {
+                    if !handle_command(
+                        command,
+                        &mut detector,
+                        &mut state,
+                        &consumer,
+                        &mut confidence_threshold,
+                    ) {
                         break;
                     }
                 }
@@ -141,7 +161,13 @@ fn inference_loop(
         }
 
         while let Ok(command) = control_rx.try_recv() {
-            if !handle_command(command, &mut detector, &mut state, &consumer) {
+            if !handle_command(
+                command,
+                &mut detector,
+                &mut state,
+                &consumer,
+                &mut confidence_threshold,
+            ) {
                 return;
             }
         }
@@ -159,7 +185,11 @@ fn inference_loop(
         };
         let Some(frame) = consumer.try_take_latest() else {
             select! {
-                recv(control_rx) -> command => if let Ok(command) = command { if !handle_command(command, &mut detector, &mut state, &consumer) { return; } },
+                recv(control_rx) -> command => if let Ok(command) = command
+                    && !handle_command(command, &mut detector, &mut state, &consumer, &mut confidence_threshold)
+                {
+                    return;
+                },
                 recv(consumer.ready_rx()) -> _ => {},
             }
             continue;
@@ -208,6 +238,7 @@ fn handle_command(
     detector: &mut Option<Detector>,
     state: &mut InferenceRunState,
     consumer: &FrameConsumer,
+    confidence_threshold: &mut ConfidenceThreshold,
 ) -> bool {
     match command {
         InferenceCommand::LoadModel {
@@ -222,11 +253,19 @@ fn handle_command(
                         directml_device: new_detector.directml_device(),
                         ep_assignment: new_detector.ep_assignment().clone(),
                     };
+                    let mut new_detector = new_detector;
+                    new_detector.set_confidence_threshold(*confidence_threshold);
                     *detector = Some(new_detector);
                     info
                 })
                 .map_err(|error| format!("{error:#}"));
             let _ = reply.send(result);
+        }
+        InferenceCommand::SetConfidenceThreshold(value) => {
+            *confidence_threshold = value;
+            if let Some(detector) = detector.as_mut() {
+                detector.set_confidence_threshold(value);
+            }
         }
         InferenceCommand::Start { generation } => {
             // CaptureWorker clears the mailbox before starting a new generation.

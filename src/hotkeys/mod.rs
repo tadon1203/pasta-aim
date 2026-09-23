@@ -356,7 +356,7 @@ impl HotkeyRegistry {
                 .collect(),
             xinput: desired.xinput,
         };
-        tracing::info!(
+        tracing::debug!(
             keyboard = self.registered.len(),
             xinput = xinput_count,
             "hotkey bindings registered"
@@ -435,7 +435,7 @@ impl HotkeyRegistry {
 
 impl Drop for HotkeyRegistry {
     fn drop(&mut self) {
-        tracing::info!("shutting down hotkey registry");
+        tracing::debug!("shutting down hotkey registry");
         self.capture_active.store(false, Ordering::Release);
         self.suspended.store(true, Ordering::Release);
         self.running.store(false, Ordering::Release);

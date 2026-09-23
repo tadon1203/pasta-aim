@@ -5,7 +5,10 @@ use crate::{
     engine::{Engine, EngineEvent},
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
-    settings::{DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, Sensitivity},
+    settings::{
+        ConfidenceThreshold, DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, Sensitivity,
+        TargetYOffset,
+    },
 };
 
 pub struct App {
@@ -21,6 +24,8 @@ pub struct App {
     config_load_warning: Option<String>,
     config_save_error: Option<String>,
     sensitivity_dirty: bool,
+    confidence_threshold_dirty: bool,
+    target_y_offset_dirty: bool,
     fps_limit_dirty: bool,
     model_load_requested: bool,
 }
@@ -60,6 +65,8 @@ impl App {
             config_load_warning,
             config_save_error: None,
             sensitivity_dirty: false,
+            confidence_threshold_dirty: false,
+            target_y_offset_dirty: false,
             fps_limit_dirty: false,
             model_load_requested: false,
         };
@@ -131,7 +138,7 @@ impl App {
     }
 
     fn rescan_models(&mut self) {
-        tracing::info!("rescanning models from UI");
+        tracing::debug!("rescanning models from UI");
         match ModelCatalog::scan() {
             Ok(catalog) => {
                 self.models = catalog;
@@ -146,7 +153,7 @@ impl App {
     }
 
     fn select_model(&mut self, name: String) {
-        tracing::info!(model = %name, "model selected from UI");
+        tracing::debug!(model = %name, "model selected from UI");
         if let Some(path) = self.models.path_for(&name) {
             self.engine.load_model(name, path);
         }
@@ -164,17 +171,17 @@ impl App {
     }
 
     fn rescan_displays(&self) {
-        tracing::info!("display rescan requested from UI");
+        tracing::debug!("display rescan requested from UI");
         self.engine.rescan_displays();
     }
 
     fn select_display(&mut self, adapter: u32, output: u32) {
-        tracing::info!(adapter, output, "display selected from UI");
+        tracing::debug!(adapter, output, "display selected from UI");
         self.engine.set_capture_selection(adapter, output);
     }
 
     fn select_directml_device(&mut self, device: DirectMlDevice) {
-        tracing::info!(?device, "DirectML device selected from UI");
+        tracing::debug!(?device, "DirectML device selected from UI");
         self.engine.set_directml_device(device);
     }
 
@@ -182,6 +189,28 @@ impl App {
         tracing::debug!(value = sensitivity.value(), persist, "sensitivity changed");
         self.config.sensitivity = sensitivity;
         self.engine.set_sensitivity(sensitivity);
+        if persist {
+            self.persist();
+        }
+    }
+
+    fn set_confidence_threshold(&mut self, value: ConfidenceThreshold, persist: bool) {
+        tracing::debug!(
+            value = value.value(),
+            persist,
+            "confidence threshold changed"
+        );
+        self.config.confidence_threshold = value;
+        self.engine.set_confidence_threshold(value);
+        if persist {
+            self.persist();
+        }
+    }
+
+    fn set_target_y_offset(&mut self, value: TargetYOffset, persist: bool) {
+        tracing::debug!(value = value.value(), persist, "target Y offset changed");
+        self.config.target_y_offset = value;
+        self.engine.set_target_y_offset(value);
         if persist {
             self.persist();
         }
@@ -197,7 +226,7 @@ impl App {
     }
 
     fn begin_hotkey_capture(&mut self, action: HotkeyAction) {
-        tracing::info!(?action, "hotkey capture started");
+        tracing::debug!(?action, "hotkey capture started");
         self.capturing_hotkey = Some(action);
         self.hotkey_capture_armed = false;
         self.hotkey_capture_error = None;
@@ -213,7 +242,7 @@ impl App {
     }
 
     fn add_hotkey(&mut self, action: HotkeyAction, shortcut: String) {
-        tracing::info!(?action, shortcut = %shortcut, "adding hotkey binding");
+        tracing::debug!(?action, shortcut = %shortcut, "adding hotkey binding");
         let shortcut = match canonical_shortcut(&shortcut) {
             Ok(shortcut) => shortcut,
             Err(error) => {
@@ -240,7 +269,7 @@ impl App {
     }
 
     fn remove_hotkey(&mut self, action: HotkeyAction, shortcut: &str) {
-        tracing::info!(?action, shortcut, "removing hotkey binding");
+        tracing::debug!(?action, shortcut, "removing hotkey binding");
         let mut candidate = self.config.clone();
         candidate.remove_binding(action, shortcut);
         self.hotkeys.suspend();

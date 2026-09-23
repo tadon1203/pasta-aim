@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::App;
 use crate::{
-    config::Config,
+    config::{Config, LogLevel},
     detector::EpAssignmentState,
     engine::{
         CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
@@ -13,7 +13,10 @@ use crate::{
     mak::PhysicalControllerStatus,
     metrics::{MetricSummary, PerformanceSnapshot},
     models,
-    settings::{DirectMlDevice, FpsLimit, HotkeyAction, InjectionApi, OutputMode, Sensitivity},
+    settings::{
+        ConfidenceThreshold, DirectMlDevice, FpsLimit, HotkeyAction, InjectionApi, OutputMode,
+        Sensitivity, TargetYOffset,
+    },
 };
 
 impl App {
@@ -348,6 +351,62 @@ impl App {
             });
             ui.small("100% = 1× command scale");
 
+            ui.horizontal(|ui| {
+                ui.label("Confidence");
+                let mut value = self.config.confidence_threshold.value();
+                let response = ui.add(
+                    egui::DragValue::new(&mut value)
+                        .speed(1.0)
+                        .range(ConfidenceThreshold::MIN..=ConfidenceThreshold::MAX),
+                );
+                if response.changed() {
+                    self.confidence_threshold_dirty = true;
+                    self.set_confidence_threshold(ConfidenceThreshold::new(value), false);
+                }
+                if self.confidence_threshold_dirty
+                    && (response.drag_stopped() || response.lost_focus())
+                {
+                    self.confidence_threshold_dirty = false;
+                    self.persist();
+                }
+                ui.label("%");
+                for (label, delta) in [("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)] {
+                    if ui.button(label).clicked() {
+                        self.set_confidence_threshold(
+                            self.config.confidence_threshold.adjusted(delta),
+                            true,
+                        );
+                    }
+                }
+            });
+            ui.small("Minimum confidence required to accept a detection.");
+
+            ui.horizontal(|ui| {
+                ui.label("Target Y offset");
+                let mut value = self.config.target_y_offset.value();
+                let response = ui.add(
+                    egui::DragValue::new(&mut value)
+                        .speed(1.0)
+                        .range(TargetYOffset::MIN..=TargetYOffset::MAX),
+                );
+                if response.changed() {
+                    self.target_y_offset_dirty = true;
+                    self.set_target_y_offset(TargetYOffset::new(i32::from(value)), false);
+                }
+                if self.target_y_offset_dirty && (response.drag_stopped() || response.lost_focus())
+                {
+                    self.target_y_offset_dirty = false;
+                    self.persist();
+                }
+                ui.label("%");
+                for (label, delta) in [("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)] {
+                    if ui.button(label).clicked() {
+                        self.set_target_y_offset(self.config.target_y_offset.adjusted(delta), true);
+                    }
+                }
+            });
+            ui.small("Relative to target height; positive values move downward.");
+
             let ready = status.ready_for(self.config.output_mode);
             let run_idle = status.run.phase == RunPhase::Idle;
             if ui
@@ -497,22 +556,29 @@ impl App {
             .default_open(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong("Trace logging");
-                    let frame_changed = ui
-                        .checkbox(&mut self.config.diagnostics.frame_trace, "Frames")
-                        .changed();
-                    let mak_changed = ui
-                        .checkbox(
-                            &mut self.config.diagnostics.mak_command_trace,
-                            "MAK commands",
-                        )
-                        .changed();
-                    if frame_changed || mak_changed {
-                        crate::logging::set_diagnostics(self.config.diagnostics);
+                    ui.strong("Log level");
+                    let mut level = self.config.diagnostics.level;
+                    egui::ComboBox::from_id_salt("log_level_selector")
+                        .selected_text(log_level_label(level))
+                        .show_ui(ui, |ui| {
+                            for option in [
+                                LogLevel::Off,
+                                LogLevel::Error,
+                                LogLevel::Warn,
+                                LogLevel::Info,
+                                LogLevel::Debug,
+                                LogLevel::Trace,
+                            ] {
+                                ui.selectable_value(&mut level, option, log_level_label(option));
+                            }
+                        });
+                    if level != self.config.diagnostics.level {
+                        self.config.diagnostics.level = level;
+                        crate::logging::set_level(level);
                         self.persist();
                     }
                 });
-                ui.small("Detailed traces are off by default and can affect log volume.");
+                ui.small("The selected level and more severe logs are written to the log file.");
                 ui.add_space(6.0);
                 egui::Grid::new("diagnostics_state")
                     .num_columns(2)
@@ -619,6 +685,10 @@ impl App {
 
                         ui.label("FPS limit");
                         ui.label(self.config.fps_limit.value().to_string());
+                        ui.end_row();
+
+                        ui.label("Confidence threshold");
+                        ui.label(format!("{}%", self.config.confidence_threshold.value()));
                         ui.end_row();
 
                         if let Some((_, _, confidence, class_id)) = status.run.last_target {
@@ -815,6 +885,17 @@ impl App {
         if !open && self.capturing_hotkey.is_some() {
             self.cancel_hotkey_capture();
         }
+    }
+}
+
+fn log_level_label(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Off => "Off",
+        LogLevel::Error => "Error",
+        LogLevel::Warn => "Warn",
+        LogLevel::Info => "Info",
+        LogLevel::Debug => "Debug",
+        LogLevel::Trace => "Trace",
     }
 }
 

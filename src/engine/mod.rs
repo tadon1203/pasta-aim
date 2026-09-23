@@ -25,7 +25,10 @@ use eframe::egui;
 
 use crate::{
     config::Config,
-    settings::{DirectMlDevice, FpsLimit, InjectionApi, OutputMode, Sensitivity},
+    settings::{
+        ConfidenceThreshold, DirectMlDevice, FpsLimit, InjectionApi, OutputMode, Sensitivity,
+        TargetYOffset,
+    },
 };
 use crossbeam_channel as crossbeam;
 
@@ -54,6 +57,8 @@ pub(super) enum Command {
         notify: bool,
     },
     SetSensitivity(Sensitivity),
+    SetConfidenceThreshold(ConfidenceThreshold),
+    SetTargetYOffset(TargetYOffset),
     SetFpsLimit(FpsLimit),
     SetOutput(OutputMode),
     SetInjectionApi(InjectionApi),
@@ -150,6 +155,14 @@ impl Engine {
 
     pub fn set_sensitivity(&self, value: Sensitivity) {
         let _ = self.tx.send(Command::SetSensitivity(value));
+    }
+
+    pub fn set_confidence_threshold(&self, value: ConfidenceThreshold) {
+        let _ = self.tx.send(Command::SetConfidenceThreshold(value));
+    }
+
+    pub fn set_target_y_offset(&self, value: TargetYOffset) {
+        let _ = self.tx.send(Command::SetTargetYOffset(value));
     }
 
     pub fn set_fps_limit(&self, value: FpsLimit) {

@@ -390,7 +390,7 @@ impl TransportHandle {
             write_completion: None,
             response_id: Some(response_id),
             expected_nonce,
-                expected_opcode: Some(command),
+            expected_opcode: Some(command),
         })?;
         match rx.recv_timeout(timeout) {
             Ok(response) if response.len() == 2 && response[1] == 0xff => Err(

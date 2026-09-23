@@ -71,14 +71,16 @@ mod tests {
 
     #[test]
     fn mak_move_matches_existing_payload() {
-        let encoded = encode_input_command(CommandApi::Mak, InputCommand::MouseMove { x: 12, y: -7 });
+        let encoded =
+            encode_input_command(CommandApi::Mak, InputCommand::MouseMove { x: 12, y: -7 });
         assert_eq!(encoded.command, 0x18);
         assert_eq!(encoded.payload, [12, 0, 249, 255]);
     }
 
     #[test]
     fn km_move_is_ascii_without_newline() {
-        let encoded = encode_input_command(CommandApi::Km, InputCommand::MouseMove { x: 12, y: -7 });
+        let encoded =
+            encode_input_command(CommandApi::Km, InputCommand::MouseMove { x: 12, y: -7 });
         assert_eq!(encoded.command, b'k');
         assert_eq!(encoded.payload, b"m.move(12,-7)");
     }

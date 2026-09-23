@@ -10,6 +10,7 @@ Rust + egui で構成した、ローカル完結の最小構成です。
 - 公式 MAK Rust SDK を使ったマウス / コントローラー出力
 - 1機能に複数割り当て可能なグローバルホットキー
 - 整数スケールの単一 `Sensitivity`
+- 検出 `Confidence` 閾値
 - Continuous推論の整数FPS上限
 - 単発推論による手動キャリブレーション
 - capture / preprocess / inference / postprocess / output / total の性能計測
@@ -47,10 +48,12 @@ models/
 1. **Devices** — MAK本体、Mouse route、Controller routeの種類、物理Controllerの確認結果を別々に表示します。
 2. **Model** — `models/` 内から選択します。ロード成功時だけ設定へcommitします。
 3. **Output** — Mouse / Controller のユーザー選択を保持し、routeの一時消失で勝手に切り替えません。
-4. **Calibration** — 整数Sensitivityを調整し、`Run once` で単発確認します。
+4. **Calibration** — Sensitivity、検出Confidence、Target Y offsetを調整し、`Run once` で単発確認します。
 5. **Continuous** — 複数のHold shortcutのどれかが押されている間だけ動作します。FPS上限もここで設定します。
 6. **Hotkeys** — `+ Add` から `Waiting for input…` に入り、次のキー入力を登録します。
 7. **Diagnostics** — capture / MAK / detection / performance の詳細を必要時だけ表示します。
+
+Diagnosticsではログレベルを`Off / Error / Warn / Info / Debug / Trace`から選択できます。選択したレベル以上のログだけが`logs/nice-aimassist.log`へ追記され、設定は`settings.json`へ保存されます。通常は`Info`、原因調査時は`Debug`または`Trace`を使用してください。`Trace`ではフレーム単位とMAKコマンド単位の詳細も記録されます。
 
 `Ready` はモデル、DXGI、MAK接続、選択Output routeが利用可能なときに表示されます。
 
@@ -89,6 +92,18 @@ Sensitivityは小数ではなく整数のpercent scaleです。
 ```
 
 内部では `gain = sensitivity / 100` としてだけ変換します。UIは直接整数入力と `-10 / -1 / +1 / +10` の微調整を提供します。
+
+## Target Y offset
+
+`Target Y offset` は検出されたターゲットの高さに対する相対補正です。範囲は `-100〜100%`、既定値は `0%` です。0%はバウンディングボックス中心、正の値は下方向、負の値は上方向を表します。Sensitivity適用後に加算されるため、計算は次のとおりです。
+
+```text
+command_y = (target_y_delta × sensitivity) + (target_height × target_y_offset / 100)
+```
+
+## Confidence
+
+Confidenceは検出候補を採用するための最小値をパーセントで指定します。既定値は50%、設定範囲は0〜100%です。値未満の検出は無視され、設定変更は次の推論フレームから反映されます。
 
 ## FPS limit
 

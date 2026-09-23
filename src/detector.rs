@@ -7,7 +7,7 @@ use ort::{
     value::TensorRef,
 };
 
-use crate::settings::DirectMlDevice;
+use crate::settings::{ConfidenceThreshold, DirectMlDevice};
 
 mod ep_assignment;
 
@@ -15,12 +15,11 @@ mod ep_assignment;
 pub(crate) use ep_assignment::EpAssignmentReport;
 pub(crate) use ep_assignment::{EpAssignedNode, EpAssignmentState, EpProviderAssignment};
 
-const CONFIDENCE_THRESHOLD: f32 = 0.25;
-
 #[derive(Debug, Clone, Copy)]
 pub struct Detection {
     pub center_x: f32,
     pub center_y: f32,
+    pub box_height: f32,
     pub confidence: f32,
     pub class_id: i32,
 }
@@ -38,6 +37,7 @@ pub struct Detector {
     input_shape: [usize; 4],
     directml_device: DirectMlDevice,
     ep_assignment: EpAssignmentState,
+    confidence_threshold: ConfidenceThreshold,
 }
 
 impl Detector {
@@ -117,6 +117,7 @@ impl Detector {
             input_shape: [1, 3, input_height, input_width],
             directml_device,
             ep_assignment,
+            confidence_threshold: ConfidenceThreshold::default(),
         })
     }
 
@@ -130,6 +131,10 @@ impl Detector {
 
     pub fn ep_assignment(&self) -> &EpAssignmentState {
         &self.ep_assignment
+    }
+
+    pub fn set_confidence_threshold(&mut self, threshold: ConfidenceThreshold) {
+        self.confidence_threshold = threshold;
     }
 
     pub(crate) fn infer_preprocessed(&mut self, input: &[f32]) -> Result<InferenceResult> {
@@ -172,7 +177,13 @@ impl Detector {
             bail!("YOLO output buffer is shorter than its reported shape");
         }
 
-        let detection = select_nearest(data, rows, self.input_width, self.input_height);
+        let detection = select_nearest(
+            data,
+            rows,
+            self.input_width,
+            self.input_height,
+            self.confidence_threshold.ratio(),
+        );
         let postprocess_ms = postprocess_started.elapsed().as_secs_f64() * 1000.0;
         Ok(InferenceResult {
             detection,
@@ -235,6 +246,7 @@ fn select_nearest(
     rows: usize,
     input_width: usize,
     input_height: usize,
+    confidence_threshold: f32,
 ) -> Option<Detection> {
     let image_cx = input_width as f32 * 0.5;
     let image_cy = input_height as f32 * 0.5;
@@ -253,7 +265,7 @@ fn select_nearest(
             || !x2.is_finite()
             || !y2.is_finite()
             || !confidence.is_finite()
-            || confidence < CONFIDENCE_THRESHOLD
+            || confidence < confidence_threshold
             || x2 <= x1
             || y2 <= y1
         {
@@ -268,6 +280,7 @@ fn select_nearest(
         let detection = Detection {
             center_x,
             center_y,
+            box_height: y2 - y1,
             confidence,
             class_id: class_id.round() as i32,
         };
@@ -319,10 +332,11 @@ mod tests {
         let data = [
             0.0, 0.0, 20.0, 20.0, 0.95, 1.0, 45.0, 45.0, 55.0, 55.0, 0.80, 2.0,
         ];
-        let detection = select_nearest(&data, 2, 100, 100).expect("detection");
+        let detection = select_nearest(&data, 2, 100, 100, 0.25).expect("detection");
         assert_eq!(detection.class_id, 2);
         assert_eq!(detection.center_x, 50.0);
         assert_eq!(detection.center_y, 50.0);
+        assert_eq!(detection.box_height, 10.0);
     }
 
     #[test]
@@ -341,6 +355,16 @@ mod tests {
             0.99,
             2.0,
         ];
-        assert!(select_nearest(&data, 2, 100, 100).is_none());
+        assert!(select_nearest(&data, 2, 100, 100, 0.25).is_none());
+    }
+
+    #[test]
+    fn configured_confidence_threshold_controls_candidate_admission() {
+        let data = [
+            40.0, 40.0, 60.0, 60.0, 0.40, 1.0, 0.0, 0.0, 20.0, 20.0, 0.60, 2.0,
+        ];
+        let detection = select_nearest(&data, 2, 100, 100, 0.50).expect("detection");
+        assert_eq!(detection.class_id, 2);
+        assert!(select_nearest(&data, 2, 100, 100, 0.70).is_none());
     }
 }

@@ -39,7 +39,7 @@ impl ModelCatalog {
             });
         }
         entries.sort_by_key(|entry| entry.name.to_ascii_lowercase());
-        tracing::info!(path = %dir.display(), count = entries.len(), "model scan completed");
+        tracing::debug!(path = %dir.display(), count = entries.len(), "model scan completed");
         Ok(Self { entries })
     }
 
@@ -80,7 +80,7 @@ pub fn open_models_folder() -> Result<()> {
         .arg(&dir)
         .spawn()
         .with_context(|| format!("failed to open {}", dir.display()))?;
-    tracing::info!(path = %dir.display(), "opened models folder");
+    tracing::debug!(path = %dir.display(), "opened models folder");
     Ok(())
 }
 
