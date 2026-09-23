@@ -13,7 +13,7 @@ use crate::{
     mak::PhysicalControllerStatus,
     metrics::{MetricSummary, PerformanceSnapshot},
     models,
-    settings::{DirectMlDevice, FpsLimit, HotkeyAction, OutputMode, Sensitivity},
+    settings::{DirectMlDevice, FpsLimit, HotkeyAction, InjectionApi, OutputMode, Sensitivity},
 };
 
 impl App {
@@ -266,6 +266,32 @@ impl App {
                     .changed()
                 {
                     self.engine.set_output(OutputMode::Controller);
+                    self.persist();
+                }
+            });
+
+            ui.label("Injection API");
+            ui.horizontal(|ui| {
+                if ui
+                    .radio_value(
+                        &mut self.config.injection_api,
+                        InjectionApi::MakApi,
+                        InjectionApi::MakApi.label(),
+                    )
+                    .changed()
+                {
+                    self.engine.set_injection_api(self.config.injection_api);
+                    self.persist();
+                }
+                if ui
+                    .radio_value(
+                        &mut self.config.injection_api,
+                        InjectionApi::KmApi,
+                        InjectionApi::KmApi.label(),
+                    )
+                    .changed()
+                {
+                    self.engine.set_injection_api(self.config.injection_api);
                     self.persist();
                 }
             });

@@ -31,7 +31,7 @@ impl App {
         let config = loaded.config;
         crate::logging::set_diagnostics(config.diagnostics);
         let config_load_warning = loaded.warning;
-        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), output_mode = ?config.output_mode, "application initialized with settings");
+        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), output_mode = ?config.output_mode, injection_api = ?config.injection_api, "application initialized with settings");
         let (models, model_catalog_error) = match ModelCatalog::scan() {
             Ok(catalog) => (catalog, None),
             Err(error) => {

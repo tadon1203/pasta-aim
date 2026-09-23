@@ -5,9 +5,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use makxd::{
-    ConnectionState, ControllerState, Device, DeviceKind, DeviceKinds, MakxdError,
+    CommandApi, ConnectionState, ControllerState, Device, DeviceKind, DeviceKinds, MakxdError,
     crossbeam_channel::Receiver,
 };
+
+use crate::settings::InjectionApi;
 
 const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const RECONNECT_RETRY_WINDOW: Duration = Duration::from_millis(500);
@@ -98,6 +100,7 @@ pub struct MakClient {
     routes: MakRoutes,
     port: Option<String>,
     firmware: Option<u32>,
+    injection_api: InjectionApi,
     controller_release_pending: bool,
     physical_controller: PhysicalControllerStatus,
 }
@@ -116,6 +119,7 @@ impl MakClient {
             routes: MakRoutes::default(),
             port: None,
             firmware: None,
+            injection_api: InjectionApi::default(),
             controller_release_pending: false,
             physical_controller: PhysicalControllerStatus::Unknown,
         }
@@ -176,6 +180,22 @@ impl MakClient {
         self.controller_release_pending
     }
 
+    pub fn injection_api(&self) -> InjectionApi {
+        self.injection_api
+    }
+
+    pub fn set_injection_api(&mut self, api: InjectionApi) -> Result<()> {
+        if self.injection_api == api {
+            return Ok(());
+        }
+        if self.controller_release_pending {
+            self.release_controller()?;
+        }
+        self.injection_api = api;
+        tracing::info!(injection_api = ?self.injection_api, "MAK injection API changed");
+        Ok(())
+    }
+
     pub fn physical_controller_status(&self) -> PhysicalControllerStatus {
         self.physical_controller
     }
@@ -218,12 +238,13 @@ impl MakClient {
         let y = y.clamp(i16::MIN as i32, i16::MAX as i32);
         let started = Instant::now();
         self.connected_device()?
-            .move_xy(x, y)
+            .move_xy_with_api(sdk_command_api(self.injection_api), x, y)
             .context("MAK mouse move failed")?;
         if crate::logging::mak_command_trace_enabled() {
             tracing::trace!(
                 x,
                 y,
+                injection_api = ?self.injection_api,
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                 "MAK mouse command completed"
             );
@@ -250,7 +271,7 @@ impl MakClient {
         }
         let started = Instant::now();
         self.connected_device()?
-            .set_controller_state(state)
+            .set_controller_state_with_api(sdk_command_api(self.injection_api), state)
             .context("MAK controller state write failed")?;
         if !active {
             self.controller_release_pending = false;
@@ -261,6 +282,7 @@ impl MakClient {
                 x,
                 y,
                 active,
+                injection_api = ?self.injection_api,
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                 "MAK controller command completed"
             );
@@ -276,7 +298,10 @@ impl MakClient {
             return Ok(());
         }
         self.connected_device()?
-            .set_controller_state(ControllerState::default())
+            .set_controller_state_with_api(
+                sdk_command_api(self.injection_api),
+                ControllerState::default(),
+            )
             .context("MAK controller release failed")?;
         self.controller_release_pending = false;
         Ok(())
@@ -412,6 +437,13 @@ impl MakClient {
     }
 }
 
+fn sdk_command_api(api: InjectionApi) -> CommandApi {
+    match api {
+        InjectionApi::MakApi => CommandApi::Mak,
+        InjectionApi::KmApi => CommandApi::Km,
+    }
+}
+
 impl Drop for MakClient {
     fn drop(&mut self) {
         tracing::debug!("shutting down MAK session");
@@ -445,5 +477,33 @@ mod tests {
             routes.controllers,
             vec![ControllerKind::DualSense, ControllerKind::XboxGip]
         );
+    }
+
+    #[test]
+    fn injection_api_switch_releases_controller_using_old_api_first() {
+        let (device, mock) = Device::mock();
+        let mut client = MakClient::new();
+        client.device = Some(device);
+        client.routes.controllers.push(ControllerKind::GenericHid);
+        client.controller_release_pending = true;
+
+        client.set_injection_api(InjectionApi::KmApi).unwrap();
+
+        assert_eq!(client.injection_api(), InjectionApi::KmApi);
+        assert!(!client.controller_release_pending());
+        let commands = mock.sent_commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(&commands[0][..5], &[0xde, 0xad, 20, 0, 0x40]);
+        assert_eq!(&commands[0][5..], &[0; 20]);
+    }
+
+    #[test]
+    fn failed_injection_api_release_keeps_old_api() {
+        let mut client = MakClient::new();
+        client.routes.controllers.push(ControllerKind::GenericHid);
+        client.controller_release_pending = true;
+
+        assert!(client.set_injection_api(InjectionApi::KmApi).is_err());
+        assert_eq!(client.injection_api(), InjectionApi::MakApi);
     }
 }

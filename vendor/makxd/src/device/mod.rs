@@ -204,6 +204,11 @@ impl Device {
             .write_mak_api(opcode, payload, self.config.command_timeout)
     }
 
+    pub(crate) fn write_framed(&self, command: u8, payload: &[u8]) -> Result<()> {
+        self.transport
+            .write_framed(command, payload, self.config.command_timeout)
+    }
+
     pub(crate) fn query_api(&self, opcode: ApiOpcode, payload: &[u8]) -> Result<Vec<u8>> {
         self.transport
             .send_mak_api(opcode, payload, self.config.command_timeout)
@@ -331,6 +336,12 @@ impl AsyncDevice {
     pub(crate) async fn write_api(&self, opcode: ApiOpcode, payload: &[u8]) -> Result<()> {
         self.transport
             .write_mak_api_async(opcode, payload, self.config.command_timeout)
+            .await
+    }
+
+    pub(crate) async fn write_framed(&self, command: u8, payload: &[u8]) -> Result<()> {
+        self.transport
+            .write_framed_async(command, payload, self.config.command_timeout)
             .await
     }
 

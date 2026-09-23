@@ -35,7 +35,7 @@ pub use error::{MakxdError, Result};
 pub use protocol::api::ApiOpcode;
 pub use types::{
     BleConnectionIo, Button, ButtonMask, CONTROLLER_TRIGGER_MAX, ConnectionConfig, ConnectionState,
-    ControllerControl, ControllerMaskMode, ControllerSnapshot, ControllerState, DeviceInfo,
+    CommandApi, ControllerControl, ControllerMaskMode, ControllerSnapshot, ControllerState, DeviceInfo,
     DeviceKind, DeviceKinds, KeyboardKey, UdpWireMode,
 };
 

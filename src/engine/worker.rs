@@ -156,6 +156,9 @@ pub(super) fn run_worker(
     worker.refresh_capture_catalog();
     worker.initialize_capture();
     worker.edit_status(|status| status.model.directml_device = config.directml_device);
+    if let Err(error) = worker.mak.set_injection_api(config.injection_api) {
+        tracing::error!(error = %format!("{error:#}"), "initial injection API setup failed");
+    }
     worker.connect_mak_initial();
     if let Some(name) = config.model {
         match models::resolve_model(&name) {
@@ -218,6 +221,19 @@ impl Worker {
                 self.sync_release_pending_status();
                 self.clear_run_error();
             }
+            Command::SetInjectionApi(api) => match self.mak.set_injection_api(api) {
+                Ok(()) => self.last_motion_complete_qpc = None,
+                Err(error) => {
+                    tracing::error!(
+                        error = %format!("{error:#}"),
+                        requested_api = ?api,
+                        "injection API change failed"
+                    );
+                    self.edit_status(|status| {
+                        status.run.error = Some(format!("Injection API change failed: {error:#}"));
+                    });
+                }
+            },
             Command::SetCaptureSelection { adapter, output } => {
                 self.set_capture_selection(adapter, output)
             }
@@ -925,6 +941,7 @@ impl Worker {
                 inference_span_ms,
                 mak_write_ms,
                 total_ms,
+                injection_api = ?self.mak.injection_api(),
                 target = ?last_target,
                 command = ?last_command,
                 "frame pipeline completed"

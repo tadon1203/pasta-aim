@@ -1,7 +1,8 @@
 use crate::error::{MakxdError, Result};
 use crate::protocol::api::ApiOpcode;
+use crate::protocol::input::{InputCommand, encode_input_command};
 use crate::types::{
-    CONTROLLER_TRIGGER_MAX, ControllerControl, ControllerMaskMode, ControllerSnapshot,
+    CONTROLLER_TRIGGER_MAX, CommandApi, ControllerControl, ControllerMaskMode, ControllerSnapshot,
     ControllerState,
 };
 
@@ -38,20 +39,6 @@ fn controller_state_check(state: ControllerState) -> Result<()> {
         ControllerControl::RightTrigger,
         i32::from(state.right_trigger),
     )
-}
-
-fn controller_state_payload(state: ControllerState) -> [u8; 20] {
-    let mut payload = [0u8; 20];
-    payload[0..4].copy_from_slice(&state.digital_low.to_le_bytes());
-    payload[4..8].copy_from_slice(&state.digital_high.to_le_bytes());
-    payload[8..10].copy_from_slice(&state.left_trigger.to_le_bytes());
-    payload[10..12].copy_from_slice(&state.right_trigger.to_le_bytes());
-    payload[12..14].copy_from_slice(&state.left_stick_x.to_le_bytes());
-    payload[14..16].copy_from_slice(&state.left_stick_y.to_le_bytes());
-    payload[16..18].copy_from_slice(&state.right_stick_x.to_le_bytes());
-    payload[18..20].copy_from_slice(&state.right_stick_y.to_le_bytes());
-
-    payload
 }
 
 fn controller_state_parse(value: &[u8]) -> Result<ControllerState> {
@@ -121,8 +108,17 @@ impl Device {
     /// finish with a zero stick pair / trigger, retaining other active controls.
     /// Silence is not release. See protocol/MAK_API.md for firmware requirements.
     pub fn set_controller_state(&self, state: ControllerState) -> Result<()> {
+        self.set_controller_state_with_api(CommandApi::Mak, state)
+    }
+
+    pub fn set_controller_state_with_api(
+        &self,
+        api: CommandApi,
+        state: ControllerState,
+    ) -> Result<()> {
         controller_state_check(state)?;
-        self.write_api(ApiOpcode::ControllerState, &controller_state_payload(state))
+        let encoded = encode_input_command(api, InputCommand::ControllerState(state));
+        self.write_framed(encoded.command, &encoded.payload)
     }
 }
 
@@ -161,8 +157,18 @@ impl AsyncDevice {
     /// finish with a zero stick pair / trigger, retaining other active controls.
     /// Silence is not release. See protocol/MAK_API.md for firmware requirements.
     pub async fn set_controller_state(&self, state: ControllerState) -> Result<()> {
+        self.set_controller_state_with_api(CommandApi::Mak, state)
+            .await
+    }
+
+    pub async fn set_controller_state_with_api(
+        &self,
+        api: CommandApi,
+        state: ControllerState,
+    ) -> Result<()> {
         controller_state_check(state)?;
-        self.write_api(ApiOpcode::ControllerState, &controller_state_payload(state))
+        let encoded = encode_input_command(api, InputCommand::ControllerState(state));
+        self.write_framed(encoded.command, &encoded.payload)
             .await
     }
 }
@@ -179,7 +185,11 @@ mod tests {
             right_stick_y: 32767,
             ..Default::default()
         };
-        let mut raw = controller_state_payload(state).to_vec();
+        let mut raw = encode_input_command(
+            CommandApi::Mak,
+            InputCommand::ControllerState(state),
+        )
+        .payload;
         raw.extend_from_slice(&u32::MAX.to_le_bytes());
         raw.extend_from_slice(&1234u32.to_le_bytes());
         raw.extend_from_slice(&8u16.to_le_bytes());
@@ -236,6 +246,53 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock")]
+    #[test]
+    fn api_specific_input_commands_send_expected_km_frames() {
+        let (device, mock) = Device::mock();
+        device
+            .move_xy_with_api(CommandApi::Km, 12, -7)
+            .unwrap();
+        device
+            .set_controller_state_with_api(
+                CommandApi::Km,
+                ControllerState {
+                    right_stick_x: -5,
+                    right_stick_y: 8,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let commands = mock.sent_commands();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(&commands[0][..5], &[0xde, 0xad, 13, 0, b'k']);
+        assert_eq!(&commands[0][5..], b"m.move(12,-7)");
+        assert_eq!(&commands[1][..5], &[0xde, 0xad, 36, 0, b'k']);
+        assert_eq!(
+            &commands[1][5..],
+            b"m.controller_state(0,0,0,0,0,0,-5,8)"
+        );
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn api_specific_input_commands_share_validation() {
+        let (device, _) = Device::mock();
+        assert!(device.move_xy_with_api(CommandApi::Mak, 32768, 0).is_err());
+        assert!(device.move_xy_with_api(CommandApi::Km, 32768, 0).is_err());
+        let invalid = ControllerState {
+            left_trigger: 1024,
+            ..Default::default()
+        };
+        assert!(device
+            .set_controller_state_with_api(CommandApi::Mak, invalid)
+            .is_err());
+        assert!(device
+            .set_controller_state_with_api(CommandApi::Km, invalid)
+            .is_err());
+    }
+
     #[test]
     fn trigger_is_10_bit_and_stick_is_signed_16_bit() {
         assert!(
@@ -264,7 +321,10 @@ mod tests {
             ..ControllerState::default()
         };
         assert_eq!(
-            controller_state_parse(&controller_state_payload(state))
+            controller_state_parse(
+                &encode_input_command(CommandApi::Mak, InputCommand::ControllerState(state))
+                    .payload,
+            )
                 .unwrap()
                 .left_trigger,
             1023

@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     models, paths,
-    settings::{DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, OutputMode, Sensitivity},
+    settings::{
+        DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, OutputMode,
+        Sensitivity,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +18,8 @@ pub struct Config {
     pub sensitivity: Sensitivity,
     pub fps_limit: FpsLimit,
     pub output_mode: OutputMode,
+    #[serde(default)]
+    pub injection_api: InjectionApi,
     pub hotkeys: Vec<HotkeyBinding>,
     pub capture_adapter: u32,
     pub capture_output: u32,
@@ -37,6 +42,7 @@ impl Default for Config {
             sensitivity: Sensitivity::default(),
             fps_limit: FpsLimit::default(),
             output_mode: OutputMode::Mouse,
+            injection_api: InjectionApi::default(),
             hotkeys: default_hotkeys(),
             capture_adapter: 0,
             capture_output: 0,
@@ -188,6 +194,7 @@ mod tests {
         assert_eq!(config.hotkeys.len(), 2);
         assert_eq!(config.hotkeys[0].shortcut, "F8");
         assert_eq!(config.hotkeys[1].shortcut, "xinput:a");
+        assert_eq!(config.injection_api, InjectionApi::MakApi);
     }
 
     #[test]

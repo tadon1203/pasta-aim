@@ -18,7 +18,7 @@ use std::time::Duration;
 use crossbeam_channel as channel;
 
 use crate::error::{MakxdError, Result};
-use crate::protocol::api::{ApiOpcode, mak_api_command};
+use crate::protocol::api::{ApiOpcode, framed_command};
 use crate::types::{
     ButtonMask, ConnectionConfig, ConnectionState, DeviceKinds, device_kinds_parse,
 };
@@ -306,7 +306,7 @@ impl TransportHandle {
             .query_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        self.send_mak_api_submit(opcode, payload, false, timeout)
+        self.send_framed_submit(opcode as u8, payload, false, timeout)
     }
     pub(crate) fn settings_guard(&self) -> std::sync::MutexGuard<'_, ()> {
         self.inner
@@ -331,13 +331,23 @@ impl TransportHandle {
         payload: &[u8],
         timeout: Duration,
     ) -> Result<()> {
-        self.send_mak_api_submit(opcode, payload, true, timeout)?;
+        self.write_framed(opcode as u8, payload, timeout)?;
         Ok(())
     }
 
-    fn send_mak_api_submit(
+    pub(crate) fn write_framed(
         &self,
-        opcode: ApiOpcode,
+        command: u8,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<()> {
+        self.send_framed_submit(command, payload, true, timeout)?;
+        Ok(())
+    }
+
+    fn send_framed_submit(
+        &self,
+        command: u8,
         payload: &[u8],
         fire_and_forget: bool,
         timeout: Duration,
@@ -348,12 +358,12 @@ impl TransportHandle {
         let (data, expected_nonce) =
             if let Some(encryption) = self.inner.transport_encryption.as_deref() {
                 let mut record = Vec::with_capacity(1 + payload.len());
-                record.push(opcode as u8);
+                record.push(command);
                 record.extend_from_slice(payload);
                 let (frame, nonce) = encryption.encode_command(&record)?;
                 (frame, Some(nonce))
             } else {
-                (mak_api_command(opcode, payload)?, None)
+                (framed_command(command, payload)?, None)
             };
         if fire_and_forget {
             let (completion_tx, completion_rx) = channel::bounded(1);
@@ -363,7 +373,7 @@ impl TransportHandle {
                 write_completion: Some(completion_tx),
                 response_id: None,
                 expected_nonce,
-                expected_opcode: Some(opcode as u8),
+                expected_opcode: Some(command),
             })?;
             return match completion_rx.recv_timeout(timeout) {
                 Ok(Ok(())) => Ok(Vec::new()),
@@ -380,11 +390,11 @@ impl TransportHandle {
             write_completion: None,
             response_id: Some(response_id),
             expected_nonce,
-            expected_opcode: Some(opcode as u8),
+                expected_opcode: Some(command),
         })?;
         match rx.recv_timeout(timeout) {
             Ok(response) if response.len() == 2 && response[1] == 0xff => Err(
-                MakxdError::Protocol(format!("MAK_API opcode 0x{:02x} was rejected", response[0])),
+                MakxdError::Protocol(format!("framed command 0x{:02x} was rejected", response[0])),
             ),
             Ok(response) if response.len() >= 2 => Ok(response[1..].to_vec()),
             Ok(_) => Err(MakxdError::Protocol("MAK_API response is malformed".into())),
@@ -424,6 +434,20 @@ impl TransportHandle {
         let handle = self.clone();
         let payload = payload.to_vec();
         tokio::task::spawn_blocking(move || handle.write_mak_api(opcode, &payload, timeout))
+            .await
+            .map_err(|error| MakxdError::Protocol(format!("tokio join error: {error}")))?
+    }
+
+    #[cfg(feature = "async")]
+    pub(crate) async fn write_framed_async(
+        &self,
+        command: u8,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<()> {
+        let handle = self.clone();
+        let payload = payload.to_vec();
+        tokio::task::spawn_blocking(move || handle.write_framed(command, &payload, timeout))
             .await
             .map_err(|error| MakxdError::Protocol(format!("tokio join error: {error}")))?
     }

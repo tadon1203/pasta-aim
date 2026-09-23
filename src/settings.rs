@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectionApi {
+    #[default]
+    MakApi,
+    KmApi,
+}
+
+impl InjectionApi {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MakApi => "MAK_API",
+            Self::KmApi => "KM_API",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {

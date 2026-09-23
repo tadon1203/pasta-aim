@@ -42,16 +42,21 @@ pub enum ApiOpcode {
     ControllerMask = 0x51,
 }
 
+#[allow(dead_code)]
 pub(crate) fn mak_api_command(opcode: ApiOpcode, payload: &[u8]) -> Result<Vec<u8>> {
+    framed_command(opcode as u8, payload)
+}
+
+pub(crate) fn framed_command(command: u8, payload: &[u8]) -> Result<Vec<u8>> {
     if payload.len() > 251 {
         return Err(MakxdError::Protocol(
-            "MAK_API command exceeds the COM frame limit".into(),
+            "framed command exceeds the COM frame limit".into(),
         ));
     }
     let mut frame = Vec::with_capacity(5 + payload.len());
     frame.extend_from_slice(&[0xde, 0xad]);
     frame.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-    frame.push(opcode as u8);
+    frame.push(command);
     frame.extend_from_slice(payload);
     Ok(frame)
 }

@@ -25,7 +25,7 @@ use eframe::egui;
 
 use crate::{
     config::Config,
-    settings::{DirectMlDevice, FpsLimit, OutputMode, Sensitivity},
+    settings::{DirectMlDevice, FpsLimit, InjectionApi, OutputMode, Sensitivity},
 };
 use crossbeam_channel as crossbeam;
 
@@ -56,6 +56,7 @@ pub(super) enum Command {
     SetSensitivity(Sensitivity),
     SetFpsLimit(FpsLimit),
     SetOutput(OutputMode),
+    SetInjectionApi(InjectionApi),
     SetCaptureSelection {
         adapter: u32,
         output: u32,
@@ -157,6 +158,10 @@ impl Engine {
 
     pub fn set_output(&self, mode: OutputMode) {
         let _ = self.tx.send(Command::SetOutput(mode));
+    }
+
+    pub fn set_injection_api(&self, api: InjectionApi) {
+        let _ = self.tx.send(Command::SetInjectionApi(api));
     }
 
     pub fn set_capture_selection(&self, adapter: u32, output: u32) {

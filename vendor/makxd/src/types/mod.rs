@@ -1,4 +1,5 @@
 mod button;
+mod command_api;
 mod connection;
 mod controller;
 mod device_info;
@@ -6,6 +7,7 @@ mod device_kinds;
 mod keyboard;
 
 pub use button::{Button, ButtonMask};
+pub use command_api::CommandApi;
 pub use connection::{BleConnectionIo, ConnectionConfig, UdpWireMode};
 pub use controller::{
     CONTROLLER_TRIGGER_MAX, ControllerControl, ControllerMaskMode, ControllerSnapshot,

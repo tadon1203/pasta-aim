@@ -1,7 +1,8 @@
 use crate::error::{MakxdError, Result};
 use crate::protocol::api::{ApiOpcode, button_mask_opcode};
+use crate::protocol::input::{InputCommand, encode_input_command};
 use crate::timed;
-use crate::types::Button;
+use crate::types::{Button, CommandApi};
 
 use super::Device;
 
@@ -53,13 +54,21 @@ impl Device {
 
     /// Relative mouse move. Coordinates are in HID units, range ±32767.
     pub fn move_xy(&self, x: i32, y: i32) -> Result<()> {
+        self.move_xy_with_api(CommandApi::Mak, x, y)
+    }
+
+    pub fn move_xy_with_api(&self, api: CommandApi, x: i32, y: i32) -> Result<()> {
         timed!("move_xy", {
             movement_range_check(x)?;
             movement_range_check(y)?;
-            let mut payload = [0u8; 4];
-            payload[..2].copy_from_slice(&(x as i16).to_le_bytes());
-            payload[2..].copy_from_slice(&(y as i16).to_le_bytes());
-            self.write_api(ApiOpcode::Move, &payload)
+            let encoded = encode_input_command(
+                api,
+                InputCommand::MouseMove {
+                    x: x as i16,
+                    y: y as i16,
+                },
+            );
+            self.write_framed(encoded.command, &encoded.payload)
         })
     }
 
@@ -115,13 +124,21 @@ impl AsyncDevice {
     }
 
     pub async fn move_xy(&self, x: i32, y: i32) -> Result<()> {
+        self.move_xy_with_api(CommandApi::Mak, x, y).await
+    }
+
+    pub async fn move_xy_with_api(&self, api: CommandApi, x: i32, y: i32) -> Result<()> {
         timed!("move_xy", {
             movement_range_check(x)?;
             movement_range_check(y)?;
-            let mut payload = Vec::with_capacity(4);
-            payload.extend_from_slice(&(x as i16).to_le_bytes());
-            payload.extend_from_slice(&(y as i16).to_le_bytes());
-            self.write_api(ApiOpcode::Move, &payload).await
+            let encoded = encode_input_command(
+                api,
+                InputCommand::MouseMove {
+                    x: x as i16,
+                    y: y as i16,
+                },
+            );
+            self.write_framed(encoded.command, &encoded.payload).await
         })
     }
 
