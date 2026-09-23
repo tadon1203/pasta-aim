@@ -27,7 +27,6 @@ pub struct Detection {
 
 pub struct InferenceResult {
     pub detection: Option<Detection>,
-    pub preprocess_ms: f64,
     pub inference_ms: f64,
     pub postprocess_ms: f64,
 }
@@ -39,7 +38,6 @@ pub struct Detector {
     input_shape: [usize; 4],
     directml_device: DirectMlDevice,
     ep_assignment: EpAssignmentState,
-    input: Vec<f32>,
 }
 
 impl Detector {
@@ -103,11 +101,9 @@ impl Detector {
 
         let input_height = dims[2] as usize;
         let input_width = dims[3] as usize;
-        let pixel_count = input_width
+        input_width
             .checked_mul(input_height)
-            .context("model dimensions overflowed")?;
-        let input_element_count = pixel_count
-            .checked_mul(3)
+            .and_then(|pixels| pixels.checked_mul(3))
             .context("model input dimensions overflowed")?;
         tracing::info!(
             width = input_width,
@@ -121,7 +117,6 @@ impl Detector {
             input_shape: [1, 3, input_height, input_width],
             directml_device,
             ep_assignment,
-            input: vec![0.0; input_element_count],
         })
     }
 
@@ -137,20 +132,21 @@ impl Detector {
         &self.ep_assignment
     }
 
-    pub fn infer_bgra(&mut self, bgra: &[u8], row_pitch: usize) -> Result<InferenceResult> {
-        let preprocess_started = Instant::now();
-        preprocess_bgra_rows(
-            bgra,
-            row_pitch,
-            self.input_width,
-            self.input_height,
-            &mut self.input,
-        )?;
-        let preprocess_ms = preprocess_started.elapsed().as_secs_f64() * 1000.0;
+    pub(crate) fn infer_preprocessed(&mut self, input: &[f32]) -> Result<InferenceResult> {
+        let expected = 3usize
+            .checked_mul(self.input_width)
+            .and_then(|value| value.checked_mul(self.input_height))
+            .context("model input dimensions overflowed")?;
+        if input.len() != expected {
+            bail!(
+                "NCHW input length mismatch: expected {expected}, got {}",
+                input.len()
+            );
+        }
 
-        let input = TensorRef::from_array_view((self.input_shape, self.input.as_slice()))?;
+        let input = TensorRef::from_array_view((self.input_shape, input))?;
 
-        let inference_started = Instant::now();
+        let inference_started = std::time::Instant::now();
         let outputs = self.session.run(ort::inputs![input])?;
         let inference_ms = inference_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -180,14 +176,13 @@ impl Detector {
         let postprocess_ms = postprocess_started.elapsed().as_secs_f64() * 1000.0;
         Ok(InferenceResult {
             detection,
-            preprocess_ms,
             inference_ms,
             postprocess_ms,
         })
     }
 }
 
-fn preprocess_bgra_rows(
+pub(crate) fn preprocess_bgra_into(
     bgra: &[u8],
     row_pitch: usize,
     width: usize,
@@ -297,7 +292,7 @@ mod tests {
             90, 255, 100, 110, 120, 255, 208, 209, 210, 211, 212, 213, 214, 215,
         ];
         let mut output = [0.0_f32; 12];
-        preprocess_bgra_rows(&bgra, 16, 2, 2, &mut output).unwrap();
+        preprocess_bgra_into(&bgra, 16, 2, 2, &mut output).unwrap();
 
         let scale = 1.0 / 255.0;
         assert_eq!(

@@ -1,14 +1,12 @@
 use std::{
     path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        mpsc::{Receiver, RecvTimeoutError, Sender},
-    },
+    sync::{Arc, Mutex, mpsc::Sender},
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use crossbeam_channel::{Receiver, select};
 use eframe::egui;
 
 use super::status::{RunReadiness, run_block_reason};
@@ -18,15 +16,19 @@ use super::{
 };
 use crate::{
     config::Config,
-    detector::Detector,
-    graphics::{CapturePoll, DxgiCapture, GraphicsThread, MappedCaptureFrame},
+    engine::{
+        RunGeneration,
+        capture_worker::{CaptureEvent, CaptureFault, CaptureWorker},
+        inference_worker::{InferenceEvent, InferenceFrameResult, InferenceWorker},
+    },
+    graphics::GraphicsThread,
     mak::{MakClient, MakConnectionEvent, MakMetadata, MakRoutes, PhysicalControllerStatus},
     metrics::{Metrics, StageTimings},
     models,
     settings::{DirectMlDevice, FpsLimit, OutputMode, Sensitivity},
+    timing::QpcClock,
 };
 
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PHYSICAL_CONTROLLER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CONTROLLER_ONE_SHOT_PULSE: Duration = Duration::from_millis(16);
 const CONTINUOUS_LOG_INTERVAL: Duration = Duration::from_secs(1);
@@ -42,9 +44,10 @@ struct Worker {
     event_tx: Sender<EngineEvent>,
     status: Arc<Mutex<EngineStatus>>,
     ui_ctx: egui::Context,
-    detector: Option<Detector>,
     active_model: Option<(String, PathBuf)>,
-    capture: Option<DxgiCapture>,
+    capture_worker: CaptureWorker,
+    inference_worker: InferenceWorker,
+    model_ready: bool,
     capture_adapter: u32,
     capture_output: u32,
     directml_device: DirectMlDevice,
@@ -54,8 +57,11 @@ struct Worker {
     fps_limit: FpsLimit,
     output_mode: OutputMode,
     continuous: bool,
+    run_generation: RunGeneration,
+    active_generation: Option<RunGeneration>,
+    last_motion_complete_qpc: Option<i64>,
+    qpc: QpcClock,
     last_physical_probe: Instant,
-    next_frame_due: Option<Instant>,
     log_summary_started: Instant,
     log_summary_frames: usize,
     log_summary_detections: usize,
@@ -91,13 +97,40 @@ pub(super) fn run_worker(
         }
     };
 
+    let qpc = match QpcClock::new() {
+        Ok(qpc) => qpc,
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "QPC initialization failed");
+            return;
+        }
+    };
+    let (capture_worker, frame_consumer) = match CaptureWorker::spawn(qpc).and_then(
+        |(worker, consumer)| {
+            worker.set_fps_limit(config.fps_limit)?;
+            Ok((worker, consumer))
+        },
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "capture worker initialization failed");
+            return;
+        }
+    };
+    let inference_worker = match InferenceWorker::spawn(qpc, frame_consumer) {
+        Ok(worker) => worker,
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "inference worker initialization failed");
+            return;
+        }
+    };
     let mut worker = Worker {
         event_tx,
         status,
         ui_ctx,
-        detector: None,
         active_model: None,
-        capture: None,
+        capture_worker,
+        inference_worker,
+        model_ready: false,
         capture_adapter: config.capture_adapter,
         capture_output: config.capture_output,
         directml_device: config.directml_device,
@@ -107,8 +140,11 @@ pub(super) fn run_worker(
         fps_limit: config.fps_limit,
         output_mode: config.output_mode,
         continuous: false,
+        run_generation: 0,
+        active_generation: None,
+        last_motion_complete_qpc: None,
+        qpc,
         last_physical_probe: Instant::now() - PHYSICAL_CONTROLLER_POLL_INTERVAL,
-        next_frame_due: None,
         log_summary_started: Instant::now(),
         log_summary_frames: 0,
         log_summary_detections: 0,
@@ -136,62 +172,24 @@ pub(super) fn run_worker(
         if !worker.continuous {
             worker.maybe_probe_physical_controller();
         }
-
-        if worker.continuous {
-            while let Ok(command) = rx.try_recv() {
-                if !worker.handle_command(command) {
-                    return;
-                }
-            }
-            if !worker.continuous {
-                continue;
-            }
-
-            if let Err(error) = worker.process_frame(false) {
-                worker.stop_after_run_error(format!("Inference failed: {error:#}"));
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-
-            if !wait_for_frame_deadline(&rx, &mut worker) {
+        while let Ok(command) = rx.try_recv() {
+            if !worker.handle_command(command) {
                 return;
             }
-        } else {
-            match rx.recv_timeout(IDLE_POLL_INTERVAL) {
-                Ok(command) => {
-                    if !worker.handle_command(command) {
-                        return;
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
+        }
+        select! {
+            recv(rx) -> command => match command {
+                Ok(command) => if !worker.handle_command(command) { return; },
+                Err(_) => return,
+            },
+            recv(worker.inference_worker.event_rx()) -> event => {
+                if let Ok(event) = event { worker.handle_inference_event(event); }
+            },
+            recv(worker.capture_worker.event_rx()) -> event => {
+                if let Ok(event) = event { worker.handle_capture_event(event); }
+            },
         }
     }
-}
-
-fn wait_for_frame_deadline(rx: &Receiver<Command>, worker: &mut Worker) -> bool {
-    while worker.continuous {
-        let Some(deadline) = worker.next_frame_due else {
-            break;
-        };
-        let wake_at = deadline;
-        let now = Instant::now();
-        if now >= wake_at {
-            break;
-        }
-
-        match rx.recv_timeout(wake_at.saturating_duration_since(now)) {
-            Ok(command) => {
-                if !worker.handle_command(command) {
-                    return false;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => break,
-            Err(RecvTimeoutError::Disconnected) => return false,
-        }
-    }
-    true
 }
 
 impl Worker {
@@ -202,7 +200,11 @@ impl Worker {
             Command::SetSensitivity(value) => self.sensitivity = value,
             Command::SetFpsLimit(value) => {
                 self.fps_limit = value;
-                self.next_frame_due = None;
+                if let Err(error) = self.capture_worker.set_fps_limit(value) {
+                    self.edit_status(|status| {
+                        status.run.error = Some(format!("Failed to set FPS limit: {error:#}"))
+                    });
+                }
             }
             Command::SetOutput(mode) => {
                 self.stop_continuous();
@@ -277,30 +279,17 @@ impl Worker {
             output = self.capture_output,
             "initializing selected capture"
         );
-        let Some(graphics) = self.graphics.as_ref() else {
-            self.capture = None;
-            self.edit_status(|status| {
-                status.capture.phase = CapturePhase::Failed;
-                status.capture.selected = None;
-                if status.capture.error.is_none() {
-                    status.capture.error =
-                        Some("Graphics thread COM initialization is unavailable".to_owned());
-                }
-            });
-            return;
-        };
-
         self.edit_status(|status| {
             status.capture.phase = CapturePhase::Initializing;
             status.capture.error = None;
             status.capture.desktop_size = None;
         });
 
-        match graphics.create_capture(self.capture_adapter, self.capture_output) {
-            Ok(capture) => {
-                let selected = capture.info().clone();
-                self.capture = Some(capture);
-                self.next_frame_due = None;
+        match self
+            .capture_worker
+            .configure_output(self.capture_adapter, self.capture_output)
+        {
+            Ok(selected) => {
                 self.edit_status(|status| {
                     status.capture.phase = CapturePhase::Ready;
                     status.capture.selected = Some(selected);
@@ -310,7 +299,6 @@ impl Worker {
             }
             Err(error) => {
                 tracing::error!(error = %format!("{error:#}"), "selected capture initialization failed");
-                self.capture = None;
                 self.edit_status(|status| {
                     status.capture.phase = CapturePhase::Failed;
                     status.capture.selected = None;
@@ -323,21 +311,8 @@ impl Worker {
     fn set_capture_selection(&mut self, adapter: u32, output: u32) {
         tracing::info!(adapter, output, "changing capture selection");
         self.stop_continuous();
-        let Some(graphics) = self.graphics.as_ref() else {
-            let error = "Graphics thread COM initialization is unavailable".to_owned();
-            self.initialize_capture();
-            self.emit_event(EngineEvent::Capture {
-                adapter,
-                output,
-                result: Err(error),
-            });
-            return;
-        };
-        match graphics.create_capture(adapter, output) {
-            Ok(capture) => {
-                let selected = capture.info().clone();
-                self.capture = Some(capture);
-                self.next_frame_due = None;
+        match self.capture_worker.configure_output(adapter, output) {
+            Ok(selected) => {
                 self.capture_adapter = adapter;
                 self.capture_output = output;
                 self.metrics.mark_cold_next();
@@ -357,7 +332,11 @@ impl Worker {
             }
             Err(error) => {
                 let message = format!("Display change failed: {error:#}");
-                let has_active = self.capture.is_some();
+                let has_active = self
+                    .status
+                    .lock()
+                    .map(|status| status.capture.selected.is_some())
+                    .unwrap_or(false);
                 self.edit_status(|status| {
                     status.capture.phase = if has_active {
                         CapturePhase::Ready
@@ -388,13 +367,22 @@ impl Worker {
             status.run.error = None;
         });
 
-        match Detector::load(&path, self.directml_device) {
-            Ok(detector) => {
-                let size = detector.input_size();
-                let device = detector.directml_device();
-                let assignment = detector.ep_assignment().clone();
+        let was_model_ready = self.model_ready;
+        self.model_ready = false;
+        match self
+            .inference_worker
+            .load_model(path.clone(), self.directml_device)
+            .and_then(|loaded| {
+                self.capture_worker
+                    .configure_input(loaded.input_size.0, loaded.input_size.1)
+                    .map(|()| loaded)
+            }) {
+            Ok(loaded) => {
+                let size = loaded.input_size;
+                let device = loaded.directml_device;
+                let assignment = loaded.ep_assignment;
                 let assignment_summary = ep_assignment_summary(&assignment);
-                self.detector = Some(detector);
+                self.model_ready = true;
                 self.active_model = Some((name.clone(), path));
                 self.metrics.mark_cold_next();
                 self.edit_status(|status| {
@@ -418,7 +406,8 @@ impl Worker {
             Err(error) => {
                 let message = format!("{error:#}");
                 tracing::error!(model = %name, %message, "model load failed");
-                let has_active_model = self.detector.is_some();
+                let has_active_model = was_model_ready;
+                self.model_ready = was_model_ready;
                 self.edit_status(|status| {
                     status.model.phase = if has_active_model {
                         ModelPhase::Ready
@@ -467,12 +456,21 @@ impl Worker {
             status.model.loading_name = Some(name.clone());
             status.model.error = None;
         });
-        match Detector::load(&path, requested) {
-            Ok(detector) => {
-                let size = detector.input_size();
-                let assignment = detector.ep_assignment().clone();
+        let was_model_ready = self.model_ready;
+        self.model_ready = false;
+        match self
+            .inference_worker
+            .load_model(path, requested)
+            .and_then(|loaded| {
+                self.capture_worker
+                    .configure_input(loaded.input_size.0, loaded.input_size.1)
+                    .map(|()| loaded)
+            }) {
+            Ok(loaded) => {
+                let size = loaded.input_size;
+                let assignment = loaded.ep_assignment;
                 let assignment_summary = ep_assignment_summary(&assignment);
-                self.detector = Some(detector);
+                self.model_ready = true;
                 self.directml_device = requested;
                 self.metrics.mark_cold_next();
                 self.edit_status(|status| {
@@ -492,8 +490,13 @@ impl Worker {
             Err(error) => {
                 let message = format!("DirectML device change failed: {error:#}");
                 tracing::error!(?requested, %message, "DirectML device change failed");
+                self.model_ready = was_model_ready;
                 self.edit_status(|status| {
-                    status.model.phase = ModelPhase::Ready;
+                    status.model.phase = if was_model_ready {
+                        ModelPhase::Ready
+                    } else {
+                        ModelPhase::Empty
+                    };
                     status.model.loading_name = None;
                     status.model.error = Some(message.clone());
                 });
@@ -655,8 +658,23 @@ impl Worker {
             return;
         }
 
+        let generation = self.next_generation();
+        self.last_motion_complete_qpc = None;
+        if let Err(error) = self
+            .capture_worker
+            .start_continuous(generation)
+            .and_then(|()| self.inference_worker.start(generation))
+        {
+            let _ = self.capture_worker.stop();
+            let _ = self.inference_worker.stop(generation);
+            self.active_generation = None;
+            self.edit_status(|status| {
+                status.run.error = Some(format!("Failed to start inference: {error:#}"))
+            });
+            return;
+        }
+        self.active_generation = Some(generation);
         self.continuous = true;
-        self.next_frame_due = None;
         self.reset_log_summary();
         tracing::info!(
             fps_limit = self.fps_limit.value(),
@@ -682,34 +700,43 @@ impl Worker {
             return;
         }
 
+        let generation = self.next_generation();
+        self.last_motion_complete_qpc = None;
         self.edit_status(|status| {
             status.run.phase = RunPhase::OneShot;
             status.run.error = None;
         });
-        if let Err(error) = self.process_frame(true) {
-            tracing::error!(error = %format!("{error:#}"), "single inference failed");
+        if let Err(error) = self
+            .capture_worker
+            .capture_once(generation)
+            .and_then(|()| self.inference_worker.start(generation))
+        {
+            self.active_generation = None;
+            let _ = self.capture_worker.stop();
+            let _ = self.inference_worker.stop(generation);
+            tracing::error!(error = %format!("{error:#}"), "single inference failed to start");
             self.mak.release_controller_best_effort();
-            self.sync_release_pending_status();
             self.edit_status(|status| {
                 status.run.phase = RunPhase::Idle;
                 status.run.error = Some(format!("Single inference failed: {error:#}"));
             });
         } else {
-            tracing::info!("single inference completed");
-            self.edit_status(|status| status.run.phase = RunPhase::Idle);
+            self.active_generation = Some(generation);
         }
     }
 
     fn stop_continuous(&mut self) {
-        if self.continuous {
-            tracing::info!("continuous inference stopped");
-            self.continuous = false;
+        let old_generation = self.active_generation.take();
+        self.continuous = false;
+        if let Some(generation) = old_generation {
+            tracing::info!(generation, "inference stopped");
             self.mak.release_controller_best_effort();
+            let _ = self.inference_worker.stop(generation);
+            let _ = self.capture_worker.stop();
         }
-        self.next_frame_due = None;
         let pending = self.mak.controller_release_pending();
         self.edit_status(|status| {
-            if status.run.phase == RunPhase::Continuous {
+            if status.run.phase != RunPhase::Idle {
                 status.run.phase = RunPhase::Idle;
             }
             status.mak.controller_release_pending = pending;
@@ -718,8 +745,12 @@ impl Worker {
 
     fn stop_after_run_error(&mut self, error: String) {
         tracing::error!(%error, "continuous inference stopped after error");
+        let generation = self.active_generation.take();
         self.continuous = false;
-        self.next_frame_due = None;
+        if let Some(generation) = generation {
+            let _ = self.inference_worker.stop(generation);
+            let _ = self.capture_worker.stop();
+        }
         self.mak.release_controller_best_effort();
         let pending = self.mak.controller_release_pending();
         self.edit_status(|status| {
@@ -736,8 +767,12 @@ impl Worker {
     fn run_block_reason(&self) -> Option<String> {
         run_block_reason(
             RunReadiness {
-                model_ready: self.detector.is_some(),
-                capture_ready: self.capture.is_some(),
+                model_ready: self.model_ready,
+                capture_ready: self
+                    .status
+                    .lock()
+                    .map(|status| status.capture.phase == CapturePhase::Ready)
+                    .unwrap_or(false),
                 mak_connected: self.mak.is_connected(),
                 mouse_route: self.mak.mouse_available(),
                 controller_route: self.mak.controller_available(),
@@ -747,113 +782,115 @@ impl Worker {
         .map(str::to_owned)
     }
 
-    fn process_frame(&mut self, one_shot: bool) -> Result<()> {
-        if let Some(reason) = self.run_block_reason() {
-            return Err(anyhow!(reason));
+    fn next_generation(&mut self) -> RunGeneration {
+        self.run_generation = self.run_generation.wrapping_add(1);
+        if self.run_generation == 0 {
+            self.run_generation = 1;
         }
+        self.run_generation
+    }
 
-        let detector = self
-            .detector
-            .as_mut()
-            .ok_or_else(|| anyhow!("no model loaded"))?;
-        let (input_width, input_height) = detector.input_size();
-        let capture = self
-            .capture
-            .as_mut()
-            .ok_or_else(|| anyhow!("DXGI capture is not initialized"))?;
+    fn handle_capture_fault(&mut self, fault: CaptureFault) {
+        if let Some(generation) = fault.generation
+            && self.active_generation != Some(generation)
+        {
+            tracing::debug!(generation, "discarding stale capture fault");
+            return;
+        }
+        self.stop_after_run_error(format!("Capture failed: {}", fault.error));
+    }
 
-        let scheduled_due = if one_shot { None } else { self.next_frame_due };
-        let frame: MappedCaptureFrame<'_> =
-            match capture.try_capture_center(input_width, input_height)? {
-                CapturePoll::Fresh(frame) => frame,
-                CapturePoll::NoDesktopUpdate => {
-                    if !one_shot {
-                        self.next_frame_due = Some(next_frame_deadline(
-                            scheduled_due,
-                            Instant::now(),
-                            self.fps_limit.frame_interval(),
-                        ));
-                    }
-                    return Ok(());
+    fn handle_capture_event(&mut self, event: CaptureEvent) {
+        match event {
+            CaptureEvent::Fault(fault) => self.handle_capture_fault(fault),
+            CaptureEvent::Stats(value) => self.metrics.update_capture_source(value),
+            CaptureEvent::GpuCopy(sample) => {
+                let _present_qpc = sample.present_qpc;
+                self.metrics.record_gpu_copy(sample.gpu_copy_ms);
+            }
+        }
+        if let Some(performance) = self.metrics.snapshot_if_due(false) {
+            self.edit_status(|status| status.performance = performance);
+        }
+    }
+
+    fn handle_inference_event(&mut self, event: InferenceEvent) {
+        match event {
+            InferenceEvent::Completed(result) => {
+                if let Err(error) = self.handle_completed_inference(result) {
+                    self.stop_after_run_error(format!("Inference output failed: {error:#}"));
                 }
-            };
-        let acquired_at = frame.acquired_at();
-        let frame_wait_ms = frame.frame_wait_ms();
-        let capture_ms = frame.capture_ms();
-        let desktop_size = frame.desktop_size();
-        let present_qpc = frame.present_qpc();
-        let accumulated_frames = frame.accumulated_frames();
-        if !one_shot {
-            self.next_frame_due = Some(next_frame_deadline(
-                scheduled_due,
-                acquired_at,
-                self.fps_limit.frame_interval(),
-            ));
+            }
+            InferenceEvent::Failed { generation, error } => {
+                if self.active_generation == Some(generation) {
+                    self.stop_after_run_error(error);
+                }
+            }
         }
-        let inference = detector.infer_bgra(frame.bytes(), frame.row_pitch())?;
-        drop(frame);
-        let gain = self.sensitivity.gain();
+    }
 
-        let (mak_write_ms, last_target, last_command, pulse_controller) =
-            if let Some(detection) = inference.detection {
-                let dx = detection.center_x - input_width as f32 * 0.5;
-                let dy = detection.center_y - input_height as f32 * 0.5;
-                let command_x = quantize(dx * gain);
-                let command_y = quantize(dy * gain);
-
-                let output_started = Instant::now();
-                let pulse_controller = if command_x == 0 && command_y == 0 {
-                    self.mak.release_controller()?;
-                    false
-                } else {
-                    let command = match self.output_mode {
-                        OutputMode::Mouse => OutputCommand::MouseMove {
-                            x: command_x,
-                            y: command_y,
-                        },
-                        OutputMode::Controller => OutputCommand::ControllerState {
-                            x: command_x,
-                            y: command_y,
-                        },
-                    };
-                    self.write_output(command)?;
-                    one_shot && self.output_mode == OutputMode::Controller
-                };
-                let mak_write_ms = output_started.elapsed().as_secs_f64() * 1000.0;
-
-                (
-                    mak_write_ms,
-                    Some((dx, dy, detection.confidence, detection.class_id)),
-                    Some((command_x, command_y, self.output_mode)),
-                    pulse_controller,
-                )
-            } else {
-                let output_started = Instant::now();
-                self.mak.release_controller()?;
-                (
-                    output_started.elapsed().as_secs_f64() * 1000.0,
-                    None,
-                    None,
-                    false,
-                )
-            };
-
-        let total_ms = capture_ms
-            + inference.preprocess_ms
-            + inference.inference_ms
-            + inference.postprocess_ms
-            + mak_write_ms;
+    fn handle_completed_inference(&mut self, result: InferenceFrameResult) -> Result<()> {
+        if !is_active_generation(self.active_generation, result.metadata.generation) {
+            tracing::debug!(
+                generation = result.metadata.generation,
+                "discarding old-generation inference result"
+            );
+            return Ok(());
+        }
+        if is_causally_stale(self.last_motion_complete_qpc, result.metadata.present_qpc) {
+            self.metrics.record_causal_discard();
+            tracing::debug!(
+                present_qpc = result.metadata.present_qpc,
+                last_motion_complete_qpc = ?self.last_motion_complete_qpc,
+                "discarding causally stale inference result"
+            );
+            if !self.continuous {
+                let generation = result.metadata.generation;
+                self.active_generation = None;
+                let _ = self.inference_worker.stop(generation);
+                let _ = self.capture_worker.stop();
+                self.edit_status(|status| {
+                    status.run.phase = RunPhase::Idle;
+                    status.performance = self.metrics.snapshot();
+                });
+            }
+            return Ok(());
+        }
+        let one_shot = !self.continuous;
+        if !one_shot && !self.continuous {
+            return Ok(());
+        }
+        let output_started_qpc = self.qpc.now();
+        let (last_target, last_command, pulse_controller) =
+            self.write_detection_output(&result, one_shot)?;
+        let output_complete_qpc = self.qpc.now();
+        let mak_write_ms = self.qpc.elapsed_ms(output_started_qpc, output_complete_qpc);
+        let inference_span_ms = self
+            .qpc
+            .elapsed_ms(result.inference_start_qpc, result.inference_end_qpc);
+        let total_ms = self
+            .qpc
+            .elapsed_ms(result.metadata.present_qpc, output_complete_qpc);
         let timings = StageTimings {
-            frame_wait_ms,
-            capture_ms,
-            preprocess_ms: inference.preprocess_ms,
-            inference_ms: inference.inference_ms,
-            postprocess_ms: inference.postprocess_ms,
+            acquire_wait_ms: result.metadata.acquire_wait_ms,
+            capture_ms: result.metadata.capture_ms,
+            copy_submit_ms: result.metadata.copy_submit_ms,
+            map_wait_ms: result.metadata.map_wait_ms,
+            preprocess_ms: result.metadata.preprocess_ms,
+            queue_age_ms: self
+                .qpc
+                .elapsed_ms(result.metadata.ready_qpc, result.inference_start_qpc),
+            inference_ms: result.inference_ms,
+            postprocess_ms: result.postprocess_ms,
             mak_write_ms,
             total_ms,
         };
-        self.metrics.record(acquired_at, timings);
-        if inference.detection.is_some() {
+        self.metrics
+            .record_qpc(self.qpc, result.inference_start_qpc, timings);
+        if last_command.is_some() {
+            self.last_motion_complete_qpc = Some(output_complete_qpc);
+        }
+        if result.detection.is_some() {
             self.log_summary_detections += 1;
         }
         self.log_summary_outputs += 1;
@@ -864,50 +901,101 @@ impl Worker {
         let performance = self.metrics.snapshot_if_due(one_shot);
         let physical = self.mak.physical_controller_status();
         let release_pending = self.mak.controller_release_pending();
-
-        if one_shot || performance.is_some() {
-            self.edit_status(|status| {
-                status.capture.desktop_size = Some(desktop_size);
-                status.run.last_target = last_target;
-                status.run.last_command = last_command;
-                status.run.last_total_ms = Some(total_ms);
-                status.run.error = None;
-                status.mak.physical_controller = physical;
-                status.mak.controller_release_pending = release_pending;
-                if let Some(performance) = performance {
-                    status.performance = performance;
-                }
-            });
-        }
-
+        self.edit_status(|status| {
+            status.capture.desktop_size = Some(result.metadata.desktop_size);
+            status.run.last_target = last_target;
+            status.run.last_command = last_command;
+            status.run.last_total_ms = Some(total_ms);
+            status.run.error = None;
+            status.mak.physical_controller = physical;
+            status.mak.controller_release_pending = release_pending;
+            if let Some(performance) = performance {
+                status.performance = performance;
+            }
+        });
         if crate::logging::frame_trace_enabled() {
             tracing::trace!(
-                one_shot,
-                frame_wait_ms,
-                capture_ms,
-                present_qpc,
-                accumulated_frames,
-                inference_ms = inference.inference_ms,
+                acquire_wait_ms = result.metadata.acquire_wait_ms,
+                capture_ms = result.metadata.capture_ms,
+                preprocess_ms = result.metadata.preprocess_ms,
+                queue_age_ms = timings.queue_age_ms,
+                present_qpc = result.metadata.present_qpc,
+                accumulated_frames = result.metadata.accumulated_frames,
+                inference_ms = result.inference_ms,
+                inference_span_ms,
                 mak_write_ms,
+                total_ms,
                 target = ?last_target,
                 command = ?last_command,
                 "frame pipeline completed"
             );
         }
-
         if pulse_controller {
             thread::sleep(CONTROLLER_ONE_SHOT_PULSE);
             self.mak.release_controller()?;
             self.sync_release_pending_status();
         }
-
         if one_shot {
-            tracing::debug!(target = ?last_target, command = ?last_command, total_ms, "single inference result");
+            self.active_generation = None;
+            let generation = result.metadata.generation;
+            let _ = self.inference_worker.stop(generation);
+            let _ = self.capture_worker.stop();
+            self.edit_status(|status| status.run.phase = RunPhase::Idle);
         } else {
             self.log_continuous_summary_if_due();
         }
-
         Ok(())
+    }
+
+    fn write_detection_output(
+        &mut self,
+        result: &InferenceFrameResult,
+        one_shot: bool,
+    ) -> Result<(
+        Option<(f32, f32, f32, i32)>,
+        Option<(i32, i32, OutputMode)>,
+        bool,
+    )> {
+        let Some(detection) = result.detection else {
+            self.mak.release_controller()?;
+            return Ok((None, None, false));
+        };
+        if !is_active_generation(self.active_generation, result.metadata.generation) {
+            return Ok((None, None, false));
+        }
+        let (width, height) = self
+            .status
+            .lock()
+            .map(|status| status.model.input_size.unwrap_or((0, 0)))
+            .unwrap_or((0, 0));
+        let dx = detection.center_x - width as f32 * 0.5;
+        let dy = detection.center_y - height as f32 * 0.5;
+        let command_x = quantize(dx * self.sensitivity.gain());
+        let command_y = quantize(dy * self.sensitivity.gain());
+        if command_x == 0 && command_y == 0 {
+            self.mak.release_controller()?;
+            return Ok((
+                Some((dx, dy, detection.confidence, detection.class_id)),
+                None,
+                false,
+            ));
+        }
+        let command = match self.output_mode {
+            OutputMode::Mouse => OutputCommand::MouseMove {
+                x: command_x,
+                y: command_y,
+            },
+            OutputMode::Controller => OutputCommand::ControllerState {
+                x: command_x,
+                y: command_y,
+            },
+        };
+        self.write_output(command)?;
+        Ok((
+            Some((dx, dy, detection.confidence, detection.class_id)),
+            Some((command_x, command_y, self.output_mode)),
+            one_shot && self.output_mode == OutputMode::Controller,
+        ))
     }
 
     fn write_output(&mut self, command: OutputCommand) -> Result<()> {
@@ -964,22 +1052,16 @@ impl Worker {
     }
 }
 
-fn next_frame_deadline(
-    scheduled_due: Option<Instant>,
-    acquired_at: Instant,
-    interval: Duration,
-) -> Instant {
-    let mut next = scheduled_due
-        .map(|deadline| deadline + interval)
-        .unwrap_or(acquired_at + interval);
-    while next <= acquired_at {
-        next += interval;
-    }
-    next
-}
-
 fn quantize(value: f32) -> i32 {
     value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i32
+}
+
+fn is_active_generation(active: Option<RunGeneration>, result: RunGeneration) -> bool {
+    active == Some(result)
+}
+
+fn is_causally_stale(last_motion_complete_qpc: Option<i64>, present_qpc: i64) -> bool {
+    last_motion_complete_qpc.is_some_and(|last| present_qpc <= last)
 }
 
 #[cfg(test)]
@@ -995,18 +1077,17 @@ mod tests {
     }
 
     #[test]
-    fn frame_deadline_keeps_a_stable_cadence_after_a_late_frame() {
-        let base = Instant::now();
-        let interval = Duration::from_millis(10);
+    fn stale_generation_is_rejected() {
+        assert!(is_active_generation(Some(7), 7));
+        assert!(!is_active_generation(Some(7), 6));
+        assert!(!is_active_generation(None, 7));
+    }
 
-        assert_eq!(next_frame_deadline(None, base, interval), base + interval);
-        assert_eq!(
-            next_frame_deadline(
-                Some(base + interval),
-                base + Duration::from_millis(25),
-                interval
-            ),
-            base + Duration::from_millis(30),
-        );
+    #[test]
+    fn causal_gate_rejects_equal_and_older_present_times() {
+        assert!(!is_causally_stale(None, 10));
+        assert!(is_causally_stale(Some(10), 9));
+        assert!(is_causally_stale(Some(10), 10));
+        assert!(!is_causally_stale(Some(10), 11));
     }
 }

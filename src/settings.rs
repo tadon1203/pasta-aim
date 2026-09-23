@@ -95,10 +95,6 @@ impl FpsLimit {
         self.0
     }
 
-    pub fn frame_interval(self) -> std::time::Duration {
-        std::time::Duration::from_secs_f64(1.0 / f64::from(self.0))
-    }
-
     pub(crate) fn is_valid(self) -> bool {
         (Self::MIN..=Self::MAX).contains(&self.0)
     }
@@ -136,9 +132,5 @@ mod tests {
         assert_eq!(FpsLimit::new(0).value(), FpsLimit::MIN);
         assert_eq!(FpsLimit::default().value(), 240);
         assert_eq!(FpsLimit::new(2_000).value(), FpsLimit::MAX);
-        assert_eq!(
-            FpsLimit::new(100).frame_interval(),
-            std::time::Duration::from_millis(10)
-        );
     }
 }

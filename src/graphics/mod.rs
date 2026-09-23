@@ -1,7 +1,7 @@
 mod capture;
 
 pub use capture::DxgiCapture;
-pub(crate) use capture::{CapturePoll, MappedCaptureFrame};
+pub(crate) use capture::{CapturePoll, GpuCopySample, NoDesktopUpdateReason};
 
 use std::{marker::PhantomData, rc::Rc};
 

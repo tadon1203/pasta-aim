@@ -1,5 +1,9 @@
+mod capture_worker;
+mod inference_worker;
 mod status;
 mod worker;
+
+pub(super) type RunGeneration = u64;
 
 pub use status::{
     CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
@@ -12,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver},
     },
     thread::{self, JoinHandle},
 };
@@ -23,6 +27,7 @@ use crate::{
     config::Config,
     settings::{DirectMlDevice, FpsLimit, OutputMode, Sensitivity},
 };
+use crossbeam_channel as crossbeam;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -68,7 +73,7 @@ pub(super) enum Command {
 
 #[derive(Clone)]
 pub struct EngineControl {
-    tx: Sender<Command>,
+    tx: crossbeam::Sender<Command>,
 }
 
 impl EngineControl {
@@ -82,7 +87,7 @@ impl EngineControl {
 }
 
 pub struct Engine {
-    tx: Sender<Command>,
+    tx: crossbeam::Sender<Command>,
     events: Receiver<EngineEvent>,
     status: Arc<Mutex<EngineStatus>>,
     join: Option<JoinHandle<()>>,
@@ -91,7 +96,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(config: &Config, ui_ctx: egui::Context) -> Self {
         tracing::info!("spawning engine worker");
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crossbeam::unbounded();
         let (event_tx, events) = mpsc::channel();
         let status = Arc::new(Mutex::new(EngineStatus::default()));
         let worker_status = Arc::clone(&status);

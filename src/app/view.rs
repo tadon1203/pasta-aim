@@ -684,7 +684,7 @@ impl App {
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\nrequested EP: DirectML · {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\ncontroller release pending: {}\nphysical controller: {}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nframe wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\nrequested EP: DirectML · {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\ncontroller release pending: {}\nphysical controller: {}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/admitted FPS: {:.1}/{:.1}\nadmission drop: {:.1}%\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nmap wait p50/p95: {:.2}/{:.2} ms\npreprocess p50/p95: {:.2}/{:.2} ms\nqueue age p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\ncausal discards: {}\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             self.directml_device_label(status.model.directml_device, status),
             ep_assignment_copy_text(status),
@@ -702,15 +702,29 @@ impl App {
             keyboard_release.samples,
             keyboard_release.assist_active,
             self.config.fps_limit.value(),
+            status.performance.capture_source.fresh_fps,
+            status.performance.capture_source.admitted_fps,
+            status.performance.capture_source.admission_drop_ratio * 100.0,
             status.performance.sample_count,
             status.performance.total.p50_ms,
             status.performance.total.p95_ms,
-            status.performance.frame_wait.p50_ms,
-            status.performance.frame_wait.p95_ms,
+            status.performance.acquire_wait.p50_ms,
+            status.performance.acquire_wait.p95_ms,
             status.performance.capture.p50_ms,
             status.performance.capture.p95_ms,
+            status.performance.copy_submit.p50_ms,
+            status.performance.copy_submit.p95_ms,
+            status.performance.gpu_copy.p50_ms,
+            status.performance.gpu_copy.p95_ms,
+            status.performance.map_wait.p50_ms,
+            status.performance.map_wait.p95_ms,
+            status.performance.preprocess.p50_ms,
+            status.performance.preprocess.p95_ms,
+            status.performance.queue_age.p50_ms,
+            status.performance.queue_age.p95_ms,
             status.performance.inference.p50_ms,
             status.performance.inference.p95_ms,
+            status.performance.causal_discards,
         )
     }
 
@@ -1001,6 +1015,19 @@ fn bindings_summary(config: &Config, action: HotkeyAction) -> String {
 }
 
 fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
+    ui.label(format!(
+        "Fresh FPS {:.1} · Admitted FPS {:.1} · FPS admission drop {:.1}%",
+        performance.capture_source.fresh_fps,
+        performance.capture_source.admitted_fps,
+        performance.capture_source.admission_drop_ratio * 100.0,
+    ));
+    ui.small(format!(
+        "Accumulated {:.2} · Overwritten {} · Buffer starved {} · Causal discards {}",
+        performance.capture_source.mean_accumulated_frames,
+        performance.capture_source.overwritten_frames,
+        performance.capture_source.buffer_starved_frames,
+        performance.causal_discards,
+    ));
     if performance.sample_count == 0 {
         if let Some(cold) = performance.cold_run {
             ui.label(format!("Cold run: {:.2} ms total", cold.total_ms));
@@ -1023,9 +1050,13 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
             ui.strong("p95");
             ui.end_row();
             metric_row(ui, "Pipeline", performance.total);
-            metric_row(ui, "Frame wait", performance.frame_wait);
+            metric_row(ui, "DXGI acquire wait", performance.acquire_wait);
             metric_row(ui, "Capture", performance.capture);
+            metric_row(ui, "D3D11 Copy submit", performance.copy_submit);
+            metric_row(ui, "D3D11 GPU copy", performance.gpu_copy);
+            metric_row(ui, "D3D11 Map wait", performance.map_wait);
             metric_row(ui, "Preprocess", performance.preprocess);
+            metric_row(ui, "Queue age", performance.queue_age);
             metric_row(ui, "Inference", performance.inference);
             metric_row(ui, "Postprocess", performance.postprocess);
             metric_row(ui, "MAK write", performance.mak_write);
@@ -1035,6 +1066,7 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
     if let Some(cold) = performance.cold_run {
         ui.small(format!("Cold run total: {:.2} ms", cold.total_ms));
     }
+    ui.small("Pipeline: DXGI LastPresentTime → MAK write completion");
 }
 
 fn metric_row(ui: &mut egui::Ui, name: &str, metric: MetricSummary) {

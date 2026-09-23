@@ -24,6 +24,8 @@ mod models;
 mod paths;
 #[cfg(windows)]
 mod settings;
+#[cfg(windows)]
+mod timing;
 
 #[cfg(windows)]
 fn main() -> eframe::Result {

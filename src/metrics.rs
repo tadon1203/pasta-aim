@@ -3,18 +3,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::timing::QpcClock;
+
 const MAX_SAMPLES: usize = 256;
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StageTimings {
-    pub frame_wait_ms: f64,
+    pub acquire_wait_ms: f64,
     pub capture_ms: f64,
+    pub copy_submit_ms: f64,
+    pub map_wait_ms: f64,
     pub preprocess_ms: f64,
+    pub queue_age_ms: f64,
     pub inference_ms: f64,
     pub postprocess_ms: f64,
     pub mak_write_ms: f64,
     pub total_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CaptureSourceMetrics {
+    pub fresh_fps: f64,
+    pub admitted_fps: f64,
+    pub admission_drop_ratio: f64,
+    pub mean_accumulated_frames: f64,
+    pub overwritten_frames: u64,
+    pub buffer_starved_frames: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -28,13 +43,19 @@ pub struct PerformanceSnapshot {
     pub sample_count: usize,
     pub fps: f64,
     pub cadence: MetricSummary,
-    pub frame_wait: MetricSummary,
+    pub acquire_wait: MetricSummary,
     pub capture: MetricSummary,
+    pub copy_submit: MetricSummary,
+    pub map_wait: MetricSummary,
+    pub gpu_copy: MetricSummary,
     pub preprocess: MetricSummary,
+    pub queue_age: MetricSummary,
     pub inference: MetricSummary,
     pub postprocess: MetricSummary,
     pub mak_write: MetricSummary,
     pub total: MetricSummary,
+    pub capture_source: CaptureSourceMetrics,
+    pub causal_discards: u64,
     pub cold_run: Option<StageTimings>,
 }
 
@@ -46,9 +67,12 @@ struct Sample {
 
 pub struct Metrics {
     samples: VecDeque<Sample>,
+    gpu_copy_samples: VecDeque<f64>,
+    capture_source: CaptureSourceMetrics,
+    causal_discards: u64,
     cold_run: Option<StageTimings>,
     cold_next: bool,
-    previous_started: Option<Instant>,
+    previous_started_qpc: Option<i64>,
     last_publish: Instant,
 }
 
@@ -56,33 +80,38 @@ impl Metrics {
     pub fn new() -> Self {
         Self {
             samples: VecDeque::with_capacity(MAX_SAMPLES),
+            gpu_copy_samples: VecDeque::with_capacity(MAX_SAMPLES),
+            capture_source: CaptureSourceMetrics::default(),
+            causal_discards: 0,
             cold_run: None,
             cold_next: true,
-            previous_started: None,
+            previous_started_qpc: None,
             last_publish: Instant::now(),
         }
     }
 
     pub fn mark_cold_next(&mut self) {
         self.samples.clear();
+        self.gpu_copy_samples.clear();
+        self.capture_source = CaptureSourceMetrics::default();
+        self.causal_discards = 0;
         self.cold_run = None;
         self.cold_next = true;
-        self.previous_started = None;
+        self.previous_started_qpc = None;
     }
 
-    pub fn record(&mut self, started: Instant, timings: StageTimings) {
+    pub fn record_qpc(&mut self, qpc: QpcClock, started_qpc: i64, timings: StageTimings) {
         if self.cold_next {
             self.cold_run = Some(timings);
             self.cold_next = false;
-            self.previous_started = None;
+            self.previous_started_qpc = None;
             return;
         }
 
         let cadence_ms = self
-            .previous_started
-            .map(|previous| started.duration_since(previous).as_secs_f64() * 1000.0);
-        self.previous_started = Some(started);
-
+            .previous_started_qpc
+            .map(|previous| qpc.elapsed_ms(previous, started_qpc));
+        self.previous_started_qpc = Some(started_qpc);
         if self.samples.len() == MAX_SAMPLES {
             self.samples.pop_front();
         }
@@ -90,6 +119,21 @@ impl Metrics {
             timings,
             cadence_ms,
         });
+    }
+
+    pub fn update_capture_source(&mut self, value: CaptureSourceMetrics) {
+        self.capture_source = value;
+    }
+
+    pub fn record_gpu_copy(&mut self, gpu_copy_ms: f64) {
+        if self.gpu_copy_samples.len() == MAX_SAMPLES {
+            self.gpu_copy_samples.pop_front();
+        }
+        self.gpu_copy_samples.push_back(gpu_copy_ms);
+    }
+
+    pub fn record_causal_discard(&mut self) {
+        self.causal_discards = self.causal_discards.saturating_add(1);
     }
 
     pub fn snapshot_if_due(&mut self, force: bool) -> Option<PerformanceSnapshot> {
@@ -121,14 +165,24 @@ impl Metrics {
                 .map(|value| 1000.0 / value)
                 .unwrap_or(0.0),
             cadence,
-            frame_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.frame_wait_ms)
+            acquire_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.acquire_wait_ms)
             }),
             capture: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.capture_ms)
             }),
+            copy_submit: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.copy_submit_ms)
+            }),
+            map_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.map_wait_ms)
+            }),
+            gpu_copy: summarize_values(&self.gpu_copy_samples, &mut scratch),
             preprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.preprocess_ms)
+            }),
+            queue_age: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.queue_age_ms)
             }),
             inference: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.inference_ms)
@@ -142,7 +196,26 @@ impl Metrics {
             total: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.total_ms)
             }),
+            capture_source: self.capture_source,
+            causal_discards: self.causal_discards,
             cold_run: self.cold_run,
+        }
+    }
+}
+
+fn summarize_values(values: &VecDeque<f64>, scratch: &mut [f64; MAX_SAMPLES]) -> MetricSummary {
+    let len = values.len();
+    for (index, value) in values.iter().enumerate() {
+        scratch[index] = *value;
+    }
+    let values = &mut scratch[..len];
+    if values.is_empty() {
+        MetricSummary::default()
+    } else {
+        values.sort_unstable_by(f64::total_cmp);
+        MetricSummary {
+            p50_ms: percentile(values, 0.50),
+            p95_ms: percentile(values, 0.95),
         }
     }
 }
@@ -190,9 +263,10 @@ mod tests {
     #[test]
     fn first_sample_is_kept_as_cold_run() {
         let mut metrics = Metrics::new();
-        let started = Instant::now();
-        metrics.record(
-            started,
+        let qpc = QpcClock::test(1_000.0);
+        metrics.record_qpc(
+            qpc,
+            0,
             StageTimings {
                 total_ms: 12.0,
                 ..Default::default()
@@ -207,11 +281,12 @@ mod tests {
     #[test]
     fn percentile_summary_uses_rolling_samples() {
         let mut metrics = Metrics::new();
-        let base = Instant::now();
-        metrics.record(base, StageTimings::default());
+        let qpc = QpcClock::test(1_000.0);
+        metrics.record_qpc(qpc, 0, StageTimings::default());
         for i in 1..=20 {
-            metrics.record(
-                base + Duration::from_millis(i * 10),
+            metrics.record_qpc(
+                qpc,
+                i * 10,
                 StageTimings {
                     total_ms: i as f64,
                     ..Default::default()
