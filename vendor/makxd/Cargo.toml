@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-async = ["dep:tokio", "dep:tokio-serial"]
+async = ["dep:tokio"]
 profile = []
 mock = []
 
@@ -39,7 +39,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Devices
 
 # Optional (async feature)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"], optional = true }
-tokio-serial = { version = "5", optional = true }
 
 [[example]]
 name = "basic"
