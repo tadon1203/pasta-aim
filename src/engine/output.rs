@@ -217,6 +217,7 @@ mod tests {
         Detection {
             center_x: 60.0,
             center_y,
+            box_width: 30.0,
             box_height,
             confidence: 0.9,
             class_id: 0,

@@ -2,6 +2,7 @@
 pub struct Detection {
     pub center_x: f32,
     pub center_y: f32,
+    pub box_width: f32,
     pub box_height: f32,
     pub confidence: f32,
     pub class_id: i32,
@@ -49,6 +50,7 @@ pub fn select_nearest<T: Copy + Into<f32>>(
         let detection = Detection {
             center_x,
             center_y,
+            box_width: x2 - x1,
             box_height: y2 - y1,
             confidence,
             class_id: class_id.round() as i32,
@@ -72,6 +74,7 @@ mod tests {
         let detection = select_nearest(&data, 2, 100, 100, 0.25).expect("detection");
         assert_eq!(detection.class_id, 2);
         assert_eq!((detection.center_x, detection.center_y), (50.0, 50.0));
+        assert_eq!((detection.box_width, detection.box_height), (10.0, 10.0));
     }
 
     #[test]

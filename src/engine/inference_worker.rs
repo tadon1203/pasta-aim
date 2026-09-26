@@ -27,6 +27,7 @@ use crate::{
     },
     mak::MakClient,
     metrics::StageTimings,
+    overlay::{BoxRect, OverlayPublisher},
     settings::ConfidenceThreshold,
     timing::QpcClock,
 };
@@ -79,6 +80,8 @@ pub(super) struct InferenceConfig {
     pub output: OutputSettings,
     pub mak: Arc<Mutex<MakClient>>,
     pub gate: MotionGate,
+    /// `None` when the overlay could not be started.
+    pub overlay: Option<OverlayPublisher>,
 }
 
 enum InferenceCommand {
@@ -214,6 +217,7 @@ struct InferenceThread {
     low_latency: bool,
     output: OutputStage,
     gate: MotionGate,
+    overlay: Option<OverlayPublisher>,
 }
 
 impl InferenceThread {
@@ -235,6 +239,7 @@ impl InferenceThread {
             low_latency: config.low_latency,
             output: OutputStage::new(config.mak, config.output),
             gate: config.gate,
+            overlay: config.overlay,
         }
     }
 
@@ -328,6 +333,11 @@ impl InferenceThread {
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
             "GPU frame inference finished"
         );
+
+        // Shown before the (slower) output write; the overlay never blocks us.
+        if let Some(overlay) = &self.overlay {
+            overlay.publish(result.detection.as_ref().map(BoxRect::from));
+        }
 
         let one_shot = mode == RunMode::OneShot;
         let output_started_qpc = self.qpc.now();

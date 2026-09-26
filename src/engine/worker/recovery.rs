@@ -107,11 +107,18 @@ impl Worker {
             status.capture.desktop_size = None;
             status.capture.error = Some(error.clone());
         });
+        self.refresh_overlay_region();
 
         // Stop and join both owners before constructing replacement devices.
         self.inference_worker.shutdown();
         self.capture_worker.shutdown();
-        match spawn_workers(self.qpc, self.tuning, &self.mak, &self.gate) {
+        match spawn_workers(
+            self.qpc,
+            self.tuning,
+            &self.mak,
+            &self.gate,
+            self.overlay_publisher(),
+        ) {
             Ok((capture, inference, consumer)) => {
                 self.inference_worker = inference;
                 self.capture_worker = capture;

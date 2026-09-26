@@ -6,8 +6,8 @@ use crate::{
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, MaxDelta, Sensitivity,
-        TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, MaxDelta, OverlayConfig,
+        Sensitivity, TargetYOffset,
     },
 };
 
@@ -37,6 +37,10 @@ struct UnsavedEdits {
     target_y_offset: bool,
     max_delta: bool,
     fps_limit: bool,
+    overlay_line_width: bool,
+    overlay_outline_width: bool,
+    overlay_opacity: bool,
+    overlay_color: bool,
 }
 
 impl App {
@@ -206,6 +210,12 @@ impl App {
         tracing::debug!(value = value.value(), "max delta changed");
         self.config.max_delta = value;
         self.engine.send(Command::SetMaxDelta(value));
+    }
+
+    fn set_overlay(&mut self, overlay: OverlayConfig) {
+        tracing::debug!(?overlay, "overlay settings changed");
+        self.config.overlay = overlay;
+        self.engine.send(Command::SetOverlay(overlay));
     }
 
     fn set_fps_limit(&mut self, fps_limit: FpsLimit) {

@@ -19,7 +19,7 @@ cargo build --release
 
 VS Code task `cargo: verify` runs fmt → clippy → test. Judge performance only on release builds. Tests use `makxd` with its `mock` feature (dev-dependency), so no hardware is needed.
 
-Runtime data (`settings.json`, `models/`, `logs/`) lives next to the exe, or in `NICE_AIMASSIST_DATA_DIR` if set (the VS Code debug config sets it to the workspace root). `settings.json` accepts only `version = 2`; older formats fall back to defaults (no backward compat by design).
+Runtime data (`settings.json`, `models/`, `logs/`) lives next to the exe, or in `NICE_AIMASSIST_DATA_DIR` if set (the VS Code debug config sets it to the workspace root). `settings.json` has no version field and no migration: missing fields take their defaults (each field, so adding a setting keeps the rest), while unknown fields or out-of-range values make the whole file fall back to defaults.
 
 ## Architecture
 
@@ -40,5 +40,6 @@ Key cross-file invariants:
 - **Model validation** (`inference/directml/session.rs`): at load, the output must be a static `[1, N, 6]` end-to-end tensor and Ultralytics metadata (`dynamic`, `end2end`/`nms`, `imgsz`) must not contradict it; per-frame shape checks are gone, so keep this validation authoritative.
 - **Settings types** (`settings.rs`, `config.rs`): Sensitivity is an integer percent (gain = sensitivity/100), target Y offset is the aim point inside the target box (0% top, 50% center, 100% bottom) applied *before* sensitivity scaling, max delta caps the length of the final (post-sensitivity) movement vector per frame (0 = unlimited), FPS limit applies only to Continuous (not `Run once`) and must wait via the worker command loop rather than a blocking sleep.
 - **MAK** (`mak.rs`): mouse vs. controller route selection is a user choice and must not silently switch when a route disappears; "physical controller" status is separate from route status and may be "unconfirmed" rather than disconnected. The client is shared as `Arc<Mutex<MakClient>>` between the engine thread (routes, probing, release) and the inference thread (output); stop the run (which waits for the inference thread) before releasing the controller.
+- **Overlay** (`overlay/`): its own thread owns a click-through, topmost, `WDA_EXCLUDEFROMCAPTURE` window (excluded so Desktop Duplication never feeds the boxes back to the model) with a DirectComposition + flip swap chain drawn by Direct2D on a private D3D11 device. The window is the model input region (`graphics::center_crop_origin`, shared with the capture copy) plus a fixed margin, so boxes stay in model input coordinates. The inference thread only calls `OverlayPublisher::publish` (a tiny mutex + thread-message wake-up, never waits on drawing); the engine thread owns `Overlay` and updates the region on every pipeline commit. Boxes expire after 1 s. Exclusive fullscreen is unsupported (borderless/windowed-fullscreen only). Overlay failures are logged and never stop the engine.
 - **Unsafe** is meant to stay confined (e.g. `inference/directml/native.rs`).
 - Metrics (`metrics.rs`): the first inference is a cold run kept out of the rolling 256-sample stats.

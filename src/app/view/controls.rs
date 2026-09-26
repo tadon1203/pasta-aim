@@ -11,7 +11,8 @@ use crate::{
     mak::PhysicalControllerStatus,
     settings::{
         ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, MaxDelta, OutputMode,
-        Sensitivity, TargetYOffset,
+        OverlayConfig, OverlayLineWidth, OverlayOpacity, OverlayOutlineWidth, Sensitivity,
+        TargetYOffset,
     },
 };
 
@@ -260,6 +261,96 @@ impl App {
                     status.performance.inference.p95_ms,
                 ));
             }
+        });
+    }
+
+    pub(super) fn draw_overlay(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.strong("Overlay");
+            let mut overlay = self.config.overlay;
+            if ui
+                .checkbox(&mut overlay.enabled, "Show target box")
+                .on_hover_text(
+                    "Draws the detected target over the model input region. Works with \
+                     borderless and windowed-fullscreen games, not exclusive fullscreen.",
+                )
+                .changed()
+            {
+                self.set_overlay(overlay);
+                self.persist();
+            }
+
+            ui.add_enabled_ui(overlay.enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Line width");
+                    let edit = drag_value(
+                        ui,
+                        i32::from(overlay.line_width.value()),
+                        i32::from(OverlayLineWidth::MIN)..=i32::from(OverlayLineWidth::MAX),
+                        &mut self.dirty.overlay_line_width,
+                    );
+                    self.apply_edit(edit, |app, value| {
+                        app.set_overlay(OverlayConfig {
+                            line_width: OverlayLineWidth::new(value as u8),
+                            ..app.config.overlay
+                        })
+                    });
+                    ui.label("px");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Outline width");
+                    let edit = drag_value(
+                        ui,
+                        i32::from(overlay.outline_width.value()),
+                        0..=i32::from(OverlayOutlineWidth::MAX),
+                        &mut self.dirty.overlay_outline_width,
+                    );
+                    self.apply_edit(edit, |app, value| {
+                        app.set_overlay(OverlayConfig {
+                            outline_width: OverlayOutlineWidth::new(value as u8),
+                            ..app.config.overlay
+                        })
+                    });
+                    ui.label("px (0 = none)");
+                });
+                let edit = percent_row(
+                    ui,
+                    "Opacity",
+                    i32::from(overlay.opacity.value()),
+                    i32::from(OverlayOpacity::MIN)..=i32::from(OverlayOpacity::MAX),
+                    &mut self.dirty.overlay_opacity,
+                );
+                self.apply_edit(edit, |app, value| {
+                    app.set_overlay(OverlayConfig {
+                        opacity: OverlayOpacity::new(value as u8),
+                        ..app.config.overlay
+                    })
+                });
+
+                let mut colors = (overlay.color, overlay.outline_color);
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    ui.label("Line color");
+                    changed |=
+                        egui::color_picker::color_edit_button_srgb(ui, &mut colors.0).changed();
+                    ui.label("Outline color");
+                    changed |=
+                        egui::color_picker::color_edit_button_srgb(ui, &mut colors.1).changed();
+                });
+                if changed {
+                    self.dirty.overlay_color = true;
+                    self.set_overlay(OverlayConfig {
+                        color: colors.0,
+                        outline_color: colors.1,
+                        ..self.config.overlay
+                    });
+                }
+                // Save once the pointer is released, not on every dragged color.
+                if self.dirty.overlay_color && ui.input(|input| input.pointer.any_released()) {
+                    self.dirty.overlay_color = false;
+                    self.persist();
+                }
+            });
         });
     }
 

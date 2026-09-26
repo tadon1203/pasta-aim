@@ -365,8 +365,8 @@ impl DxgiCapture {
         if destination_desc.Width as usize != width || destination_desc.Height as usize != height {
             bail!("shared frame texture dimensions do not match model input");
         }
-        let left = ((frame_width - width) / 2) as u32;
-        let top = ((frame_height - height) / 2) as u32;
+        let (left, top) = super::center_crop_origin((frame_width, frame_height), (width, height));
+        let (left, top) = (left as u32, top as u32);
         let source_box = D3D11_BOX {
             left,
             top,

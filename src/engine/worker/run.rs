@@ -104,12 +104,23 @@ impl Worker {
 
     /// Stops any active run and releases the controller. Safe to call when idle.
     pub(super) fn stop_run(&mut self) {
+        self.stop_run_inner(true);
+    }
+
+    /// `clear_overlay = false` lets the last box of a finished one-shot run
+    /// stay visible until it expires.
+    fn stop_run_inner(&mut self, clear_overlay: bool) {
         if let Some(run) = self.run.active.take() {
             tracing::info!(generation = run.generation, "inference stopped");
             // The inference thread acknowledges the stop before anything is
             // released, so it cannot submit output after the release below.
             let _ = self.inference_worker.stop(run.generation);
             let _ = self.capture_worker.stop();
+        }
+        // After the inference thread acknowledged the stop, so nothing can
+        // publish a box behind this.
+        if clear_overlay && let Some(overlay) = &self.overlay {
+            overlay.clear();
         }
         self.mak().release_controller_best_effort();
         let pending = self.mak().controller_release_pending();
@@ -195,7 +206,7 @@ impl Worker {
             }
         });
         if report.one_shot_done {
-            self.stop_run();
+            self.stop_run_inner(false);
         } else {
             let metrics = &self.metrics;
             self.summary.log_if_due(|| metrics.snapshot());

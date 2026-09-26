@@ -7,31 +7,30 @@ use crate::{
     models, paths,
     settings::{
         ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, MaxDelta,
-        OutputMode, Sensitivity, TargetYOffset,
+        OutputMode, OverlayConfig, Sensitivity, TargetYOffset,
     },
 };
 
+/// Missing fields fall back to their defaults so that adding a setting never
+/// discards the rest of an existing file; unknown fields are still rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub model: Option<String>,
     pub sensitivity: Sensitivity,
     pub confidence_threshold: ConfidenceThreshold,
     pub target_y_offset: TargetYOffset,
     /// Per-frame cap on the output movement length; 0 = unlimited.
-    #[serde(default)]
     pub max_delta: MaxDelta,
     pub fps_limit: FpsLimit,
     pub output_mode: OutputMode,
-    #[serde(default)]
     pub injection_api: InjectionApi,
     pub hotkeys: Vec<HotkeyBinding>,
     pub selected_adapter: crate::inference::AdapterLuid,
     pub capture_output: u32,
     /// Busy-waits on DirectML completion for lower tail latency at the cost of one CPU core.
-    #[serde(default)]
     pub low_latency: bool,
-    #[serde(default)]
+    pub overlay: OverlayConfig,
     pub diagnostics: DiagnosticsConfig,
 }
 
@@ -70,6 +69,7 @@ impl Default for Config {
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
             capture_output: 0,
             low_latency: false,
+            overlay: OverlayConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
         }
     }
@@ -177,6 +177,9 @@ impl Config {
         if !self.fps_limit.is_valid() {
             bail!("fps_limit must be in {}..={}", FpsLimit::MIN, FpsLimit::MAX);
         }
+        if !self.overlay.is_valid() {
+            bail!("overlay settings are out of range");
+        }
 
         if let Some(model) = &self.model {
             models::validate_model_name(model)?;
@@ -234,25 +237,36 @@ mod tests {
     }
 
     #[test]
-    fn confidence_threshold_is_required_in_the_current_config_format() {
-        let json = r#"{
-            "model": null,
-            "sensitivity": 100,
-            "target_y_offset": 0,
-            "fps_limit": 240,
-            "output_mode": "mouse",
-            "hotkeys": [],
-            "selected_adapter": {"low": 0, "high": 0},
-            "capture_output": 0
-        }"#;
-
-        assert!(serde_json::from_str::<Config>(json).is_err());
+    fn missing_fields_fall_back_to_defaults_and_keep_the_rest() {
+        let config: Config =
+            serde_json::from_str(r#"{"sensitivity": 250, "output_mode": "controller"}"#).unwrap();
+        assert_eq!(config.sensitivity.value(), 250);
+        assert_eq!(config.output_mode, OutputMode::Controller);
+        assert_eq!(config.confidence_threshold, ConfidenceThreshold::default());
+        assert_eq!(config.hotkeys.len(), default_hotkeys().len());
+        assert_eq!(config.overlay, OverlayConfig::default());
     }
 
     #[test]
-    fn missing_required_fields_are_rejected() {
-        let incomplete = r#"{"model":null,"sensitivity":100,"output_mode":"mouse","hotkeys":[]}"#;
-        assert!(serde_json::from_str::<Config>(incomplete).is_err());
+    fn overlay_accepts_partial_settings_and_validates_ranges() {
+        let config: Config =
+            serde_json::from_str(r#"{"overlay": {"enabled": true, "line_width": 4}}"#).unwrap();
+        assert!(config.overlay.enabled);
+        assert_eq!(config.overlay.line_width.value(), 4);
+        assert_eq!(
+            config.overlay.outline_width,
+            OverlayConfig::default().outline_width
+        );
+        assert!(config.validate().is_ok());
+
+        let out_of_range: Config =
+            serde_json::from_str(r#"{"overlay": {"line_width": 200}}"#).unwrap();
+        assert!(out_of_range.validate().is_err());
+    }
+
+    #[test]
+    fn version_field_is_not_recognized() {
+        assert!(serde_json::from_str::<Config>(r#"{"version": 2}"#).is_err());
     }
 
     #[test]
@@ -261,21 +275,6 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value["unexpected"] = serde_json::Value::Bool(true);
         assert!(serde_json::from_value::<Config>(value).is_err());
-    }
-
-    #[test]
-    fn target_y_offset_is_required() {
-        let json = r#"{
-            "model": null,
-            "sensitivity": 100,
-            "fps_limit": 240,
-            "output_mode": "mouse",
-            "hotkeys": [],
-            "selected_adapter": {"low": 0, "high": 0},
-            "capture_output": 0
-        }"#;
-
-        assert!(serde_json::from_str::<Config>(json).is_err());
     }
 
     #[test]

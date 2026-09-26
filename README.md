@@ -16,7 +16,7 @@ models/
 - モデルは `models/` 内の `.onnx` をファイル名で選択します。ロードに失敗した場合は以前のモデルを維持します。
 - 入出力が FP32 / FP16 のどちらのモデルにも対応しています。精度はモデルから自動判別し、UI の `Active input` に表示します。
 - モデルは入力サイズが固定で、出力が `[1, N, 6]`（x1, y1, x2, y2, score, class）の end-to-end 形式（NMS 埋め込み）である必要があります。動的 shape や end2end でないモデルは、ロード時に理由付きで拒否されます。
-- `settings.json` は `version = 2` のみ対応です。古い形式はデフォルト設定になります。
+- `settings.json` に version はありません。項目が欠けている場合はその項目だけ既定値になります。未知の項目や範囲外の値がある場合は、ファイル全体が既定値になります。
 
 ## 設定項目
 
@@ -25,6 +25,7 @@ models/
 - **Confidence**: 検出を採用する最小値です（0〜100%、既定 50%）。
 - **FPS limit**: Continuous のみに適用します（1〜1000、既定 240）。`Run once` には適用しません。
 - **Low-latency mode**: DirectML の完了待ちをスピン待ちにします。最悪遅延が下がる代わりに、動作中は CPU コアを 1 つ使い切ります。切り替えるとモデルを再ロードします。
+- **Overlay**: 検出したターゲットの box をモデル入力領域（画面中央）に重ねて表示します（既定 OFF）。線幅（1〜8px）、色、不透明度、アウトライン幅（0〜4px、0 で無し）、アウトライン色を変更できます。ボーダーレス / ウィンドウ化フルスクリーンで動作し、排他フルスクリーンでは表示されません。オーバーレイ自体は画面キャプチャから除外されるため、モデルに映り込みません。
 - **Output**: Mouse / Controller をユーザーが選択します。route が消えても自動では切り替えません。
 - **Hotkeys**: 1 つのアクションに複数のショートカットを割り当てられます。Continuous は Hold shortcut のどれかが押されている間動作します。重複は不可です。
 
@@ -35,6 +36,7 @@ models/
 - `src/platform.rs`: スレッド優先度・MMCSS・電力スロットリング解除
 - `src/graphics/`: DXGI capture、GPU preprocess、共有フレームプール
 - `src/inference/`: ORT DirectML 推論と postprocess
+- `src/overlay/`: box オーバーレイ（専用スレッド、DirectComposition + Direct2D）
 - `src/mak.rs`: MAK の接続・route 管理
 - `vendor/makxd/`: MAK SDK
 

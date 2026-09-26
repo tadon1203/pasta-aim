@@ -35,6 +35,7 @@ use crate::{
     mak::MakClient,
     metrics::Metrics,
     models,
+    overlay::{Overlay, OverlayPublisher},
     settings::{ConfidenceThreshold, FpsLimit, OutputMode},
     sync::MutexExt,
     timing::QpcClock,
@@ -75,6 +76,9 @@ struct Worker {
 
     mak: Arc<Mutex<MakClient>>,
     gate: MotionGate,
+    /// `None` when the overlay thread could not be started; the rest of the
+    /// engine works without it.
+    overlay: Option<Overlay>,
     run: RunControl,
     summary: RunSummary,
     metrics: Metrics,
@@ -107,11 +111,15 @@ fn spawn_workers(
     tuning: Tuning,
     mak: &Arc<Mutex<MakClient>>,
     gate: &MotionGate,
+    overlay: Option<OverlayPublisher>,
 ) -> Result<(CaptureWorker, InferenceWorker, FrameConsumer)> {
     let (capture, consumer) = CaptureWorker::spawn(qpc, gate.clone())?;
     capture.set_fps_limit(tuning.fps_limit)?;
-    let inference =
-        InferenceWorker::spawn(qpc, consumer.clone(), inference_config(tuning, mak, gate))?;
+    let inference = InferenceWorker::spawn(
+        qpc,
+        consumer.clone(),
+        inference_config(tuning, mak, gate, overlay),
+    )?;
     Ok((capture, inference, consumer))
 }
 
@@ -119,6 +127,7 @@ fn inference_config(
     tuning: Tuning,
     mak: &Arc<Mutex<MakClient>>,
     gate: &MotionGate,
+    overlay: Option<OverlayPublisher>,
 ) -> InferenceConfig {
     InferenceConfig {
         confidence_threshold: tuning.confidence_threshold,
@@ -126,6 +135,7 @@ fn inference_config(
         output: tuning.output,
         mak: Arc::clone(mak),
         gate: gate.clone(),
+        overlay,
     }
 }
 
@@ -173,14 +183,26 @@ pub(super) fn run_worker(
     };
     let mak = Arc::new(Mutex::new(MakClient::new()));
     let gate = MotionGate::new();
-    let (capture_worker, inference_worker, frame_consumer) =
-        match spawn_workers(qpc, tuning, &mak, &gate) {
-            Ok(workers) => workers,
-            Err(error) => {
-                tracing::error!(error = %format!("{error:#}"), "worker initialization failed");
-                return;
-            }
-        };
+    let overlay = match Overlay::spawn(config.overlay) {
+        Ok(overlay) => Some(overlay),
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "overlay unavailable");
+            None
+        }
+    };
+    let (capture_worker, inference_worker, frame_consumer) = match spawn_workers(
+        qpc,
+        tuning,
+        &mak,
+        &gate,
+        overlay.as_ref().map(Overlay::publisher),
+    ) {
+        Ok(workers) => workers,
+        Err(error) => {
+            tracing::error!(error = %format!("{error:#}"), "worker initialization failed");
+            return;
+        }
+    };
     let mut worker = Worker {
         event_tx,
         ui_ctx,
@@ -200,6 +222,7 @@ pub(super) fn run_worker(
         selected_adapter_luid: config.selected_adapter,
         mak,
         gate,
+        overlay,
         run: RunControl::default(),
         summary: RunSummary::new(),
         metrics: Metrics::new(),
@@ -306,6 +329,11 @@ impl Worker {
                 }
             }
             Command::SetOutput(mode) => self.set_output_mode(mode),
+            Command::SetOverlay(config) => {
+                if let Some(overlay) = &self.overlay {
+                    overlay.set_config(config);
+                }
+            }
             Command::SetInjectionApi(api) => {
                 let result = self.mak().set_injection_api(api);
                 match result {
@@ -359,11 +387,15 @@ impl Worker {
         self.status.edit(|status| status.run.error = None);
     }
 
+    fn overlay_publisher(&self) -> Option<OverlayPublisher> {
+        self.overlay.as_ref().map(Overlay::publisher)
+    }
+
     fn spawn_inference(&self) -> Result<InferenceWorker> {
         InferenceWorker::spawn(
             self.qpc,
             self.frame_consumer.clone(),
-            inference_config(self.tuning, &self.mak, &self.gate),
+            inference_config(self.tuning, &self.mak, &self.gate, self.overlay_publisher()),
         )
     }
 

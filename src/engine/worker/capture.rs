@@ -8,6 +8,7 @@ use crate::{
         inference_worker::{InferenceWorker, PreparedModelInfo},
     },
     graphics::{DisplayInfo, FrameConsumer},
+    overlay::Region,
 };
 use anyhow::Result;
 
@@ -164,6 +165,7 @@ impl Worker {
             status.capture.error = None;
             status.run.error = None;
         });
+        self.refresh_overlay_region();
         self.emit_event(EngineEvent::Capture {
             adapter,
             output,
@@ -187,8 +189,13 @@ impl Worker {
     fn prepare_pipeline(&mut self, adapter: u32, output: u32) -> Result<PreparedPipeline> {
         let pipeline_id = self.next_pipeline_id();
         log_pipeline_state("Preparing", Some(pipeline_id), None, None, None);
-        let (capture, inference, consumer) =
-            spawn_workers(self.qpc, self.tuning, &self.mak, &self.gate)?;
+        let (capture, inference, consumer) = spawn_workers(
+            self.qpc,
+            self.tuning,
+            &self.mak,
+            &self.gate,
+            self.overlay_publisher(),
+        )?;
         let display = capture.configure_output(adapter, output)?;
         let model = match &self.active_model {
             Some((_, path)) => Some(load_model_into(
@@ -207,6 +214,29 @@ impl Worker {
             display,
             model,
         })
+    }
+
+    /// Points the overlay at the model input region of the committed pipeline,
+    /// or at nothing while there is no usable pipeline.
+    pub(super) fn refresh_overlay_region(&self) {
+        let Some(overlay) = &self.overlay else {
+            return;
+        };
+        let status = self.status.get();
+        let region = status
+            .capture
+            .selected
+            .as_ref()
+            .zip(status.model.input_size)
+            .filter(|_| self.model_ready)
+            .and_then(|(display, input)| {
+                Region::for_display(
+                    display.desktop_origin,
+                    (display.width as usize, display.height as usize),
+                    input,
+                )
+            });
+        overlay.set_region(region);
     }
 
     /// Records a freshly loaded model as the running pipeline.

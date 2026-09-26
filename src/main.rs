@@ -21,6 +21,8 @@ mod metrics;
 #[cfg(windows)]
 mod models;
 #[cfg(windows)]
+mod overlay;
+#[cfg(windows)]
 mod paths;
 #[cfg(windows)]
 mod platform;
