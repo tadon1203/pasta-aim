@@ -2,7 +2,7 @@ mod view;
 
 use crate::{
     config::{Config, ConfigLoad},
-    engine::{Engine, EngineEvent},
+    engine::{Command, Engine, EngineEvent},
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
     settings::{
@@ -24,11 +24,17 @@ pub struct App {
     model_catalog_error: Option<String>,
     config_load_warning: Option<String>,
     config_save_error: Option<String>,
-    sensitivity_dirty: bool,
-    confidence_threshold_dirty: bool,
-    target_y_offset_dirty: bool,
-    fps_limit_dirty: bool,
+    dirty: UnsavedEdits,
     model_load_requested: bool,
+}
+
+/// Value fields edited since they were last saved (see `view::widgets::drag_value`).
+#[derive(Default)]
+struct UnsavedEdits {
+    sensitivity: bool,
+    confidence_threshold: bool,
+    target_y_offset: bool,
+    fps_limit: bool,
 }
 
 impl App {
@@ -65,10 +71,7 @@ impl App {
             model_catalog_error,
             config_load_warning,
             config_save_error: None,
-            sensitivity_dirty: false,
-            confidence_threshold_dirty: false,
-            target_y_offset_dirty: false,
-            fps_limit_dirty: false,
+            dirty: UnsavedEdits::default(),
             model_load_requested: false,
         };
 
@@ -146,7 +149,11 @@ impl App {
     fn select_model(&mut self, name: String) {
         tracing::debug!(model = %name, "model selected from UI");
         if let Some(path) = self.models.path_for(&name) {
-            self.engine.load_model(name, path);
+            self.engine.send(Command::LoadModel {
+                name,
+                path,
+                notify: true,
+            });
         }
     }
 
@@ -156,59 +163,47 @@ impl App {
             && let Some(entry) = self.models.sole_model()
         {
             self.model_load_requested = true;
-            self.engine
-                .load_model_transient(entry.name.clone(), entry.path.clone());
+            self.engine.send(Command::LoadModel {
+                name: entry.name.clone(),
+                path: entry.path.clone(),
+                notify: false,
+            });
         }
     }
 
     fn rescan_displays(&self) {
         tracing::debug!("display rescan requested from UI");
-        self.engine.rescan_displays();
+        self.engine.send(Command::RescanDisplays);
     }
 
     fn select_display(&mut self, adapter: u32, output: u32) {
         tracing::debug!(adapter, output, "display selected from UI");
-        self.engine.set_capture_selection(adapter, output);
+        self.engine
+            .send(Command::SetCaptureSelection { adapter, output });
     }
 
-    fn set_sensitivity(&mut self, sensitivity: Sensitivity, persist: bool) {
-        tracing::debug!(value = sensitivity.value(), persist, "sensitivity changed");
+    fn set_sensitivity(&mut self, sensitivity: Sensitivity) {
+        tracing::debug!(value = sensitivity.value(), "sensitivity changed");
         self.config.sensitivity = sensitivity;
-        self.engine.set_sensitivity(sensitivity);
-        if persist {
-            self.persist();
-        }
+        self.engine.send(Command::SetSensitivity(sensitivity));
     }
 
-    fn set_confidence_threshold(&mut self, value: ConfidenceThreshold, persist: bool) {
-        tracing::debug!(
-            value = value.value(),
-            persist,
-            "confidence threshold changed"
-        );
+    fn set_confidence_threshold(&mut self, value: ConfidenceThreshold) {
+        tracing::debug!(value = value.value(), "confidence threshold changed");
         self.config.confidence_threshold = value;
-        self.engine.set_confidence_threshold(value);
-        if persist {
-            self.persist();
-        }
+        self.engine.send(Command::SetConfidenceThreshold(value));
     }
 
-    fn set_target_y_offset(&mut self, value: TargetYOffset, persist: bool) {
-        tracing::debug!(value = value.value(), persist, "target Y offset changed");
+    fn set_target_y_offset(&mut self, value: TargetYOffset) {
+        tracing::debug!(value = value.value(), "target Y offset changed");
         self.config.target_y_offset = value;
-        self.engine.set_target_y_offset(value);
-        if persist {
-            self.persist();
-        }
+        self.engine.send(Command::SetTargetYOffset(value));
     }
 
-    fn set_fps_limit(&mut self, fps_limit: FpsLimit, persist: bool) {
-        tracing::debug!(value = fps_limit.value(), persist, "FPS limit changed");
+    fn set_fps_limit(&mut self, fps_limit: FpsLimit) {
+        tracing::debug!(value = fps_limit.value(), "FPS limit changed");
         self.config.fps_limit = fps_limit;
-        self.engine.set_fps_limit(fps_limit);
-        if persist {
-            self.persist();
-        }
+        self.engine.send(Command::SetFpsLimit(fps_limit));
     }
 
     fn begin_hotkey_capture(&mut self, action: HotkeyAction) {

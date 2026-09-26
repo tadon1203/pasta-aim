@@ -7,7 +7,7 @@ pub mod preprocess;
 pub mod shared_frame_pool;
 
 pub use capture::DxgiCapture;
-pub(crate) use capture::{CapturePoll, GpuCopySample, NoDesktopUpdateReason};
+pub(crate) use capture::{AcquiredDesktopFrame, CapturePoll, GpuCopySample, NoDesktopUpdateReason};
 pub use frame_mailbox::{FrameConsumer, FramePublisher, GpuFrameMetadata, frame_mailbox};
 pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport, GpuFaultStage};
 pub use shared_frame_pool::CaptureFramePool;

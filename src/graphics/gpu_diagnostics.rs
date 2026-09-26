@@ -61,11 +61,10 @@ pub enum GpuDropReason {
     StaleGeneration,
     ReuseNotComplete,
     PipelinePoisoned,
-    ResultSuperseded,
 }
 
 impl GpuDropReason {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 5;
 
     pub const fn index(self) -> usize {
         match self {
@@ -74,7 +73,6 @@ impl GpuDropReason {
             Self::StaleGeneration => 2,
             Self::ReuseNotComplete => 3,
             Self::PipelinePoisoned => 4,
-            Self::ResultSuperseded => 5,
         }
     }
 }

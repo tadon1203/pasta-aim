@@ -25,6 +25,8 @@ mod paths;
 #[cfg(windows)]
 mod settings;
 #[cfg(windows)]
+mod sync;
+#[cfg(windows)]
 mod timing;
 
 #[cfg(windows)]

@@ -1,4 +1,3 @@
-pub(crate) mod backend;
 pub(crate) mod directml;
 pub(crate) mod ep_assignment;
 pub(crate) mod pipeline;
@@ -9,11 +8,6 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use ep_assignment::{EpAssignedNode, EpAssignmentState, EpProviderAssignment};
 pub use postprocess::Detection;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendKind {
-    OrtDirectMl,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdapterLuid {
@@ -63,12 +57,3 @@ pub struct ModelInputSpec {
     pub height: usize,
     pub precision: TensorPrecision,
 }
-
-#[derive(Debug, Clone)]
-pub struct BackendInfo {
-    pub kind: BackendKind,
-    pub name: String,
-    pub adapter_luid: AdapterLuid,
-}
-
-pub use backend::{BackendRunResult, InferenceBackend};

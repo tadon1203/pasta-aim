@@ -146,8 +146,8 @@ impl Metrics {
         self.gpu_copy_samples.push_back(gpu_copy_ms);
     }
 
-    pub fn record_causal_discard(&mut self) {
-        self.causal_discards = self.causal_discards.saturating_add(1);
+    pub fn record_causal_discards(&mut self, count: u64) {
+        self.causal_discards = self.causal_discards.saturating_add(count);
     }
 
     pub fn snapshot_if_due(&mut self, force: bool) -> Option<PerformanceSnapshot> {

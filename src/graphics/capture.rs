@@ -67,7 +67,6 @@ impl AcquiredDesktopFrame {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GpuCopySample {
-    pub present_qpc: i64,
     pub gpu_copy_ms: f64,
 }
 
@@ -75,7 +74,6 @@ struct GpuQuerySlot {
     disjoint: ID3D11Query,
     before: ID3D11Query,
     after: ID3D11Query,
-    present_qpc: i64,
     in_flight: bool,
 }
 
@@ -93,7 +91,6 @@ impl D3d11GpuProfiler {
                 disjoint: create_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT)?,
                 before: create_query(device, D3D11_QUERY_TIMESTAMP)?,
                 after: create_query(device, D3D11_QUERY_TIMESTAMP)?,
-                present_qpc: 0,
                 in_flight: false,
             });
         }
@@ -120,13 +117,12 @@ impl D3d11GpuProfiler {
                 && (frame - GPU_PROFILE_COLD_FRAMES).is_multiple_of(GPU_PROFILE_STEADY_STRIDE))
     }
 
-    fn begin(&mut self, context: &ID3D11DeviceContext4, present_qpc: i64) -> Option<usize> {
+    fn begin(&mut self, context: &ID3D11DeviceContext4) -> Option<usize> {
         let slot_count = self.slots.len();
         for offset in 0..slot_count {
             let index = (self.next_slot + offset) % slot_count;
             if !self.slots[index].in_flight {
                 let slot = &mut self.slots[index];
-                slot.present_qpc = present_qpc;
                 slot.in_flight = true;
                 self.next_slot = (index + 1) % slot_count;
                 // SAFETY: queries belong to this immediate context's device.
@@ -191,7 +187,6 @@ impl D3d11GpuProfiler {
                 continue;
             }
             return Some(GpuCopySample {
-                present_qpc: slot.present_qpc,
                 gpu_copy_ms: (after - before) as f64 * 1000.0 / disjoint.Frequency as f64,
             });
         }
@@ -397,7 +392,7 @@ impl DxgiCapture {
         let capture_started = Instant::now();
         let copy_started = Instant::now();
         let query_slot = if self.gpu_profiler.should_measure() {
-            self.gpu_profiler.begin(&self.context, frame.present_qpc)
+            self.gpu_profiler.begin(&self.context)
         } else {
             None
         };

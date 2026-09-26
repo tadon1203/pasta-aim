@@ -29,8 +29,8 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DiagnosticsConfig {
     pub level: LogLevel,
     /// D3D12 debug layer + DRED. Applied at startup only; slows inference.
@@ -47,35 +47,6 @@ pub enum LogLevel {
     Info,
     Debug,
     Trace,
-}
-
-impl<'de> Deserialize<'de> for DiagnosticsConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawDiagnostics {
-            level: Option<LogLevel>,
-            gpu_debug: Option<bool>,
-            frame_trace: Option<bool>,
-            mak_command_trace: Option<bool>,
-        }
-
-        let raw = RawDiagnostics::deserialize(deserializer)?;
-        let level = raw.level.unwrap_or_else(|| {
-            if raw.frame_trace.unwrap_or(false) || raw.mak_command_trace.unwrap_or(false) {
-                LogLevel::Trace
-            } else {
-                LogLevel::Info
-            }
-        });
-        Ok(Self {
-            level,
-            gpu_debug: raw.gpu_debug.unwrap_or(false),
-        })
-    }
 }
 
 impl Default for Config {
@@ -329,29 +300,5 @@ mod tests {
         let restored: DiagnosticsConfig = serde_json::from_str(&json).unwrap();
         assert!(restored.gpu_debug);
         assert_eq!(restored.level, LogLevel::Warn);
-    }
-
-    #[test]
-    fn legacy_trace_flags_are_migrated_to_trace_level() {
-        let json = r#"{
-            "level": null,
-            "frame_trace": true,
-            "mak_command_trace": false
-        }"#;
-
-        let diagnostics: DiagnosticsConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(diagnostics.level, LogLevel::Trace);
-    }
-
-    #[test]
-    fn explicit_level_takes_precedence_over_legacy_trace_flags() {
-        let json = r#"{
-            "level": "warn",
-            "frame_trace": true,
-            "mak_command_trace": true
-        }"#;
-
-        let diagnostics: DiagnosticsConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(diagnostics.level, LogLevel::Warn);
     }
 }

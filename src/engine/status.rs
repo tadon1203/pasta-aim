@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
@@ -30,7 +32,7 @@ pub struct ModelStatus {
     pub input_size: Option<(usize, usize)>,
     pub precision: Option<TensorPrecision>,
     pub error: Option<String>,
-    pub ep_assignment: Option<EpAssignmentState>,
+    pub ep_assignment: Option<Arc<EpAssignmentState>>,
     pub ep_assignment_summary: Option<EpAssignmentSummary>,
 }
 

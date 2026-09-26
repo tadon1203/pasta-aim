@@ -1,9 +1,19 @@
+use crate::sync::MutexExt;
 mod capture_worker;
 mod inference_worker;
+mod output;
 mod status;
+mod telemetry;
 mod worker;
 
 pub(super) type RunGeneration = u64;
+
+/// Whether a run keeps capturing until stopped or handles a single frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RunMode {
+    Continuous,
+    OneShot,
+}
 
 pub use status::{
     CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
@@ -45,8 +55,10 @@ pub enum EngineEvent {
     },
 }
 
+/// Requests accepted by the engine thread.
 #[derive(Debug)]
-pub(super) enum Command {
+pub enum Command {
+    /// `notify` reports the outcome to the UI (which then persists the choice).
     LoadModel {
         name: String,
         path: PathBuf,
@@ -72,23 +84,20 @@ pub(super) enum Command {
     Shutdown,
 }
 
+/// Cheap, cloneable handle for sending commands to the engine thread.
 #[derive(Clone)]
 pub struct EngineControl {
     tx: crossbeam::Sender<Command>,
 }
 
 impl EngineControl {
-    pub fn set_continuous(&self, active: bool) {
-        let _ = self.tx.send(Command::SetContinuous(active));
-    }
-
-    pub fn run_once(&self) {
-        let _ = self.tx.send(Command::RunOnce);
+    pub fn send(&self, command: Command) {
+        let _ = self.tx.send(command);
     }
 }
 
 pub struct Engine {
-    tx: crossbeam::Sender<Command>,
+    control: EngineControl,
     events: Receiver<EngineEvent>,
     status: Arc<Mutex<EngineStatus>>,
     join: Option<JoinHandle<()>>,
@@ -108,7 +117,7 @@ impl Engine {
             .expect("failed to spawn engine worker");
 
         Self {
-            tx,
+            control: EngineControl { tx },
             events,
             status,
             join: Some(join),
@@ -116,97 +125,26 @@ impl Engine {
     }
 
     pub fn control(&self) -> EngineControl {
-        EngineControl {
-            tx: self.tx.clone(),
-        }
+        self.control.clone()
+    }
+
+    pub fn send(&self, command: Command) {
+        self.control.send(command);
     }
 
     pub fn status(&self) -> EngineStatus {
-        self.status
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        self.status.lock_recover().clone()
     }
 
     pub fn poll_events(&self) -> impl Iterator<Item = EngineEvent> + '_ {
         std::iter::from_fn(|| self.events.try_recv().ok())
-    }
-
-    pub fn load_model(&self, name: String, path: PathBuf) {
-        let _ = self.tx.send(Command::LoadModel {
-            name,
-            path,
-            notify: true,
-        });
-    }
-
-    pub(crate) fn load_model_transient(&self, name: String, path: PathBuf) {
-        let _ = self.tx.send(Command::LoadModel {
-            name,
-            path,
-            notify: false,
-        });
-    }
-
-    pub fn set_sensitivity(&self, value: Sensitivity) {
-        let _ = self.tx.send(Command::SetSensitivity(value));
-    }
-
-    pub fn set_confidence_threshold(&self, value: ConfidenceThreshold) {
-        let _ = self.tx.send(Command::SetConfidenceThreshold(value));
-    }
-
-    pub fn set_target_y_offset(&self, value: TargetYOffset) {
-        let _ = self.tx.send(Command::SetTargetYOffset(value));
-    }
-
-    pub fn set_fps_limit(&self, value: FpsLimit) {
-        let _ = self.tx.send(Command::SetFpsLimit(value));
-    }
-
-    pub fn set_output(&self, mode: OutputMode) {
-        let _ = self.tx.send(Command::SetOutput(mode));
-    }
-
-    pub fn set_injection_api(&self, api: InjectionApi) {
-        let _ = self.tx.send(Command::SetInjectionApi(api));
-    }
-
-    pub fn set_capture_selection(&self, adapter: u32, output: u32) {
-        let _ = self
-            .tx
-            .send(Command::SetCaptureSelection { adapter, output });
-    }
-
-    pub fn run_once(&self) {
-        let _ = self.tx.send(Command::RunOnce);
-    }
-
-    pub fn refresh_mak_routes(&self) {
-        let _ = self.tx.send(Command::RefreshMakRoutes);
-    }
-
-    pub fn rescan_mak(&self) {
-        let _ = self.tx.send(Command::RescanMak);
-    }
-
-    pub fn retry_capture(&self) {
-        let _ = self.tx.send(Command::RetryCapture);
-    }
-
-    pub fn probe_controller(&self) {
-        let _ = self.tx.send(Command::ProbeController);
-    }
-
-    pub fn rescan_displays(&self) {
-        let _ = self.tx.send(Command::RescanDisplays);
     }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
         tracing::info!("shutting down engine worker");
-        let _ = self.tx.send(Command::Shutdown);
+        self.control.send(Command::Shutdown);
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }

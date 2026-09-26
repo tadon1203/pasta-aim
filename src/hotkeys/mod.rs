@@ -1,3 +1,4 @@
+use crate::sync::{MutexExt, RwLockExt};
 mod binding;
 mod capture;
 mod xinput;
@@ -20,7 +21,7 @@ use global_hotkey::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
 use crate::{
-    engine::EngineControl,
+    engine::{Command, EngineControl},
     settings::{HotkeyAction, HotkeyBinding},
 };
 
@@ -145,7 +146,7 @@ impl HotkeyRegistry {
                     if reset_epoch != seen_reset_epoch {
                         seen_reset_epoch = reset_epoch;
                         active_hold_ids.clear();
-                        listener_control.set_continuous(false);
+                        listener_control.send(Command::SetContinuous(false));
                         ui_ctx.request_repaint();
                     }
 
@@ -210,10 +211,7 @@ impl HotkeyRegistry {
                             xinput.slot().map_or(SLOT_NONE, |slot| slot as usize),
                             Ordering::Release,
                         );
-                        *listener_xinput_down
-                            .write()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                            xinput.pressed().clone();
+                        *listener_xinput_down.write_recover() = xinput.pressed().clone();
 
                         // Edges alone are not an authoritative hold state: a
                         // controller can already be held when we start polling
@@ -227,7 +225,7 @@ impl HotkeyRegistry {
                             )
                         {
                             tracing::debug!(enabled, "continuous hotkey state reconciled");
-                            listener_control.set_continuous(enabled);
+                            listener_control.send(Command::SetContinuous(enabled));
                             ui_ctx.request_repaint();
                         }
 
@@ -239,15 +237,11 @@ impl HotkeyRegistry {
 
                             if listener_capture_active.load(Ordering::Acquire) {
                                 let should_queue = {
-                                    let mut ignored = listener_capture_ignored
-                                        .lock()
-                                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    let mut ignored = listener_capture_ignored.lock_recover();
                                     capture_accepts_event(edge.control, state, &mut ignored)
                                 };
                                 if should_queue {
-                                    let mut queue = listener_capture_queue
-                                        .lock()
-                                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    let mut queue = listener_capture_queue.lock_recover();
                                     if !queue.contains(&edge.control) {
                                         queue.push_back(edge.control);
                                     }
@@ -273,7 +267,7 @@ impl HotkeyRegistry {
                 }
 
                 if !active_hold_ids.is_empty() {
-                    listener_control.set_continuous(false);
+                    listener_control.send(Command::SetContinuous(false));
                 }
                 tracing::info!("hotkey and XInput listener stopped");
             })
@@ -340,10 +334,7 @@ impl HotkeyRegistry {
             .iter()
             .map(|(id, (hotkey, _))| (*id, *hotkey))
             .collect();
-        *self
-            .actions
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = BindingActions {
+        *self.actions.write_recover() = BindingActions {
             keyboard: desired
                 .keyboard
                 .iter()
@@ -368,7 +359,7 @@ impl HotkeyRegistry {
         tracing::debug!("hotkey dispatch suspended");
         self.suspended.store(true, Ordering::Release);
         self.reset_epoch.fetch_add(1, Ordering::AcqRel);
-        self.control.set_continuous(false);
+        self.control.send(Command::SetContinuous(false));
     }
 
     pub fn resume(&self) {
@@ -380,39 +371,22 @@ impl HotkeyRegistry {
         tracing::debug!("hotkey capture enabled");
         self.suspend();
         self.capture_active.store(false, Ordering::Release);
-        self.capture_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        *self
-            .capture_ignored
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self
-            .xinput_down
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+        self.capture_queue.lock_recover().clear();
+        *self.capture_ignored.lock_recover() = self.xinput_down.read_recover().clone();
         self.capture_active.store(true, Ordering::Release);
     }
 
     pub fn end_capture(&self) {
         tracing::debug!("hotkey capture disabled");
         self.capture_active.store(false, Ordering::Release);
-        self.capture_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        self.capture_ignored
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        self.capture_queue.lock_recover().clear();
+        self.capture_ignored.lock_recover().clear();
         self.resume();
     }
 
     pub fn poll_captured_xinput(&self) -> Option<String> {
         self.capture_queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_recover()
             .pop_front()
             .map(XInputControl::shortcut)
     }
@@ -425,10 +399,7 @@ impl HotkeyRegistry {
     }
 
     pub fn keyboard_release_latency(&self) -> KeyboardReleaseLatency {
-        let samples = self
-            .keyboard_release_samples
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let samples = self.keyboard_release_samples.lock_recover();
         summarize_release_latency(&samples)
     }
 }
@@ -439,7 +410,7 @@ impl Drop for HotkeyRegistry {
         self.capture_active.store(false, Ordering::Release);
         self.suspended.store(true, Ordering::Release);
         self.running.store(false, Ordering::Release);
-        self.control.set_continuous(false);
+        self.control.send(Command::SetContinuous(false));
 
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
@@ -464,10 +435,7 @@ fn process_keyboard_event(event: GlobalHotKeyEvent, context: KeyboardEventContex
         HotKeyState::Released => {
             if let Some(observed) = context.physical_release_seen.remove(&event.id) {
                 let latency_ms = observed.elapsed().as_secs_f64() * 1000.0;
-                let mut samples = context
-                    .release_samples
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut samples = context.release_samples.lock_recover();
                 if samples.len() == RELEASE_METRIC_SAMPLES {
                     samples.pop_front();
                 }
@@ -494,9 +462,7 @@ fn probe_keyboard_releases(
     actions: &RwLock<BindingActions>,
     seen: &mut HashMap<u32, Instant>,
 ) -> Vec<u32> {
-    let actions = actions
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let actions = actions.read_recover();
     let now = Instant::now();
     let mut released = Vec::new();
     for id in active {
@@ -524,9 +490,7 @@ fn probe_keyboard_releases(
 }
 
 fn release_assist_enabled(samples: &Mutex<VecDeque<f64>>) -> bool {
-    let samples = samples
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let samples = samples.lock_recover();
     let summary = summarize_release_latency(&samples);
     summary.samples >= RELEASE_ASSIST_MIN_SAMPLES
         && summary.p95_ms > RELEASE_ASSIST_P95_THRESHOLD_MS
@@ -652,9 +616,7 @@ fn dispatch_trigger(
     ui_ctx: &egui::Context,
 ) {
     let action = {
-        let actions = actions
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let actions = actions.read_recover();
         match event.id {
             TriggerId::Keyboard(id) => actions.keyboard.get(&id).copied(),
             TriggerId::XInput(input) => actions.xinput.get(&input).copied(),
@@ -665,13 +627,13 @@ fn dispatch_trigger(
         Some(HotkeyAction::ContinuousHold) => {
             if let Some(enabled) = update_hold_state(active_hold_ids, event) {
                 tracing::debug!(enabled, "continuous hotkey state changed");
-                control.set_continuous(enabled);
+                control.send(Command::SetContinuous(enabled));
             }
             ui_ctx.request_repaint();
         }
         Some(HotkeyAction::RunOnce) if event.state == TriggerState::Pressed => {
             tracing::debug!("run-once hotkey triggered");
-            control.run_once();
+            control.send(Command::RunOnce);
             ui_ctx.request_repaint();
         }
         _ => {}
@@ -698,9 +660,7 @@ fn reconcile_xinput_holds(
     active: &mut HashSet<TriggerId>,
 ) -> Option<bool> {
     let was_enabled = !active.is_empty();
-    let actions = actions
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let actions = actions.read_recover();
     let desired: HashSet<_> = pressed
         .iter()
         .filter(|control| actions.xinput.get(control) == Some(&HotkeyAction::ContinuousHold))

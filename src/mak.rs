@@ -180,7 +180,8 @@ impl MakClient {
         self.controller_release_pending
     }
 
-    pub fn injection_api(&self) -> InjectionApi {
+    #[cfg(test)]
+    fn injection_api(&self) -> InjectionApi {
         self.injection_api
     }
 

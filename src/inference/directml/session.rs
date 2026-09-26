@@ -20,8 +20,8 @@ use windows::Win32::{
 use crate::{
     graphics::device::GpuDeviceContext,
     inference::{
-        BackendInfo, BackendKind, BackendRunResult, Detection, InferenceBackend, ModelInputSpec,
-        TensorPrecision, ep_assignment, postprocess::select_nearest,
+        Detection, EpAssignmentState, ModelInputSpec, TensorPrecision, ep_assignment,
+        pipeline::InferenceResult, postprocess::select_nearest,
     },
     settings::ConfidenceThreshold,
 };
@@ -85,20 +85,22 @@ fn allocate_input<T: PrimitiveTensorElementType + std::fmt::Debug>(
 
 /// ONNX Runtime / DirectML session state. Device, queue, shared frames, and
 /// preprocessing are owned by the enclosing InferencePipeline.
+///
+/// Field order is drop order: tensors must disappear before their DirectML
+/// allocator and session.
 pub struct OrtDirectMlBackend {
-    info: BackendInfo,
+    binding: IoBinding,
+    _input_tensor: InputTensor,
+    input_resource: ID3D12Resource,
+    _allocator: Allocator,
+    session: Session,
+    _dml_device: IDMLDevice,
     input_spec: ModelInputSpec,
     prepare_id: String,
-    binding: Option<IoBinding>,
-    input_tensor: Option<InputTensor>,
-    input_resource: Option<ID3D12Resource>,
-    allocator: Option<Allocator>,
-    session: Option<Session>,
-    dml_device: Option<IDMLDevice>,
     output_name: String,
     output_precision: TensorPrecision,
     confidence_threshold: ConfidenceThreshold,
-    ep_assignment: crate::inference::EpAssignmentState,
+    ep_assignment: EpAssignmentState,
 }
 
 impl OrtDirectMlBackend {
@@ -180,8 +182,6 @@ impl OrtDirectMlBackend {
                 crate::inference::EpAssignmentState::Unavailable(format!("{error:#}"))
             });
 
-        // Declaration/drop order is protected by shutdown(), because tensors
-        // must disappear before their DirectML allocator and session.
         let allocator = Allocator::new(
             &session,
             MemoryInfo::new(
@@ -205,19 +205,14 @@ impl OrtDirectMlBackend {
         binding.bind_output_to_device(output_name.clone(), &cpu_memory)?;
 
         Ok(Self {
-            info: BackendInfo {
-                kind: BackendKind::OrtDirectMl,
-                name: "ONNX Runtime DirectML".to_owned(),
-                adapter_luid: gpu.adapter_luid(),
-            },
+            binding,
+            _input_tensor: input_tensor,
+            input_resource,
+            _allocator: allocator,
+            session,
+            _dml_device: dml_device,
             input_spec,
             prepare_id: prepare_id.to_owned(),
-            binding: Some(binding),
-            input_tensor: Some(input_tensor),
-            input_resource: Some(input_resource),
-            allocator: Some(allocator),
-            session: Some(session),
-            dml_device: Some(dml_device),
             output_name,
             output_precision,
             confidence_threshold: ConfidenceThreshold::default(),
@@ -229,52 +224,27 @@ impl OrtDirectMlBackend {
         &self.prepare_id
     }
 
-    pub fn ep_assignment(&self) -> crate::inference::EpAssignmentState {
-        self.ep_assignment.clone()
+    pub fn input_spec(&self) -> ModelInputSpec {
+        self.input_spec
     }
 
-    pub fn input_resource(&self) -> Result<&ID3D12Resource> {
-        self.input_resource
-            .as_ref()
-            .context("DirectML input resource was shut down")
+    pub fn ep_assignment(&self) -> &EpAssignmentState {
+        &self.ep_assignment
+    }
+
+    pub fn input_resource(&self) -> &ID3D12Resource {
+        &self.input_resource
     }
 
     pub fn set_confidence_threshold(&mut self, value: ConfidenceThreshold) {
         self.confidence_threshold = value;
     }
 
-    pub fn shutdown(&mut self) {
-        self.binding.take();
-        self.input_tensor.take();
-        self.input_resource.take();
-        self.allocator.take();
-        self.session.take();
-        self.dml_device.take();
-    }
-}
-
-impl InferenceBackend for OrtDirectMlBackend {
-    fn info(&self) -> &BackendInfo {
-        &self.info
-    }
-
-    fn input_spec(&self) -> ModelInputSpec {
-        self.input_spec
-    }
-
-    fn run(&mut self) -> Result<BackendRunResult> {
+    pub fn run(&mut self) -> Result<InferenceResult> {
         // The tensor was bound once during prepare and is populated by the
         // pipeline's D3D12 preprocess dispatch before this call.
         let started = Instant::now();
-        let outputs = self
-            .session
-            .as_mut()
-            .context("DirectML session was shut down")?
-            .run_binding(
-                self.binding
-                    .as_ref()
-                    .context("DirectML IO binding was shut down")?,
-            )?;
+        let outputs = self.session.run_binding(&self.binding)?;
         let ort_run_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
         if outputs.len() != 1 {
             bail!("expected one model output, got {}", outputs.len());
@@ -286,19 +256,12 @@ impl InferenceBackend for OrtDirectMlBackend {
             TensorPrecision::Fp16 => detect::<half::f16>(output, self.input_spec, threshold)?,
             TensorPrecision::Fp32 => detect::<f32>(output, self.input_spec, threshold)?,
         };
-        Ok(BackendRunResult {
+        Ok(InferenceResult {
             detection,
             ort_run_wall_ms,
             postprocess_ms: postprocess_start.elapsed().as_secs_f64() * 1000.0,
+            gpu_preprocess_ms: 0.0,
         })
-    }
-
-    fn set_confidence_threshold(&mut self, value: ConfidenceThreshold) {
-        OrtDirectMlBackend::set_confidence_threshold(self, value);
-    }
-
-    fn shutdown(&mut self) {
-        OrtDirectMlBackend::shutdown(self);
     }
 }
 

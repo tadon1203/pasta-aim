@@ -1,3 +1,4 @@
+use crate::sync::MutexExt;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
@@ -277,10 +278,7 @@ impl FramePublisher {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.0
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        self.0.state.lock_recover()
     }
 }
 
@@ -337,10 +335,7 @@ impl FrameConsumer {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.0
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        self.0.state.lock_recover()
     }
 }
 
@@ -367,17 +362,12 @@ impl GpuFrameLease {
     pub fn record_drop(&self, reason: GpuDropReason) {
         self.shared
             .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .lock_recover()
             .drop_counts
             .increment(reason);
     }
     pub fn mark_reuse_submitted(&mut self) -> bool {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.shared.state.lock_recover();
         if state.poisoned || self.metadata.slot_id >= GPU_FRAME_SLOTS {
             return false;
         }
@@ -400,11 +390,7 @@ impl GpuFrameLease {
 
 impl Drop for GpuFrameLease {
     fn drop(&mut self) {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.shared.state.lock_recover();
         if state.poisoned || self.reuse_submitted || self.metadata.slot_id >= GPU_FRAME_SLOTS {
             return;
         }

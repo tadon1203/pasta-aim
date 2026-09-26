@@ -79,11 +79,6 @@ impl Sensitivity {
         self.0 as f32 / Self::DEFAULT as f32
     }
 
-    pub fn adjusted(self, delta: i32) -> Self {
-        let value = (i32::from(self.0) + delta).clamp(i32::from(Self::MIN), i32::from(Self::MAX));
-        Self(value as u16)
-    }
-
     pub(crate) fn is_valid(self) -> bool {
         (Self::MIN..=Self::MAX).contains(&self.0)
     }
@@ -116,11 +111,6 @@ impl ConfidenceThreshold {
         self.0 as f32 / Self::MAX as f32
     }
 
-    pub fn adjusted(self, delta: i32) -> Self {
-        let value = (i32::from(self.0) + delta).clamp(i32::from(Self::MIN), i32::from(Self::MAX));
-        Self(value as u8)
-    }
-
     pub(crate) fn is_valid(self) -> bool {
         (Self::MIN..=Self::MAX).contains(&self.0)
     }
@@ -147,10 +137,6 @@ impl TargetYOffset {
 
     pub fn value(self) -> i16 {
         self.0
-    }
-
-    pub fn adjusted(self, delta: i32) -> Self {
-        Self::new(i32::from(self.0) + delta)
     }
 
     pub(crate) fn is_valid(self) -> bool {
@@ -206,16 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn confidence_threshold_is_percentage_and_normalized_at_construction() {
-        assert_eq!(ConfidenceThreshold::default().value(), 50);
-        assert_eq!(ConfidenceThreshold::default().ratio(), 0.5);
-        assert_eq!(ConfidenceThreshold::new(0).ratio(), 0.0);
-        assert_eq!(ConfidenceThreshold::new(100).ratio(), 1.0);
-        assert_eq!(ConfidenceThreshold::new(101).value(), 100);
-        assert_eq!(ConfidenceThreshold::new(50).adjusted(-10).value(), 40);
-    }
-
-    #[test]
     fn fps_limit_is_integer_and_normalized_at_construction() {
         assert_eq!(FpsLimit::new(0).value(), FpsLimit::MIN);
         assert_eq!(FpsLimit::default().value(), 240);
@@ -223,10 +199,18 @@ mod tests {
     }
 
     #[test]
+    fn confidence_threshold_is_percentage_and_normalized_at_construction() {
+        assert_eq!(ConfidenceThreshold::default().value(), 50);
+        assert_eq!(ConfidenceThreshold::default().ratio(), 0.5);
+        assert_eq!(ConfidenceThreshold::new(0).ratio(), 0.0);
+        assert_eq!(ConfidenceThreshold::new(100).ratio(), 1.0);
+        assert_eq!(ConfidenceThreshold::new(101).value(), 100);
+    }
+
+    #[test]
     fn target_y_offset_is_signed_and_normalized_at_construction() {
         assert_eq!(TargetYOffset::default().value(), 0);
         assert_eq!(TargetYOffset::new(-101).value(), TargetYOffset::MIN);
         assert_eq!(TargetYOffset::new(101).value(), TargetYOffset::MAX);
-        assert_eq!(TargetYOffset::new(-25).adjusted(10).value(), -15);
     }
 }
