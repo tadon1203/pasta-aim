@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`nice-aimassist` is a Windows-only Rust + egui app: DXGI Desktop Duplication screen capture → GPU preprocess → YOLO ONNX inference (ONNX Runtime + DirectML) → mouse/controller output through the vendored MAK SDK (`vendor/makxd`). The README (Japanese) documents user-facing behavior and deliberately excluded features (no tracker/prediction/smoothing, no CPU readback, no extra backends) — don't add those. Its "構造" file tree is partly stale; trust `src/` instead.
+`nice-aimassist` is a Windows-only Rust + egui app: DXGI Desktop Duplication screen capture → GPU preprocess → YOLO ONNX inference (ONNX Runtime + DirectML) → mouse/controller output through the vendored MAK SDK (`vendor/makxd`). The README (Japanese) is a minimal summary of user-facing behavior; trust `src/` for details.
 
 ## Commands
 
