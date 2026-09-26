@@ -192,14 +192,6 @@ impl Default for FpsLimit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DirectMlDevice {
-    #[default]
-    AutoHighPerformance,
-    Device(i32),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

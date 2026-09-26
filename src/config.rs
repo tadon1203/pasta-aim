@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     models, paths,
     settings::{
-        ConfidenceThreshold, DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi,
-        OutputMode, Sensitivity, TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, OutputMode,
+        Sensitivity, TargetYOffset,
     },
 };
 
@@ -23,9 +23,8 @@ pub struct Config {
     #[serde(default)]
     pub injection_api: InjectionApi,
     pub hotkeys: Vec<HotkeyBinding>,
-    pub capture_adapter: u32,
+    pub selected_adapter: crate::inference::AdapterLuid,
     pub capture_output: u32,
-    pub directml_device: DirectMlDevice,
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
 }
@@ -84,9 +83,8 @@ impl Default for Config {
             output_mode: OutputMode::Mouse,
             injection_api: InjectionApi::default(),
             hotkeys: default_hotkeys(),
-            capture_adapter: 0,
+            selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
             capture_output: 0,
-            directml_device: DirectMlDevice::default(),
             diagnostics: DiagnosticsConfig::default(),
         }
     }
@@ -202,11 +200,6 @@ impl Config {
         {
             bail!("hotkey shortcut cannot be empty");
         }
-        if let DirectMlDevice::Device(index) = self.directml_device
-            && index < 0
-        {
-            bail!("DirectML device index must be non-negative");
-        }
         Ok(())
     }
 }
@@ -241,9 +234,8 @@ mod tests {
                 {"action": "continuous_hold", "shortcut": "F8"},
                 {"action": "run_once", "shortcut": "xinput:a"}
             ],
-            "capture_adapter": 0,
-            "capture_output": 0,
-            "directml_device": "auto_high_performance"
+            "selected_adapter": {"low": 0, "high": 0},
+            "capture_output": 0
         }"#;
 
         let config: Config = serde_json::from_str(json).unwrap();
@@ -262,9 +254,8 @@ mod tests {
             "fps_limit": 240,
             "output_mode": "mouse",
             "hotkeys": [],
-            "capture_adapter": 0,
-            "capture_output": 0,
-            "directml_device": "auto_high_performance"
+            "selected_adapter": {"low": 0, "high": 0},
+            "capture_output": 0
         }"#;
 
         assert!(serde_json::from_str::<Config>(json).is_err());
@@ -292,9 +283,8 @@ mod tests {
             "fps_limit": 240,
             "output_mode": "mouse",
             "hotkeys": [],
-            "capture_adapter": 0,
-            "capture_output": 0,
-            "directml_device": "auto_high_performance"
+            "selected_adapter": {"low": 0, "high": 0},
+            "capture_output": 0
         }"#;
 
         assert!(serde_json::from_str::<Config>(json).is_err());

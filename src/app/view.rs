@@ -3,19 +3,19 @@ use eframe::egui;
 use super::App;
 use crate::{
     config::{Config, LogLevel},
-    detector::EpAssignmentState,
     engine::{
         CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
         provider_display_name,
     },
-    graphics::{AdapterInfo, DisplayInfo},
+    graphics::DisplayInfo,
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
+    inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
     mak::PhysicalControllerStatus,
     metrics::{MetricSummary, PerformanceSnapshot},
     models,
     settings::{
-        ConfidenceThreshold, DirectMlDevice, FpsLimit, HotkeyAction, InjectionApi, OutputMode,
-        Sensitivity, TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, OutputMode, Sensitivity,
+        TargetYOffset,
     },
 };
 
@@ -66,42 +66,6 @@ impl App {
                 {
                     self.model_catalog_error = Some(format!("{error:#}"));
                 }
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("DirectML");
-                let selected = self.directml_device_label(status.model.directml_device, status);
-                let can_change =
-                    status.model.phase != ModelPhase::Loading && status.run.phase == RunPhase::Idle;
-                ui.add_enabled_ui(can_change, |ui| {
-                    egui::ComboBox::from_id_salt("directml_device_selector")
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(
-                                    status.model.directml_device
-                                        == DirectMlDevice::AutoHighPerformance,
-                                    "Auto (high performance)",
-                                )
-                                .clicked()
-                            {
-                                self.select_directml_device(DirectMlDevice::AutoHighPerformance);
-                            }
-                            for adapter in &status.graphics.adapters {
-                                let device = DirectMlDevice::Device(adapter.index as i32);
-                                if ui
-                                    .selectable_label(
-                                        status.model.directml_device == device,
-                                        adapter.label(),
-                                    )
-                                    .clicked()
-                                {
-                                    self.select_directml_device(device);
-                                }
-                            }
-                        });
-                });
-                ui.small("DirectML requested; actual EP assignment is shown in Diagnostics");
             });
 
             if self.models.is_empty() {
@@ -609,11 +573,15 @@ impl App {
                         );
                         ui.end_row();
 
-                        ui.label("Requested EP");
-                        ui.label(format!(
-                            "DirectML · {}",
-                            self.directml_device_label(status.model.directml_device, status)
-                        ));
+                        ui.label("Inference adapter");
+                        ui.label(
+                            status
+                                .capture
+                                .selected
+                                .as_ref()
+                                .map(|display| display.adapter_name.clone())
+                                .unwrap_or_else(|| "Unavailable".to_owned()),
+                        );
                         ui.end_row();
 
                         if let Some(assignment) = &status.model.ep_assignment {
@@ -729,19 +697,6 @@ impl App {
             });
     }
 
-    fn directml_device_label(&self, device: DirectMlDevice, status: &EngineStatus) -> String {
-        match device {
-            DirectMlDevice::AutoHighPerformance => "Auto (high performance)".to_owned(),
-            DirectMlDevice::Device(index) => status
-                .graphics
-                .adapters
-                .iter()
-                .find(|adapter| adapter.index as i32 == index)
-                .map(AdapterInfo::label)
-                .unwrap_or_else(|| format!("Device {index}")),
-        }
-    }
-
     fn diagnostics_text(&self, status: &EngineStatus) -> String {
         let display = status
             .capture
@@ -780,9 +735,14 @@ impl App {
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\nrequested EP: DirectML · {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\ncontroller release pending: {}\nphysical controller: {}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/admitted FPS: {:.1}/{:.1}\nadmission drop: {:.1}%\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nmap wait p50/p95: {:.2}/{:.2} ms\npreprocess p50/p95: {:.2}/{:.2} ms\nqueue age p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\ncausal discards: {}\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\ncontroller release pending: {}\nphysical controller: {}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/admitted FPS: {:.1}/{:.1}\nadmission drop: {:.1}%\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\nqueue age p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nGPU slot drops: {} · mailbox overwrites: {} · slots in flight: {}\ncausal discards: {}\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
-            self.directml_device_label(status.model.directml_device, status),
+            status
+                .capture
+                .selected
+                .as_ref()
+                .map(|display| display.adapter_name.as_str())
+                .unwrap_or("Unavailable"),
             ep_assignment_copy_text(status),
             mak_phase_label(status.mak.phase),
             status.mak.port.as_deref().unwrap_or("unknown"),
@@ -804,6 +764,7 @@ impl App {
             status.performance.sample_count,
             status.performance.total.p50_ms,
             status.performance.total.p95_ms,
+            status.performance.total.p99_ms,
             status.performance.acquire_wait.p50_ms,
             status.performance.acquire_wait.p95_ms,
             status.performance.capture.p50_ms,
@@ -812,14 +773,15 @@ impl App {
             status.performance.copy_submit.p95_ms,
             status.performance.gpu_copy.p50_ms,
             status.performance.gpu_copy.p95_ms,
-            status.performance.map_wait.p50_ms,
-            status.performance.map_wait.p95_ms,
             status.performance.preprocess.p50_ms,
             status.performance.preprocess.p95_ms,
             status.performance.queue_age.p50_ms,
             status.performance.queue_age.p95_ms,
             status.performance.inference.p50_ms,
             status.performance.inference.p95_ms,
+            status.performance.capture_source.gpu_slot_busy_drops,
+            status.performance.capture_source.mailbox_overwrites,
+            status.performance.capture_source.slots_in_flight,
             status.performance.causal_discards,
         )
     }
@@ -996,7 +958,7 @@ fn draw_ep_assignment_diagnostics(ui: &mut egui::Ui, status: &EngineStatus) {
     }
 }
 
-fn draw_assigned_nodes(ui: &mut egui::Ui, nodes: &[crate::detector::EpAssignedNode]) {
+fn draw_assigned_nodes(ui: &mut egui::Ui, nodes: &[EpAssignedNode]) {
     for node in nodes {
         ui.horizontal_wrapped(|ui| {
             ui.monospace(&node.op_type);
@@ -1129,10 +1091,11 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
         performance.capture_source.admission_drop_ratio * 100.0,
     ));
     ui.small(format!(
-        "Accumulated {:.2} · Overwritten {} · Buffer starved {} · Causal discards {}",
+        "Accumulated {:.2} · GPU slot drops {} · Mailbox overwrites {} · Slots in flight {} · Causal discards {}",
         performance.capture_source.mean_accumulated_frames,
-        performance.capture_source.overwritten_frames,
-        performance.capture_source.buffer_starved_frames,
+        performance.capture_source.gpu_slot_busy_drops,
+        performance.capture_source.mailbox_overwrites,
+        performance.capture_source.slots_in_flight,
         performance.causal_discards,
     ));
     if performance.sample_count == 0 {
@@ -1149,20 +1112,30 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
         performance.fps, performance.sample_count
     ));
     egui::Grid::new("performance_grid")
-        .num_columns(3)
+        .num_columns(4)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
             ui.label("");
             ui.strong("p50");
             ui.strong("p95");
+            ui.strong("p99");
             ui.end_row();
             metric_row(ui, "Pipeline", performance.total);
+            metric_row(
+                ui,
+                "Present → GPU submit",
+                performance.present_to_gpu_submit,
+            );
+            metric_row(
+                ui,
+                "Present → inference",
+                performance.present_to_inference_start,
+            );
             metric_row(ui, "DXGI acquire wait", performance.acquire_wait);
             metric_row(ui, "Capture", performance.capture);
-            metric_row(ui, "D3D11 Copy submit", performance.copy_submit);
-            metric_row(ui, "D3D11 GPU copy", performance.gpu_copy);
-            metric_row(ui, "D3D11 Map wait", performance.map_wait);
-            metric_row(ui, "Preprocess", performance.preprocess);
+            metric_row(ui, "GPU copy submit", performance.copy_submit);
+            metric_row(ui, "GPU copy", performance.gpu_copy);
+            metric_row(ui, "GPU preprocess", performance.preprocess);
             metric_row(ui, "Queue age", performance.queue_age);
             metric_row(ui, "Inference", performance.inference);
             metric_row(ui, "Postprocess", performance.postprocess);
@@ -1180,6 +1153,7 @@ fn metric_row(ui: &mut egui::Ui, name: &str, metric: MetricSummary) {
     ui.label(name);
     ui.label(format!("{:.2} ms", metric.p50_ms));
     ui.label(format!("{:.2} ms", metric.p95_ms));
+    ui.label(format!("{:.2} ms", metric.p99_ms));
     ui.end_row();
 }
 

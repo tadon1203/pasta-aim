@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc::Sender},
     thread,
@@ -19,13 +20,15 @@ use crate::{
     engine::{
         RunGeneration,
         capture_worker::{CaptureEvent, CaptureFault, CaptureWorker},
-        inference_worker::{InferenceEvent, InferenceFrameResult, InferenceWorker},
+        inference_worker::{InferenceControlEvent, InferenceFrameResult, InferenceWorker},
     },
     graphics::GraphicsThread,
+    graphics::{FrameConsumer, GpuDropReason, GpuFaultReport},
+    inference::AdapterLuid,
     mak::{MakClient, MakConnectionEvent, MakMetadata, MakRoutes, PhysicalControllerStatus},
     metrics::{Metrics, StageTimings},
     models,
-    settings::{DirectMlDevice, FpsLimit, OutputMode, Sensitivity, TargetYOffset},
+    settings::{ConfidenceThreshold, FpsLimit, OutputMode, Sensitivity, TargetYOffset},
     timing::QpcClock,
 };
 
@@ -47,13 +50,19 @@ struct Worker {
     active_model: Option<(String, PathBuf)>,
     capture_worker: CaptureWorker,
     inference_worker: InferenceWorker,
+    frame_consumer: FrameConsumer,
     model_ready: bool,
+    auto_reprepare_attempted: bool,
+    next_pipeline_id: u64,
+    active_pipeline_id: Option<u64>,
+    gpu_fault_history: VecDeque<GpuFaultReport>,
     capture_adapter: u32,
     capture_output: u32,
-    directml_device: DirectMlDevice,
+    selected_adapter_luid: AdapterLuid,
     mak: MakClient,
     metrics: Metrics,
     sensitivity: Sensitivity,
+    confidence_threshold: ConfidenceThreshold,
     target_y_offset: TargetYOffset,
     fps_limit: FpsLimit,
     output_mode: OutputMode,
@@ -119,7 +128,7 @@ pub(super) fn run_worker(
     };
     let inference_worker = match InferenceWorker::spawn(
         qpc,
-        frame_consumer,
+        frame_consumer.clone(),
         config.confidence_threshold,
     ) {
         Ok(worker) => worker,
@@ -135,13 +144,19 @@ pub(super) fn run_worker(
         active_model: None,
         capture_worker,
         inference_worker,
+        frame_consumer,
         model_ready: false,
-        capture_adapter: config.capture_adapter,
+        auto_reprepare_attempted: false,
+        next_pipeline_id: 1,
+        active_pipeline_id: None,
+        gpu_fault_history: VecDeque::with_capacity(2),
+        capture_adapter: 0,
         capture_output: config.capture_output,
-        directml_device: config.directml_device,
+        selected_adapter_luid: config.selected_adapter,
         mak: MakClient::new(),
         metrics: Metrics::new(),
         sensitivity: config.sensitivity,
+        confidence_threshold: config.confidence_threshold,
         target_y_offset: config.target_y_offset,
         fps_limit: config.fps_limit,
         output_mode: config.output_mode,
@@ -161,7 +176,6 @@ pub(super) fn run_worker(
 
     worker.refresh_capture_catalog();
     worker.initialize_capture();
-    worker.edit_status(|status| status.model.directml_device = config.directml_device);
     if let Err(error) = worker.mak.set_injection_api(config.injection_api) {
         tracing::error!(error = %format!("{error:#}"), "initial injection API setup failed");
     }
@@ -191,6 +205,17 @@ pub(super) fn run_worker(
                 Ok(command) => if !worker.handle_command(command) { return; },
                 Err(_) => return,
             },
+            recv(worker.inference_worker.result_ready_rx()) -> _ => {
+                if let Some(result) = worker.inference_worker.take_latest_result()
+                    && let Err(error) = worker.handle_completed_inference(result)
+                {
+                    worker.stop_after_run_error(format!("Inference output failed: {error:#}"));
+                }
+                let superseded = worker.inference_worker.take_result_superseded();
+                for _ in 0..superseded {
+                    worker.metrics.record_gpu_drop(GpuDropReason::ResultSuperseded);
+                }
+            },
             recv(worker.inference_worker.event_rx()) -> event => {
                 if let Ok(event) = event { worker.handle_inference_event(event); }
             },
@@ -208,6 +233,7 @@ impl Worker {
             Command::LoadModel { name, path, notify } => self.load_model(notify, name, path),
             Command::SetSensitivity(value) => self.sensitivity = value,
             Command::SetConfidenceThreshold(value) => {
+                self.confidence_threshold = value;
                 self.inference_worker.set_confidence_threshold(value)
             }
             Command::SetTargetYOffset(value) => self.target_y_offset = value,
@@ -245,16 +271,16 @@ impl Worker {
                 }
             },
             Command::SetCaptureSelection { adapter, output } => {
+                self.auto_reprepare_attempted = false;
                 self.set_capture_selection(adapter, output)
             }
-            Command::SetDirectMlDevice(device) => self.set_directml_device(device),
             Command::SetContinuous(active) => self.set_continuous(active),
             Command::RunOnce => self.run_once(),
             Command::RefreshMakRoutes => self.refresh_mak_routes(),
             Command::RescanMak => self.rescan_mak(),
             Command::RetryCapture => {
-                self.stop_continuous();
-                self.initialize_capture();
+                self.auto_reprepare_attempted = false;
+                self.retry_suspended_pipeline();
             }
             Command::ProbeController => self.probe_physical_controller(),
             Command::RescanDisplays => self.refresh_capture_catalog(),
@@ -274,25 +300,17 @@ impl Worker {
             return;
         };
 
-        let adapters = graphics.enumerate_adapters();
         let displays = graphics.enumerate_displays();
-        match (adapters, displays) {
-            (Ok(adapters), Ok(displays)) => self.edit_status(|status| {
-                status.graphics.adapters = adapters;
+        match displays {
+            Ok(displays) => self.edit_status(|status| {
                 status.graphics.displays = displays;
                 status.graphics.catalog_error = None;
             }),
-            (adapter_result, display_result) => {
-                let error = adapter_result
-                    .as_ref()
-                    .err()
-                    .or_else(|| display_result.as_ref().err())
-                    .map(|error| format!("{error:#}"))
-                    .unwrap_or_else(|| "graphics enumeration failed".to_owned());
+            Err(error) => {
+                let error = format!("{error:#}");
                 self.edit_status(|status| {
                     tracing::error!(%error, "graphics enumeration failed");
-                    status.graphics.adapters = adapter_result.unwrap_or_default();
-                    status.graphics.displays = display_result.unwrap_or_default();
+                    status.graphics.displays.clear();
                     status.graphics.catalog_error = Some(error);
                 });
             }
@@ -300,6 +318,19 @@ impl Worker {
     }
 
     fn initialize_capture(&mut self) {
+        if let Some(display) = self.status.lock().ok().and_then(|status| {
+            status
+                .graphics
+                .displays
+                .iter()
+                .find(|display| {
+                    display.adapter_luid == self.selected_adapter_luid
+                        && display.output_index == self.capture_output
+                })
+                .cloned()
+        }) {
+            self.capture_adapter = display.adapter_index;
+        }
         tracing::info!(
             adapter = self.capture_adapter,
             output = self.capture_output,
@@ -316,6 +347,7 @@ impl Worker {
             .configure_output(self.capture_adapter, self.capture_output)
         {
             Ok(selected) => {
+                self.selected_adapter_luid = selected.adapter_luid;
                 self.edit_status(|status| {
                     status.capture.phase = CapturePhase::Ready;
                     status.capture.selected = Some(selected);
@@ -336,35 +368,31 @@ impl Worker {
 
     fn set_capture_selection(&mut self, adapter: u32, output: u32) {
         tracing::info!(adapter, output, "changing capture selection");
-        self.stop_continuous();
-        match self.capture_worker.configure_output(adapter, output) {
-            Ok(selected) => {
-                self.capture_adapter = adapter;
-                self.capture_output = output;
-                self.metrics.mark_cold_next();
-                self.edit_status(|status| {
-                    status.capture.phase = CapturePhase::Ready;
-                    status.capture.selected = Some(selected);
-                    status.capture.desktop_size = None;
-                    status.capture.error = None;
-                    status.run.error = None;
-                });
-                self.emit_event(EngineEvent::Capture {
-                    adapter,
-                    output,
-                    result: Ok(()),
-                });
-                tracing::info!(adapter, output, "capture selection changed");
-            }
+        let current = self
+            .status
+            .lock()
+            .ok()
+            .and_then(|status| status.capture.selected.clone());
+        if let Some(selected) = &current
+            && selected.adapter_index == adapter
+            && selected.output_index == output
+        {
+            self.emit_event(EngineEvent::Capture {
+                adapter,
+                output,
+                adapter_luid: selected.adapter_luid,
+                result: Ok(()),
+            });
+            return;
+        }
+        let was_continuous = self.continuous;
+        let prepared = self.prepare_pipeline(adapter, output);
+        let (capture, inference, consumer, selected, loaded) = match prepared {
+            Ok(value) => value,
             Err(error) => {
                 let message = format!("Display change failed: {error:#}");
-                let has_active = self
-                    .status
-                    .lock()
-                    .map(|status| status.capture.selected.is_some())
-                    .unwrap_or(false);
                 self.edit_status(|status| {
-                    status.capture.phase = if has_active {
+                    status.capture.phase = if status.capture.selected.is_some() {
                         CapturePhase::Ready
                     } else {
                         CapturePhase::Failed
@@ -374,15 +402,134 @@ impl Worker {
                 self.emit_event(EngineEvent::Capture {
                     adapter,
                     output,
+                    adapter_luid: current
+                        .map(|display| display.adapter_luid)
+                        .unwrap_or(self.selected_adapter_luid),
                     result: Err(message.clone()),
                 });
-                tracing::error!(adapter, output, %message, "capture selection change failed");
+                tracing::error!(adapter, output, %message, "display prepare failed; active pipeline retained");
+                return;
+            }
+        };
+
+        let was_running = self.active_generation.take().is_some();
+        if was_running {
+            self.mak.release_controller_best_effort();
+            let _ = self.inference_worker.stop(self.run_generation);
+            let _ = self.capture_worker.stop();
+        }
+        self.continuous = false;
+        let generation = self.next_generation();
+        self.capture_adapter = adapter;
+        self.capture_output = output;
+        self.selected_adapter_luid = selected.adapter_luid;
+        self.capture_worker = capture;
+        self.inference_worker = inference;
+        self.frame_consumer = consumer;
+        self.metrics.mark_cold_next();
+        self.model_ready = loaded.is_some();
+        self.active_pipeline_id = None;
+        if let Some(info) = loaded {
+            self.active_pipeline_id = Some(info.pipeline_id);
+            self.gpu_pipeline_state(
+                "Running",
+                Some(info.pipeline_id),
+                Some(&info.prepare_id),
+                None,
+                None,
+            );
+            tracing::info!(backend = %info.backend_info.name, luid_low = info.backend_info.adapter_luid.low, luid_high = info.backend_info.adapter_luid.high, "prepared inference backend committed");
+            let assignment_summary = ep_assignment_summary(&info.ep_assignment);
+            self.edit_status(|status| {
+                status.model.phase = ModelPhase::Ready;
+                status.model.input_size = Some(info.input_size);
+                status.model.error = None;
+                status.model.ep_assignment = Some(info.ep_assignment);
+                status.model.ep_assignment_summary = assignment_summary;
+            });
+        }
+        self.edit_status(|status| {
+            status.capture.phase = CapturePhase::Ready;
+            status.capture.selected = Some(selected.clone());
+            status.capture.desktop_size = None;
+            status.capture.error = None;
+            status.run.error = None;
+            status.run.phase = RunPhase::Idle;
+        });
+        self.emit_event(EngineEvent::Capture {
+            adapter,
+            output,
+            adapter_luid: selected.adapter_luid,
+            result: Ok(()),
+        });
+        if was_continuous && self.model_ready {
+            self.last_motion_complete_qpc = None;
+            if let Err(error) = self
+                .capture_worker
+                .start_continuous(generation)
+                .and_then(|()| self.inference_worker.start(generation))
+            {
+                let _ = self.capture_worker.stop();
+                let _ = self.inference_worker.stop(generation);
+                self.edit_status(|status| {
+                    status.run.error =
+                        Some(format!("Pipeline committed but restart failed: {error:#}"))
+                });
+            } else {
+                self.active_generation = Some(generation);
+                self.continuous = true;
+                self.edit_status(|status| status.run.phase = RunPhase::Continuous);
             }
         }
+        tracing::info!(
+            adapter,
+            output,
+            luid_low = selected.adapter_luid.low,
+            luid_high = selected.adapter_luid.high,
+            "display pipeline committed"
+        );
+    }
+
+    fn prepare_pipeline(
+        &mut self,
+        adapter: u32,
+        output: u32,
+    ) -> Result<(
+        CaptureWorker,
+        InferenceWorker,
+        FrameConsumer,
+        crate::graphics::DisplayInfo,
+        Option<crate::engine::inference_worker::PreparedModelInfo>,
+    )> {
+        let pipeline_id = self.next_pipeline_id();
+        self.gpu_pipeline_state("Preparing", Some(pipeline_id), None, None, None);
+        let (capture, consumer) = CaptureWorker::spawn(self.qpc)?;
+        capture.set_fps_limit(self.fps_limit)?;
+        let selected = capture.configure_output(adapter, output)?;
+        let inference =
+            InferenceWorker::spawn(self.qpc, consumer.clone(), self.confidence_threshold)?;
+        let loaded = if let Some((_, path)) = &self.active_model {
+            let transport_device = capture.transport_device()?;
+            let loaded = inference.load_model(
+                path.clone(),
+                selected.adapter_luid,
+                transport_device,
+                capture.publisher(),
+                pipeline_id,
+            )?;
+            capture.configure_frame_pool(loaded.capture_frames.clone())?;
+            Some(loaded)
+        } else {
+            None
+        };
+        Ok((capture, inference, consumer, selected, loaded))
     }
 
     fn load_model(&mut self, notify: bool, name: String, path: PathBuf) {
-        tracing::info!(model = %name, path = %path.display(), ?self.directml_device, "loading model in engine");
+        self.auto_reprepare_attempted = false;
+        let pipeline_id = self.next_pipeline_id();
+        self.gpu_pipeline_state("Preparing", Some(pipeline_id), None, None, None);
+        tracing::info!(model = %name, path = %path.display(), luid_low = self.selected_adapter_luid.low, luid_high = self.selected_adapter_luid.high, "loading model in engine");
         self.stop_continuous();
         self.mak.release_controller_best_effort();
         self.sync_release_pending_status();
@@ -394,18 +541,32 @@ impl Worker {
         });
 
         let was_model_ready = self.model_ready;
-        self.model_ready = false;
-        match self
-            .inference_worker
-            .load_model(path.clone(), self.directml_device)
-            .and_then(|loaded| {
-                self.capture_worker
-                    .configure_input(loaded.input_size.0, loaded.input_size.1)
-                    .map(|()| loaded)
-            }) {
-            Ok(loaded) => {
+        let result = (|| -> Result<(InferenceWorker, crate::engine::inference_worker::PreparedModelInfo)> {
+            let candidate = InferenceWorker::spawn(self.qpc, self.frame_consumer.clone(), self.confidence_threshold)?;
+            let transport_device = self.capture_worker.transport_device()?;
+            let loaded = candidate.load_model(
+                path.clone(),
+                self.selected_adapter_luid,
+                transport_device,
+                self.capture_worker.publisher(),
+                pipeline_id,
+            )?;
+            self.capture_worker.configure_frame_pool(loaded.capture_frames.clone())?;
+            Ok((candidate, loaded))
+        })();
+        match result {
+            Ok((candidate, loaded)) => {
+                self.active_pipeline_id = Some(loaded.pipeline_id);
+                self.gpu_pipeline_state(
+                    "Running",
+                    Some(loaded.pipeline_id),
+                    Some(&loaded.prepare_id),
+                    None,
+                    None,
+                );
+                tracing::info!(backend = %loaded.backend_info.name, backend_kind = ?loaded.backend_info.kind, luid_low = loaded.backend_info.adapter_luid.low, luid_high = loaded.backend_info.adapter_luid.high, "prepared model backend committed");
+                self.inference_worker = candidate;
                 let size = loaded.input_size;
-                let device = loaded.directml_device;
                 let assignment = loaded.ep_assignment;
                 let assignment_summary = ep_assignment_summary(&assignment);
                 self.model_ready = true;
@@ -416,7 +577,6 @@ impl Worker {
                     status.model.active_name = Some(name.clone());
                     status.model.loading_name = None;
                     status.model.input_size = Some(size);
-                    status.model.directml_device = device;
                     status.model.error = None;
                     status.model.ep_assignment = Some(assignment);
                     status.model.ep_assignment_summary = assignment_summary;
@@ -449,87 +609,6 @@ impl Worker {
                         result: Err(message),
                     });
                 }
-            }
-        }
-    }
-
-    fn set_directml_device(&mut self, requested: DirectMlDevice) {
-        tracing::info!(?requested, "changing DirectML device");
-        if requested == self.directml_device {
-            self.emit_event(EngineEvent::DirectMl {
-                device: requested,
-                result: Ok(()),
-            });
-            return;
-        }
-        self.stop_continuous();
-
-        let Some((name, path)) = self.active_model.clone() else {
-            self.directml_device = requested;
-            self.edit_status(|status| {
-                status.model.directml_device = requested;
-                status.model.error = None;
-            });
-            self.emit_event(EngineEvent::DirectMl {
-                device: requested,
-                result: Ok(()),
-            });
-            return;
-        };
-
-        self.edit_status(|status| {
-            status.model.phase = ModelPhase::Loading;
-            status.model.loading_name = Some(name.clone());
-            status.model.error = None;
-        });
-        let was_model_ready = self.model_ready;
-        self.model_ready = false;
-        match self
-            .inference_worker
-            .load_model(path, requested)
-            .and_then(|loaded| {
-                self.capture_worker
-                    .configure_input(loaded.input_size.0, loaded.input_size.1)
-                    .map(|()| loaded)
-            }) {
-            Ok(loaded) => {
-                let size = loaded.input_size;
-                let assignment = loaded.ep_assignment;
-                let assignment_summary = ep_assignment_summary(&assignment);
-                self.model_ready = true;
-                self.directml_device = requested;
-                self.metrics.mark_cold_next();
-                self.edit_status(|status| {
-                    status.model.phase = ModelPhase::Ready;
-                    status.model.loading_name = None;
-                    status.model.input_size = Some(size);
-                    status.model.directml_device = requested;
-                    status.model.error = None;
-                    status.model.ep_assignment = Some(assignment);
-                    status.model.ep_assignment_summary = assignment_summary;
-                });
-                self.emit_event(EngineEvent::DirectMl {
-                    device: requested,
-                    result: Ok(()),
-                });
-            }
-            Err(error) => {
-                let message = format!("DirectML device change failed: {error:#}");
-                tracing::error!(?requested, %message, "DirectML device change failed");
-                self.model_ready = was_model_ready;
-                self.edit_status(|status| {
-                    status.model.phase = if was_model_ready {
-                        ModelPhase::Ready
-                    } else {
-                        ModelPhase::Empty
-                    };
-                    status.model.loading_name = None;
-                    status.model.error = Some(message.clone());
-                });
-                self.emit_event(EngineEvent::DirectMl {
-                    device: requested,
-                    result: Err(message),
-                });
             }
         }
     }
@@ -671,6 +750,10 @@ impl Worker {
     }
 
     fn set_continuous(&mut self, active: bool) {
+        self.set_continuous_inner(active);
+    }
+
+    fn set_continuous_inner(&mut self, active: bool) {
         if !active {
             self.stop_continuous();
             return;
@@ -786,6 +869,68 @@ impl Worker {
         });
     }
 
+    fn suspend_invalid_pipeline(&mut self, error: String) {
+        self.stop_after_run_error(error.clone());
+        self.continuous = false;
+        self.model_ready = false;
+        self.active_generation = None;
+        self.edit_status(|status| {
+            status.capture.phase = CapturePhase::Failed;
+            status.capture.selected = None;
+            status.capture.desktop_size = None;
+            status.capture.error = Some(error.clone());
+        });
+
+        // Stop and join both owners before constructing replacement devices.
+        self.inference_worker.shutdown();
+        self.capture_worker.shutdown();
+        let _ = self.persist_gpu_fault_reports(None);
+        let replacement = (|| -> Result<(CaptureWorker, InferenceWorker, FrameConsumer)> {
+            let (capture, consumer) = CaptureWorker::spawn(self.qpc)?;
+            capture.set_fps_limit(self.fps_limit)?;
+            let inference =
+                InferenceWorker::spawn(self.qpc, consumer.clone(), self.confidence_threshold)?;
+            Ok((capture, inference, consumer))
+        })();
+        match replacement {
+            Ok((capture, inference, consumer)) => {
+                drop(std::mem::replace(&mut self.inference_worker, inference));
+                drop(std::mem::replace(&mut self.capture_worker, capture));
+                self.frame_consumer = consumer;
+            }
+            Err(rebuild_error) => {
+                tracing::error!(error = %format!("{rebuild_error:#}"), "failed to create suspended pipeline workers");
+            }
+        }
+        tracing::error!(%error, "invalid GPU pipeline dropped; capture remains suspended");
+    }
+
+    fn retry_suspended_pipeline(&mut self) {
+        self.stop_continuous();
+        self.refresh_capture_catalog();
+        let display = self.status.lock().ok().and_then(|status| {
+            status
+                .graphics
+                .displays
+                .iter()
+                .find(|display| {
+                    display.adapter_luid == self.selected_adapter_luid
+                        && display.output_index == self.capture_output
+                })
+                .cloned()
+        });
+        if let Some(display) = display {
+            self.set_capture_selection(display.adapter_index, display.output_index);
+        } else {
+            let error = "The previously selected capture adapter is unavailable".to_owned();
+            self.edit_status(|status| {
+                status.capture.phase = CapturePhase::Failed;
+                status.capture.error = Some(error.clone());
+                status.run.error = Some(error);
+            });
+        }
+    }
+
     fn clear_run_error(&self) {
         self.edit_status(|status| status.run.error = None);
     }
@@ -816,14 +961,51 @@ impl Worker {
         self.run_generation
     }
 
+    fn next_pipeline_id(&mut self) -> u64 {
+        let id = self.next_pipeline_id;
+        self.next_pipeline_id = id.wrapping_add(1).max(1);
+        id
+    }
+
+    fn gpu_pipeline_state(
+        &self,
+        state: &'static str,
+        pipeline_id: Option<u64>,
+        prepare_id: Option<&str>,
+        attempt: Option<u8>,
+        reason: Option<&str>,
+    ) {
+        tracing::info!(
+            event = "gpu_pipeline_state",
+            state,
+            pipeline_id = ?pipeline_id,
+            prepare_id = ?prepare_id,
+            attempt = ?attempt,
+            reason = ?reason,
+            "gpu_pipeline_state"
+        );
+    }
+
     fn handle_capture_fault(&mut self, fault: CaptureFault) {
         if let Some(generation) = fault.generation
             && self.active_generation != Some(generation)
+            && !fault
+                .report
+                .as_ref()
+                .is_some_and(|report| Some(report.pipeline_id) == self.active_pipeline_id)
         {
             tracing::debug!(generation, "discarding stale capture fault");
             return;
         }
-        self.stop_after_run_error(format!("Capture failed: {}", fault.error));
+        if fault.poisoned {
+            self.recover_poisoned_pipeline(
+                format!("Capture transport failed: {}", fault.error),
+                fault.device_lost,
+                fault.report,
+            );
+        } else {
+            self.suspend_invalid_pipeline(format!("Capture failed: {}", fault.error));
+        }
     }
 
     fn handle_capture_event(&mut self, event: CaptureEvent) {
@@ -840,19 +1022,107 @@ impl Worker {
         }
     }
 
-    fn handle_inference_event(&mut self, event: InferenceEvent) {
+    fn handle_inference_event(&mut self, event: InferenceControlEvent) {
         match event {
-            InferenceEvent::Completed(result) => {
-                if let Err(error) = self.handle_completed_inference(result) {
-                    self.stop_after_run_error(format!("Inference output failed: {error:#}"));
+            InferenceControlEvent::Failed { generation, error } => {
+                if self.active_generation == Some(generation) {
+                    self.suspend_invalid_pipeline(error);
                 }
             }
-            InferenceEvent::Failed { generation, error } => {
-                if self.active_generation == Some(generation) {
-                    self.stop_after_run_error(error);
+            InferenceControlEvent::Poisoned {
+                generation,
+                error,
+                device_lost,
+                report,
+            } => {
+                let belongs_to_active_pipeline = report
+                    .as_ref()
+                    .is_some_and(|report| Some(report.pipeline_id) == self.active_pipeline_id);
+                if self.active_generation == Some(generation) || belongs_to_active_pipeline {
+                    self.recover_poisoned_pipeline(error, device_lost, report);
                 }
             }
         }
+    }
+
+    fn recover_poisoned_pipeline(
+        &mut self,
+        error: String,
+        device_lost: bool,
+        report: Option<GpuFaultReport>,
+    ) {
+        let resume_continuous = self.continuous;
+        self.metrics
+            .record_gpu_drop(GpuDropReason::PipelinePoisoned);
+        let (reported_pipeline_id, prepare_id) = self.persist_gpu_fault_reports(report);
+        let pipeline_id = reported_pipeline_id.or(self.active_pipeline_id);
+        self.gpu_pipeline_state("Poisoned", pipeline_id, prepare_id.as_deref(), None, None);
+        let can_attempt_reprepare = should_auto_reprepare(&mut self.auto_reprepare_attempted);
+        self.gpu_pipeline_state("Teardown", pipeline_id, prepare_id.as_deref(), None, None);
+        self.suspend_invalid_pipeline(error.clone());
+        if !can_attempt_reprepare {
+            let reason = if device_lost {
+                "repeated_device_removed_after_single_reprepare"
+            } else {
+                "repeated_fatal_gpu_fault_after_single_reprepare"
+            };
+            self.gpu_pipeline_state(
+                "GpuPipelineInvalid",
+                pipeline_id,
+                prepare_id.as_deref(),
+                Some(1),
+                Some(reason),
+            );
+            self.edit_status(|status| {
+                status.run.error = Some(if device_lost {
+                    format!("{error}; GPU pipeline invalid after its single automatic reprepare")
+                } else {
+                    format!("{error}; GPU pipeline invalid after its single automatic reprepare")
+                });
+            });
+            return;
+        }
+
+        self.gpu_pipeline_state(
+            "Preparing",
+            pipeline_id,
+            prepare_id.as_deref(),
+            Some(1),
+            None,
+        );
+        tracing::warn!(%error, "repreparing complete GPU pipeline once after transport poison");
+        self.retry_suspended_pipeline();
+        if resume_continuous && self.model_ready {
+            self.set_continuous_inner(true);
+        }
+        if !self.model_ready {
+            self.gpu_pipeline_state(
+                "GpuPipelineInvalid",
+                pipeline_id,
+                prepare_id.as_deref(),
+                Some(1),
+                Some("automatic_reprepare_failed"),
+            );
+        }
+    }
+
+    fn persist_gpu_fault_reports(
+        &mut self,
+        fallback: Option<GpuFaultReport>,
+    ) -> (Option<u64>, Option<String>) {
+        let reports = fallback.into_iter().collect::<Vec<_>>();
+        let primary = reports
+            .first()
+            .map(|report| (Some(report.pipeline_id), Some(report.prepare_id.clone())))
+            .unwrap_or((None, None));
+        for report in reports {
+            report.log();
+            self.gpu_fault_history.push_back(report);
+            while self.gpu_fault_history.len() > 4 {
+                self.gpu_fault_history.pop_front();
+            }
+        }
+        primary
     }
 
     fn handle_completed_inference(&mut self, result: InferenceFrameResult) -> Result<()> {
@@ -898,15 +1168,20 @@ impl Worker {
             .qpc
             .elapsed_ms(result.metadata.present_qpc, output_complete_qpc);
         let timings = StageTimings {
+            present_to_gpu_submit_ms: self
+                .qpc
+                .elapsed_ms(result.metadata.present_qpc, result.metadata.ready_qpc),
+            present_to_inference_start_ms: self
+                .qpc
+                .elapsed_ms(result.metadata.present_qpc, result.inference_start_qpc),
             acquire_wait_ms: result.metadata.acquire_wait_ms,
             capture_ms: result.metadata.capture_ms,
             copy_submit_ms: result.metadata.copy_submit_ms,
-            map_wait_ms: result.metadata.map_wait_ms,
-            preprocess_ms: result.metadata.preprocess_ms,
+            gpu_preprocess_ms: result.gpu_preprocess_ms,
             queue_age_ms: self
                 .qpc
                 .elapsed_ms(result.metadata.ready_qpc, result.inference_start_qpc),
-            inference_ms: result.inference_ms,
+            ort_run_wall_ms: result.ort_run_wall_ms,
             postprocess_ms: result.postprocess_ms,
             mak_write_ms,
             total_ms,
@@ -941,13 +1216,17 @@ impl Worker {
         });
         if crate::logging::frame_trace_enabled() {
             tracing::trace!(
+                pipeline_id = result.metadata.pipeline_id,
+                generation = result.metadata.generation,
+                frame_seq = result.metadata.frame_seq,
+                slot_id = result.metadata.slot_id,
                 acquire_wait_ms = result.metadata.acquire_wait_ms,
                 capture_ms = result.metadata.capture_ms,
-                preprocess_ms = result.metadata.preprocess_ms,
+                gpu_preprocess_ms = result.gpu_preprocess_ms,
                 queue_age_ms = timings.queue_age_ms,
                 present_qpc = result.metadata.present_qpc,
                 accumulated_frames = result.metadata.accumulated_frames,
-                inference_ms = result.inference_ms,
+                ort_run_wall_ms = result.ort_run_wall_ms,
                 inference_span_ms,
                 mak_write_ms,
                 total_ms,
@@ -974,6 +1253,7 @@ impl Worker {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     fn write_detection_output(
         &mut self,
         result: &InferenceFrameResult,
@@ -1058,6 +1338,12 @@ impl Worker {
             inference_p50_ms = performance.inference.p50_ms,
             mak_write_p50_ms = performance.mak_write.p50_ms,
             pipeline_p50_ms = performance.total.p50_ms,
+            superseded_before_claim = performance.gpu_drop_counts.get(GpuDropReason::SupersededBeforeClaim),
+            no_free_slot = performance.gpu_drop_counts.get(GpuDropReason::NoFreeSlot),
+            stale_generation = performance.gpu_drop_counts.get(GpuDropReason::StaleGeneration),
+            reuse_not_complete = performance.gpu_drop_counts.get(GpuDropReason::ReuseNotComplete),
+            pipeline_poisoned = performance.gpu_drop_counts.get(GpuDropReason::PipelinePoisoned),
+            result_superseded = performance.gpu_drop_counts.get(GpuDropReason::ResultSuperseded),
             "continuous inference summary"
         );
         self.reset_log_summary();
@@ -1084,6 +1370,14 @@ fn quantize(value: f32) -> i32 {
     value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i32
 }
 
+fn should_auto_reprepare(attempted: &mut bool) -> bool {
+    if *attempted {
+        return false;
+    }
+    *attempted = true;
+    true
+}
+
 fn is_active_generation(active: Option<RunGeneration>, result: RunGeneration) -> bool {
     active == Some(result)
 }
@@ -1095,6 +1389,21 @@ fn is_causally_stale(last_motion_complete_qpc: Option<i64>, present_qpc: i64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_full_reprepare_is_allowed_once_only() {
+        let mut attempted = false;
+        assert!(should_auto_reprepare(&mut attempted));
+        assert!(attempted);
+        assert!(!should_auto_reprepare(&mut attempted));
+    }
+
+    #[test]
+    fn device_loss_allows_one_automatic_reprepare() {
+        let mut attempted = false;
+        assert!(should_auto_reprepare(&mut attempted));
+        assert!(attempted);
+    }
 
     #[test]
     fn command_quantization_uses_i16_bounds() {

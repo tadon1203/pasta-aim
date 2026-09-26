@@ -1,9 +1,9 @@
 use crate::{
-    detector::{EpAssignedNode, EpAssignmentState, EpProviderAssignment},
-    graphics::{AdapterInfo, DisplayInfo},
+    graphics::DisplayInfo,
+    inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment},
     mak::{MakRoutes, PhysicalControllerStatus},
     metrics::PerformanceSnapshot,
-    settings::{DirectMlDevice, OutputMode},
+    settings::OutputMode,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,7 +28,6 @@ pub struct ModelStatus {
     pub active_name: Option<String>,
     pub loading_name: Option<String>,
     pub input_size: Option<(usize, usize)>,
-    pub directml_device: DirectMlDevice,
     pub error: Option<String>,
     pub ep_assignment: Option<EpAssignmentState>,
     pub ep_assignment_summary: Option<EpAssignmentSummary>,
@@ -41,7 +40,6 @@ impl Default for ModelStatus {
             active_name: None,
             loading_name: None,
             input_size: None,
-            directml_device: DirectMlDevice::default(),
             error: None,
             ep_assignment: None,
             ep_assignment_summary: None,
@@ -95,7 +93,6 @@ pub fn provider_display_name(provider: &EpProviderAssignment) -> &str {
 
 #[derive(Debug, Clone, Default)]
 pub struct GraphicsStatus {
-    pub adapters: Vec<AdapterInfo>,
     pub displays: Vec<DisplayInfo>,
     pub catalog_error: Option<String>,
 }
@@ -249,7 +246,9 @@ impl EngineStatus {
 mod tests {
     use super::*;
     use crate::{
-        detector::{EpAssignedNode, EpAssignmentReport, EpAssignmentState, EpProviderAssignment},
+        inference::ep_assignment::{
+            EpAssignedNode, EpAssignmentReport, EpAssignmentState, EpProviderAssignment,
+        },
         mak::ControllerKind,
     };
 

@@ -26,8 +26,7 @@ use eframe::egui;
 use crate::{
     config::Config,
     settings::{
-        ConfidenceThreshold, DirectMlDevice, FpsLimit, InjectionApi, OutputMode, Sensitivity,
-        TargetYOffset,
+        ConfidenceThreshold, FpsLimit, InjectionApi, OutputMode, Sensitivity, TargetYOffset,
     },
 };
 use crossbeam_channel as crossbeam;
@@ -41,10 +40,7 @@ pub enum EngineEvent {
     Capture {
         adapter: u32,
         output: u32,
-        result: std::result::Result<(), String>,
-    },
-    DirectMl {
-        device: DirectMlDevice,
+        adapter_luid: crate::inference::AdapterLuid,
         result: std::result::Result<(), String>,
     },
 }
@@ -66,7 +62,6 @@ pub(super) enum Command {
         adapter: u32,
         output: u32,
     },
-    SetDirectMlDevice(DirectMlDevice),
     SetContinuous(bool),
     RunOnce,
     RefreshMakRoutes,
@@ -181,10 +176,6 @@ impl Engine {
         let _ = self
             .tx
             .send(Command::SetCaptureSelection { adapter, output });
-    }
-
-    pub fn set_directml_device(&self, device: DirectMlDevice) {
-        let _ = self.tx.send(Command::SetDirectMlDevice(device));
     }
 
     pub fn run_once(&self) {

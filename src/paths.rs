@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn executable_dir() -> PathBuf {
     std::env::current_exe()
@@ -19,13 +20,16 @@ pub fn logs_dir() -> PathBuf {
     executable_dir().join("logs")
 }
 
-pub fn log_file_path() -> PathBuf {
-    logs_dir().join("nice-aimassist.log")
+pub fn session_log_path() -> PathBuf {
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    session_log_path_in(&logs_dir(), unix_ms, std::process::id())
 }
 
-#[cfg(test)]
-pub(crate) fn log_file_path_in(directory: &std::path::Path) -> PathBuf {
-    directory.join("logs").join("nice-aimassist.log")
+pub(crate) fn session_log_path_in(directory: &std::path::Path, unix_ms: u128, pid: u32) -> PathBuf {
+    directory.join(format!("session-{unix_ms}-{pid}.log"))
 }
 
 #[cfg(test)]
@@ -33,12 +37,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_file_is_placed_under_logs_directory() {
+    fn session_log_name_contains_timestamp_and_pid() {
         assert_eq!(
-            log_file_path_in(std::path::Path::new("data")),
-            PathBuf::from("data")
-                .join("logs")
-                .join("nice-aimassist.log")
+            session_log_path_in(std::path::Path::new("data/logs"), 1234, 42),
+            PathBuf::from("data/logs/session-1234-42.log")
         );
     }
 }

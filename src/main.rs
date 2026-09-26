@@ -5,13 +5,13 @@ mod app;
 #[cfg(windows)]
 mod config;
 #[cfg(windows)]
-mod detector;
-#[cfg(windows)]
 mod engine;
 #[cfg(windows)]
 mod graphics;
 #[cfg(windows)]
 mod hotkeys;
+#[cfg(windows)]
+mod inference;
 #[cfg(windows)]
 mod logging;
 #[cfg(windows)]
@@ -29,8 +29,16 @@ mod timing;
 
 #[cfg(windows)]
 fn main() -> eframe::Result {
+    let loaded = config::Config::load();
     let _logging = logging::init();
+    logging::set_level(loaded.config.diagnostics.level);
     tracing::info!("nice-aimassist starting");
+    if let Err(error) =
+        graphics::bootstrap::initialize_graphics_diagnostics(loaded.config.diagnostics.level)
+    {
+        tracing::error!(error = %format!("{error:#}"), "graphics diagnostics initialization failed");
+        return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
+    }
     use windows::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
@@ -50,7 +58,7 @@ fn main() -> eframe::Result {
     let result = eframe::run_native(
         "nice-aimassist",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, loaded)))),
     );
     tracing::info!(?result, "nice-aimassist exiting");
     result

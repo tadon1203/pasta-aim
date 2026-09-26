@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::graphics::GpuDropCounts;
 use crate::timing::QpcClock;
 
 const MAX_SAMPLES: usize = 256;
@@ -10,13 +11,14 @@ const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StageTimings {
+    pub present_to_gpu_submit_ms: f64,
+    pub present_to_inference_start_ms: f64,
     pub acquire_wait_ms: f64,
     pub capture_ms: f64,
     pub copy_submit_ms: f64,
-    pub map_wait_ms: f64,
-    pub preprocess_ms: f64,
+    pub gpu_preprocess_ms: f64,
     pub queue_age_ms: f64,
-    pub inference_ms: f64,
+    pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
     pub mak_write_ms: f64,
     pub total_ms: f64,
@@ -28,14 +30,17 @@ pub struct CaptureSourceMetrics {
     pub admitted_fps: f64,
     pub admission_drop_ratio: f64,
     pub mean_accumulated_frames: f64,
-    pub overwritten_frames: u64,
-    pub buffer_starved_frames: u64,
+    pub gpu_slot_busy_drops: u64,
+    pub mailbox_overwrites: u64,
+    pub slots_in_flight: u64,
+    pub gpu_drop_counts: GpuDropCounts,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MetricSummary {
     pub p50_ms: f64,
     pub p95_ms: f64,
+    pub p99_ms: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -43,10 +48,11 @@ pub struct PerformanceSnapshot {
     pub sample_count: usize,
     pub fps: f64,
     pub cadence: MetricSummary,
+    pub present_to_gpu_submit: MetricSummary,
+    pub present_to_inference_start: MetricSummary,
     pub acquire_wait: MetricSummary,
     pub capture: MetricSummary,
     pub copy_submit: MetricSummary,
-    pub map_wait: MetricSummary,
     pub gpu_copy: MetricSummary,
     pub preprocess: MetricSummary,
     pub queue_age: MetricSummary,
@@ -55,6 +61,7 @@ pub struct PerformanceSnapshot {
     pub mak_write: MetricSummary,
     pub total: MetricSummary,
     pub capture_source: CaptureSourceMetrics,
+    pub gpu_drop_counts: GpuDropCounts,
     pub causal_discards: u64,
     pub cold_run: Option<StageTimings>,
 }
@@ -69,6 +76,7 @@ pub struct Metrics {
     samples: VecDeque<Sample>,
     gpu_copy_samples: VecDeque<f64>,
     capture_source: CaptureSourceMetrics,
+    gpu_drop_counts: GpuDropCounts,
     causal_discards: u64,
     cold_run: Option<StageTimings>,
     cold_next: bool,
@@ -82,6 +90,7 @@ impl Metrics {
             samples: VecDeque::with_capacity(MAX_SAMPLES),
             gpu_copy_samples: VecDeque::with_capacity(MAX_SAMPLES),
             capture_source: CaptureSourceMetrics::default(),
+            gpu_drop_counts: GpuDropCounts::default(),
             causal_discards: 0,
             cold_run: None,
             cold_next: true,
@@ -122,7 +131,12 @@ impl Metrics {
     }
 
     pub fn update_capture_source(&mut self, value: CaptureSourceMetrics) {
+        self.gpu_drop_counts.add_assign(value.gpu_drop_counts);
         self.capture_source = value;
+    }
+
+    pub fn record_gpu_drop(&mut self, reason: crate::graphics::GpuDropReason) {
+        self.gpu_drop_counts.increment(reason);
     }
 
     pub fn record_gpu_copy(&mut self, gpu_copy_ms: f64) {
@@ -165,6 +179,12 @@ impl Metrics {
                 .map(|value| 1000.0 / value)
                 .unwrap_or(0.0),
             cadence,
+            present_to_gpu_submit: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.present_to_gpu_submit_ms)
+            }),
+            present_to_inference_start: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.present_to_inference_start_ms)
+            }),
             acquire_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.acquire_wait_ms)
             }),
@@ -174,18 +194,15 @@ impl Metrics {
             copy_submit: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.copy_submit_ms)
             }),
-            map_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.map_wait_ms)
-            }),
             gpu_copy: summarize_values(&self.gpu_copy_samples, &mut scratch),
             preprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.preprocess_ms)
+                Some(sample.timings.gpu_preprocess_ms)
             }),
             queue_age: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.queue_age_ms)
             }),
             inference: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.inference_ms)
+                Some(sample.timings.ort_run_wall_ms)
             }),
             postprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.postprocess_ms)
@@ -197,6 +214,7 @@ impl Metrics {
                 Some(sample.timings.total_ms)
             }),
             capture_source: self.capture_source,
+            gpu_drop_counts: self.gpu_drop_counts,
             causal_discards: self.causal_discards,
             cold_run: self.cold_run,
         }
@@ -216,6 +234,7 @@ fn summarize_values(values: &VecDeque<f64>, scratch: &mut [f64; MAX_SAMPLES]) ->
         MetricSummary {
             p50_ms: percentile(values, 0.50),
             p95_ms: percentile(values, 0.95),
+            p99_ms: percentile(values, 0.99),
         }
     }
 }
@@ -238,7 +257,7 @@ fn summarize_samples(
             len += 1;
         }
     }
-    let summary = if len == 0 {
+    if len == 0 {
         MetricSummary::default()
     } else {
         let values = &mut scratch[..len];
@@ -246,9 +265,9 @@ fn summarize_samples(
         MetricSummary {
             p50_ms: percentile(values, 0.50),
             p95_ms: percentile(values, 0.95),
+            p99_ms: percentile(values, 0.99),
         }
-    };
-    summary
+    }
 }
 
 fn percentile(sorted: &[f64], fraction: f64) -> f64 {

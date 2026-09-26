@@ -1,0 +1,623 @@
+use std::mem::ManuallyDrop;
+
+use super::gpu_diagnostics::{GpuDropReason, GpuFaultStage, OWN_OBJECT_PREFIX, name_d3d12};
+use super::{
+    device::GpuDeviceContext,
+    frame_mailbox::{GPU_FRAME_SLOTS, GpuFrameLease},
+};
+use anyhow::{Context, Result, bail};
+use windows::{
+    Win32::Graphics::{
+        Direct3D::Fxc::D3DCompile,
+        Direct3D::ID3DBlob,
+        Direct3D12::*,
+        Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R32_TYPELESS},
+    },
+    core::{Interface, PCSTR},
+};
+
+const SHADER: &str = r#"
+Texture2D<float4> source_image : register(t0);
+RWByteAddressBuffer destination : register(u0);
+cbuffer Params : register(b0) { uint width; uint height; uint pixels; };
+[numthreads(16, 16, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= width || id.y >= height) return;
+    float4 color = source_image.Load(int3(id.xy, 0));
+    uint pixel = id.y * width + id.x;
+    destination.Store(pixel * 4, asuint(color.r));
+    destination.Store((pixels + pixel) * 4, asuint(color.g));
+    destination.Store((pixels * 2 + pixel) * 4, asuint(color.b));
+}
+"#;
+const COLOR_CHANNELS: usize = 3;
+const PREPROCESS_PARAMETER_COUNT: u32 = 3;
+
+pub struct GpuPreprocessor {
+    queue: ID3D12CommandQueue,
+    sources: [ID3D12Resource; GPU_FRAME_SLOTS],
+    destination: ID3D12Resource,
+    width: usize,
+    height: usize,
+    root_signature: ID3D12RootSignature,
+    pipeline: ID3D12PipelineState,
+    descriptor_heap: ID3D12DescriptorHeap,
+    descriptor_stride: u32,
+    allocators: [ID3D12CommandAllocator; GPU_FRAME_SLOTS],
+    allocator_in_flight: [Option<u64>; GPU_FRAME_SLOTS],
+    command_list: ID3D12GraphicsCommandList,
+    timestamps: TimestampRing,
+    fault_stage: GpuFaultStage,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PreprocessTicket {
+    pub query_slot: usize,
+    pub completion_value: u64,
+    pub frame_seq: u64,
+}
+
+struct TimestampRing {
+    heap: ID3D12QueryHeap,
+    readback: ID3D12Resource,
+    mapped: *const u64,
+    frequency: u64,
+    pending: [Option<u64>; GPU_FRAME_SLOTS],
+}
+
+impl GpuPreprocessor {
+    pub fn new(
+        gpu: &GpuDeviceContext,
+        sources: &[ID3D12Resource; GPU_FRAME_SLOTS],
+        destination: &ID3D12Resource,
+        width: usize,
+        height: usize,
+    ) -> Result<Self> {
+        let device = gpu.device();
+        if width == 0 || height == 0 || width > u32::MAX as usize || height > u32::MAX as usize {
+            bail!("invalid GPU preprocess dimensions {width}x{height}");
+        }
+        let pixels = width.checked_mul(height).context("input size overflowed")?;
+        pixels
+            .checked_mul(COLOR_CHANNELS)
+            .context("input tensor size overflowed")?;
+
+        let (root_signature, pipeline) = create_pipeline(device)?;
+        let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+            Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            NumDescriptors: (GPU_FRAME_SLOTS * 2) as u32,
+            Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+            NodeMask: 0,
+        };
+        let descriptor_heap: ID3D12DescriptorHeap =
+            unsafe { device.CreateDescriptorHeap(&heap_desc) }
+                .context("failed to create preprocess descriptor heap")?;
+        let descriptor_stride = unsafe {
+            device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+        };
+        let mut allocators = Vec::with_capacity(GPU_FRAME_SLOTS);
+        for _ in 0..GPU_FRAME_SLOTS {
+            allocators.push(
+                unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE) }
+                    .context("failed to create preprocess command allocator")?,
+            );
+        }
+        let allocators: [ID3D12CommandAllocator; GPU_FRAME_SLOTS] = allocators
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("failed to create all preprocess allocators"))?;
+        let command_list: ID3D12GraphicsCommandList = unsafe {
+            device.CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                &allocators[0],
+                None::<&ID3D12PipelineState>,
+            )
+        }
+        .context("failed to create preprocess command list")?;
+        unsafe { command_list.Close() }
+            .context("failed to close initial preprocess command list")?;
+        let timestamps = TimestampRing::new(device)?;
+        name_d3d12(&command_list, &format!("{OWN_OBJECT_PREFIX}preprocess-list"));
+        name_d3d12(&pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
+        name_d3d12(&root_signature, &format!("{OWN_OBJECT_PREFIX}preprocess-root"));
+        name_d3d12(&descriptor_heap, &format!("{OWN_OBJECT_PREFIX}preprocess-heap"));
+        for (slot, allocator) in allocators.iter().enumerate() {
+            name_d3d12(allocator, &format!("{OWN_OBJECT_PREFIX}preprocess-allocator-{slot}"));
+        }
+
+        let cpu_base = unsafe { descriptor_heap.GetCPUDescriptorHandleForHeapStart() };
+        for slot in 0..GPU_FRAME_SLOTS {
+            let cpu = offset_cpu(cpu_base, slot as u32 * descriptor_stride);
+            let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                        PlaneSlice: 0,
+                        ResourceMinLODClamp: 0.0,
+                    },
+                },
+            };
+            unsafe { device.CreateShaderResourceView(&sources[slot], Some(&srv), cpu) };
+        }
+        let output_cpu = offset_cpu(cpu_base, (GPU_FRAME_SLOTS as u32) * descriptor_stride);
+        let output_elements = width * height * COLOR_CHANNELS;
+        let uav = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_R32_TYPELESS,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_UAV {
+                    FirstElement: 0,
+                    NumElements: output_elements as u32,
+                    StructureByteStride: 0,
+                    CounterOffsetInBytes: 0,
+                    Flags: D3D12_BUFFER_UAV_FLAG_RAW,
+                },
+            },
+        };
+        unsafe {
+            device.CreateUnorderedAccessView(
+                destination,
+                None::<&ID3D12Resource>,
+                Some(&uav),
+                output_cpu,
+            )
+        };
+
+        Ok(Self {
+            queue: gpu.queue().clone(),
+            sources: std::array::from_fn(|slot| sources[slot].clone()),
+            destination: destination.clone(),
+            width,
+            height,
+            root_signature,
+            pipeline,
+            descriptor_heap,
+            descriptor_stride,
+            allocators,
+            allocator_in_flight: [None; GPU_FRAME_SLOTS],
+            command_list,
+            timestamps,
+            fault_stage: GpuFaultStage::PreprocessSubmit,
+        })
+    }
+
+    pub fn submit(
+        &mut self,
+        lease: &mut GpuFrameLease,
+        ready_fence: &ID3D12Fence,
+        reuse_fence: &ID3D12Fence,
+    ) -> Result<PreprocessTicket> {
+        self.fault_stage = GpuFaultStage::PreprocessSubmit;
+        let slot = lease.slot_id();
+        if slot >= GPU_FRAME_SLOTS {
+            bail!("invalid GPU frame slot {slot}");
+        }
+        let reuse_value = lease.reuse_value();
+        if self.timestamps.frequency == 0 {
+            self.timestamps.frequency = unsafe { self.queue.GetTimestampFrequency() }
+                .context("failed to query compute timestamp frequency")?;
+        }
+        let completed = unsafe { reuse_fence.GetCompletedValue() };
+        if completed == u64::MAX {
+            self.fault_stage = GpuFaultStage::DeviceRemoved;
+            bail!("D3D12 reuse fence reports device removed");
+        }
+        let timestamp_slot = slot;
+        let gpu_base = unsafe { self.descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
+        let source_gpu = offset_gpu(gpu_base, slot as u32 * self.descriptor_stride);
+        let output_gpu = offset_gpu(
+            gpu_base,
+            GPU_FRAME_SLOTS as u32 * self.descriptor_stride,
+        );
+
+        if self.allocator_in_flight[slot].is_some_and(|value| completed < value) {
+            self.fault_stage = GpuFaultStage::PreprocessSubmit;
+            lease.record_drop(GpuDropReason::ReuseNotComplete);
+            bail!("preprocess slot allocator reused before its reuse fence completed");
+        }
+        self.fault_stage = GpuFaultStage::D3D12ReadyWait;
+        if let Err(error) = unsafe { self.queue.Wait(ready_fence, lease.capture_ready_value()) } {
+            return Err(error).context("D3D12 queue wait on capture fence failed");
+        }
+        self.fault_stage = GpuFaultStage::PreprocessSubmit;
+        if let Err(error) = unsafe { self.allocators[slot].Reset() } {
+            return Err(error).context("failed to reset preprocess command allocator");
+        }
+        if let Err(error) = unsafe {
+            self.command_list
+                .Reset(&self.allocators[slot], Some(&self.pipeline))
+        } {
+            return Err(error).context("failed to reset preprocess command list");
+        }
+
+        let to_read = transition(
+            &self.sources[slot],
+            D3D12_RESOURCE_STATE_COMMON,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        );
+        unsafe { self.command_list.ResourceBarrier(&[to_read]) };
+        unsafe {
+            self.command_list
+                .SetComputeRootSignature(&self.root_signature);
+            self.command_list.SetPipelineState(&self.pipeline);
+            self.command_list
+                .SetDescriptorHeaps(&[Some(self.descriptor_heap.clone())]);
+            self.command_list
+                .SetComputeRootDescriptorTable(0, source_gpu);
+            self.command_list
+                .SetComputeRootDescriptorTable(1, output_gpu);
+            let constants = [
+                self.width as u32,
+                self.height as u32,
+                (self.width * self.height) as u32,
+            ];
+            self.command_list.SetComputeRoot32BitConstants(
+                2,
+                PREPROCESS_PARAMETER_COUNT,
+                constants.as_ptr().cast(),
+                0,
+            );
+            self.command_list.EndQuery(
+                &self.timestamps.heap,
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                (timestamp_slot * 2) as u32,
+            );
+            self.command_list.Dispatch(
+                self.width.div_ceil(16) as u32,
+                self.height.div_ceil(16) as u32,
+                1,
+            );
+            self.command_list.EndQuery(
+                &self.timestamps.heap,
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                (timestamp_slot * 2 + 1) as u32,
+            );
+            self.command_list.ResolveQueryData(
+                &self.timestamps.heap,
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                (timestamp_slot * 2) as u32,
+                2,
+                &self.timestamps.readback,
+                (timestamp_slot * 2 * std::mem::size_of::<u64>()) as u64,
+            );
+            self.timestamps.pending[timestamp_slot] = Some(reuse_value);
+            self.command_list.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                        pResource: ManuallyDrop::new(Some(self.destination.clone())),
+                    }),
+                },
+            }]);
+            self.command_list.ResourceBarrier(&[transition(
+                &self.sources[slot],
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            )]);
+        }
+        if let Err(error) = unsafe { self.command_list.Close() } {
+            return Err(error).context("failed to close preprocess command list");
+        }
+        let command_list = match self.command_list.cast() {
+            Ok(command_list) => command_list,
+            Err(error) => {
+                return Err(error).context("failed to cast compute command list");
+            }
+        };
+        unsafe { self.queue.ExecuteCommandLists(&[Some(command_list)]) };
+        self.fault_stage = GpuFaultStage::ReuseSignal;
+        if let Err(error) = unsafe { self.queue.Signal(reuse_fence, reuse_value) } {
+            return Err(error).context("D3D12 queue signal on reuse fence failed");
+        }
+        if !lease.mark_reuse_submitted() {
+            self.fault_stage = GpuFaultStage::PreprocessSubmit;
+            bail!("GPU frame lease ownership changed before reuse was submitted");
+        }
+        self.allocator_in_flight[slot] = Some(reuse_value);
+        Ok(PreprocessTicket {
+            query_slot: timestamp_slot,
+            completion_value: reuse_value,
+            frame_seq: lease.metadata().frame_seq,
+        })
+    }
+
+    pub fn collect(&mut self, ticket: PreprocessTicket, reuse_fence: &ID3D12Fence) -> Result<f64> {
+        let completed = unsafe { reuse_fence.GetCompletedValue() };
+        if completed == u64::MAX {
+            self.fault_stage = GpuFaultStage::DeviceRemoved;
+            bail!("D3D12 reuse fence reports device removed while collecting preprocess timestamp");
+        }
+        if completed < ticket.completion_value {
+            bail!(
+                "preprocess timestamp contract violation: frame_seq={} required_fence={} completed_fence={completed}",
+                ticket.frame_seq,
+                ticket.completion_value
+            );
+        }
+        self.timestamps
+            .collect(ticket.query_slot, ticket.completion_value)
+    }
+
+    pub fn fault_stage(&self) -> GpuFaultStage {
+        self.fault_stage
+    }
+}
+
+impl TimestampRing {
+    fn new(device: &ID3D12Device) -> Result<Self> {
+        let desc = D3D12_QUERY_HEAP_DESC {
+            Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+            Count: (GPU_FRAME_SLOTS * 2) as u32,
+            NodeMask: 0,
+        };
+        let mut heap = None;
+        unsafe { device.CreateQueryHeap(&desc, &mut heap) }
+            .context("failed to create preprocess timestamp query heap")?;
+        let heap = heap.context("timestamp query heap creation returned no heap")?;
+        let properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_READBACK,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        };
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: (GPU_FRAME_SLOTS * 2 * std::mem::size_of::<u64>()) as u64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
+            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+        let mut readback = None;
+        unsafe {
+            device.CreateCommittedResource(
+                &properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut readback,
+            )
+        }
+        .context("failed to create timestamp readback buffer")?;
+        let readback: ID3D12Resource =
+            readback.context("timestamp readback creation returned no resource")?;
+        let range = D3D12_RANGE {
+            Begin: 0,
+            End: GPU_FRAME_SLOTS * 2 * std::mem::size_of::<u64>(),
+        };
+        let mut mapped = std::ptr::null_mut();
+        unsafe { readback.Map(0, Some(&range), Some(&mut mapped)) }
+            .context("failed to map timestamp readback buffer")?;
+        Ok(Self {
+            heap,
+            readback,
+            mapped: mapped.cast(),
+            frequency: 0,
+            pending: [None; GPU_FRAME_SLOTS],
+        })
+    }
+
+    fn collect(&mut self, slot: usize, completion_value: u64) -> Result<f64> {
+        if slot >= GPU_FRAME_SLOTS || self.pending[slot] != Some(completion_value) {
+            bail!("preprocess timestamp ticket does not match its query slot");
+        }
+        // The same compute queue has completed this fence value, so timestamp
+        // readback is ready without a CPU wait.
+        let values = unsafe { std::slice::from_raw_parts(self.mapped.add(slot * 2), 2) };
+        if values[1] < values[0] || self.frequency == 0 {
+            bail!("invalid preprocess timestamp pair for query slot {slot}");
+        }
+        self.pending[slot] = None;
+        Ok((values[1] - values[0]) as f64 * 1000.0 / self.frequency as f64)
+    }
+}
+
+impl Drop for TimestampRing {
+    fn drop(&mut self) {
+        let empty = D3D12_RANGE { Begin: 0, End: 0 };
+        unsafe { self.readback.Unmap(0, Some(&empty)) };
+    }
+}
+
+fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+    let ranges = [
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 1,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+        },
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+            NumDescriptors: 1,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+        },
+    ];
+    let parameters = [
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &ranges[0],
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &ranges[1],
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 0,
+                    RegisterSpace: 0,
+                    Num32BitValues: PREPROCESS_PARAMETER_COUNT,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+    ];
+    let root_desc = D3D12_ROOT_SIGNATURE_DESC {
+        NumParameters: parameters.len() as u32,
+        pParameters: parameters.as_ptr(),
+        NumStaticSamplers: 0,
+        pStaticSamplers: std::ptr::null(),
+        Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
+    };
+    let mut serialized: Option<ID3DBlob> = None;
+    unsafe {
+        D3D12SerializeRootSignature(
+            &root_desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &mut serialized,
+            None,
+        )
+    }
+    .context("failed to serialize preprocess root signature")?;
+    let serialized = serialized.context("root signature serialization returned no blob")?;
+    let signature_bytes = unsafe {
+        std::slice::from_raw_parts(
+            serialized.GetBufferPointer().cast::<u8>(),
+            serialized.GetBufferSize(),
+        )
+    };
+    let root_signature: ID3D12RootSignature =
+        unsafe { device.CreateRootSignature(0, signature_bytes) }
+            .context("failed to create preprocess root signature")?;
+
+    let source = SHADER.as_bytes();
+    let entry = PCSTR(c"main".as_ptr().cast());
+    let target = PCSTR(c"cs_5_1".as_ptr().cast());
+    let mut bytecode: Option<ID3DBlob> = None;
+    let mut errors: Option<ID3DBlob> = None;
+    unsafe {
+        D3DCompile(
+            source.as_ptr().cast(),
+            source.len(),
+            PCSTR::null(),
+            None,
+            None::<&windows::Win32::Graphics::Direct3D::ID3DInclude>,
+            entry,
+            target,
+            0,
+            0,
+            &mut bytecode,
+            Some(&mut errors),
+        )
+    }
+    .context("failed to compile BGRA to NCHW compute shader")?;
+    let bytecode = bytecode.context("shader compiler returned no bytecode")?;
+    let shader = D3D12_SHADER_BYTECODE {
+        pShaderBytecode: unsafe { bytecode.GetBufferPointer() },
+        BytecodeLength: unsafe { bytecode.GetBufferSize() },
+    };
+    let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+        pRootSignature: ManuallyDrop::new(Some(root_signature.clone())),
+        CS: shader,
+        NodeMask: 0,
+        CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
+        Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
+    };
+    let pipeline: ID3D12PipelineState = unsafe { device.CreateComputePipelineState(&desc) }
+        .context("failed to create preprocess compute pipeline")?;
+    Ok((root_signature, pipeline))
+}
+
+fn transition(
+    resource: &ID3D12Resource,
+    before: D3D12_RESOURCE_STATES,
+    after: D3D12_RESOURCE_STATES,
+) -> D3D12_RESOURCE_BARRIER {
+    D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                pResource: ManuallyDrop::new(Some(resource.clone())),
+                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                StateBefore: before,
+                StateAfter: after,
+            }),
+        },
+    }
+}
+
+fn offset_cpu(mut handle: D3D12_CPU_DESCRIPTOR_HANDLE, offset: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+    handle.ptr += offset as usize;
+    handle
+}
+
+fn offset_gpu(mut handle: D3D12_GPU_DESCRIPTOR_HANDLE, offset: u32) -> D3D12_GPU_DESCRIPTOR_HANDLE {
+    handle.ptr += u64::from(offset);
+    handle
+}
+
+#[cfg(test)]
+pub(crate) fn preprocess_bgra_into(
+    bgra: &[u8],
+    width: usize,
+    height: usize,
+    output: &mut [f32],
+) -> Result<()> {
+    let pixels = width
+        .checked_mul(height)
+        .context("reference preprocess dimensions overflowed")?;
+    if bgra.len() != pixels * 4 || output.len() != pixels * COLOR_CHANNELS {
+        bail!("reference preprocess buffers do not match {width}x{height}");
+    }
+    for (index, pixel) in bgra.chunks_exact(4).enumerate() {
+        output[index] = pixel[2] as f32 / 255.0;
+        output[pixels + index] = pixel[1] as f32 / 255.0;
+        output[pixels * 2 + index] = pixel[0] as f32 / 255.0;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COLOR_CHANNELS, preprocess_bgra_into};
+
+    #[test]
+    fn reference_matches_bgra_texture_channel_order_and_nchw_layout() {
+        let bgra = [0, 64, 255, 255, 128, 32, 16, 255];
+        let mut output = [0.0; 2 * COLOR_CHANNELS];
+        preprocess_bgra_into(&bgra, 2, 1, &mut output).unwrap();
+        let expected = [
+            1.0,
+            16.0 / 255.0,
+            64.0 / 255.0,
+            32.0 / 255.0,
+            0.0,
+            128.0 / 255.0,
+        ];
+        for (actual, expected) in output.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+}

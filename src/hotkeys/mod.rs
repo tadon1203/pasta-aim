@@ -219,16 +219,16 @@ impl HotkeyRegistry {
                         // controller can already be held when we start polling
                         // or reconnect. Reconcile from the physical snapshot so
                         // releasing a second binding never disables the first.
-                        if !listener_suspended.load(Ordering::Acquire) {
-                            if let Some(enabled) = reconcile_xinput_holds(
+                        if !listener_suspended.load(Ordering::Acquire)
+                            && let Some(enabled) = reconcile_xinput_holds(
                                 xinput.pressed(),
                                 &listener_actions,
                                 &mut active_hold_ids,
-                            ) {
-                                tracing::debug!(enabled, "continuous hotkey state reconciled");
-                                listener_control.set_continuous(enabled);
-                                ui_ctx.request_repaint();
-                            }
+                            )
+                        {
+                            tracing::debug!(enabled, "continuous hotkey state reconciled");
+                            listener_control.set_continuous(enabled);
+                            ui_ctx.request_repaint();
                         }
 
                         for edge in edges {

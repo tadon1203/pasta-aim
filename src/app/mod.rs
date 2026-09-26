@@ -1,13 +1,12 @@
 mod view;
 
 use crate::{
-    config::Config,
+    config::{Config, ConfigLoad},
     engine::{Engine, EngineEvent},
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
     settings::{
-        ConfidenceThreshold, DirectMlDevice, FpsLimit, HotkeyAction, HotkeyBinding, Sensitivity,
-        TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Sensitivity, TargetYOffset,
     },
 };
 
@@ -31,10 +30,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let loaded = Config::load();
+    pub fn new(cc: &eframe::CreationContext<'_>, loaded: ConfigLoad) -> Self {
         let config = loaded.config;
-        crate::logging::set_diagnostics(config.diagnostics);
         let config_load_warning = loaded.warning;
         tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), output_mode = ?config.output_mode, injection_api = ?config.injection_api, "application initialized with settings");
         let (models, model_catalog_error) = match ModelCatalog::scan() {
@@ -108,6 +105,7 @@ impl App {
                 EngineEvent::Capture {
                     adapter,
                     output,
+                    adapter_luid,
                     result,
                 } => {
                     tracing::debug!(
@@ -117,19 +115,8 @@ impl App {
                         "received capture operation result"
                     );
                     if result.is_ok() {
-                        self.config.capture_adapter = adapter;
+                        self.config.selected_adapter = adapter_luid;
                         self.config.capture_output = output;
-                        self.persist();
-                    }
-                }
-                EngineEvent::DirectMl { device, result } => {
-                    tracing::debug!(
-                        ?device,
-                        success = result.is_ok(),
-                        "received DirectML operation result"
-                    );
-                    if result.is_ok() {
-                        self.config.directml_device = device;
                         self.persist();
                     }
                 }
@@ -178,11 +165,6 @@ impl App {
     fn select_display(&mut self, adapter: u32, output: u32) {
         tracing::debug!(adapter, output, "display selected from UI");
         self.engine.set_capture_selection(adapter, output);
-    }
-
-    fn select_directml_device(&mut self, device: DirectMlDevice) {
-        tracing::debug!(?device, "DirectML device selected from UI");
-        self.engine.set_directml_device(device);
     }
 
     fn set_sensitivity(&mut self, sensitivity: Sensitivity, persist: bool) {

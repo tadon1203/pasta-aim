@@ -1,10 +1,22 @@
+pub mod bootstrap;
 mod capture;
+pub mod device;
+pub mod frame_mailbox;
+pub mod gpu_diagnostics;
+pub mod preprocess;
+pub mod shared_frame_pool;
 
 pub use capture::DxgiCapture;
 pub(crate) use capture::{CapturePoll, GpuCopySample, NoDesktopUpdateReason};
+pub use frame_mailbox::{
+    FrameConsumer, FramePublisher, GpuFrameMetadata, frame_mailbox,
+};
+pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport, GpuFaultStage};
+pub use shared_frame_pool::CaptureFramePool;
 
 use std::{marker::PhantomData, rc::Rc};
 
+use crate::inference::AdapterLuid;
 use anyhow::{Context, Result, anyhow};
 use windows::{
     Win32::{
@@ -40,12 +52,6 @@ impl GraphicsThread {
         Ok(Self(PhantomData))
     }
 
-    pub(crate) fn enumerate_adapters(&self) -> Result<Vec<AdapterInfo>> {
-        let adapters = enumerate_adapters_impl()?;
-        tracing::debug!(count = adapters.len(), "enumerated graphics adapters");
-        Ok(adapters)
-    }
-
     pub(crate) fn enumerate_displays(&self) -> Result<Vec<DisplayInfo>> {
         let displays = enumerate_displays_impl()?;
         tracing::debug!(count = displays.len(), "enumerated displays");
@@ -71,22 +77,11 @@ impl Drop for GraphicsThread {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdapterInfo {
-    pub index: u32,
-    pub name: String,
-}
-
-impl AdapterInfo {
-    pub fn label(&self) -> String {
-        format!("Device {} · {}", self.index, self.name)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayInfo {
     pub adapter_index: u32,
     pub output_index: u32,
+    pub adapter_luid: AdapterLuid,
     pub adapter_name: String,
     pub display_name: String,
     pub width: u32,
@@ -180,32 +175,16 @@ fn current_display_info(
     Ok(DisplayInfo {
         adapter_index,
         output_index,
+        adapter_luid: AdapterLuid {
+            low: adapter_desc.AdapterLuid.LowPart,
+            high: adapter_desc.AdapterLuid.HighPart,
+        },
         adapter_name: wide_string(&adapter_desc.Description),
         display_name: wide_string(&output_desc.DeviceName),
         width: mode.dmPelsWidth,
         height: mode.dmPelsHeight,
         refresh_hz: f64::from(mode.dmDisplayFrequency),
     })
-}
-
-fn enumerate_adapters_impl() -> Result<Vec<AdapterInfo>> {
-    let factory = create_factory()?;
-    let mut result = Vec::new();
-    for index in 0.. {
-        let adapter = match unsafe { factory.EnumAdapters1(index) } {
-            Ok(adapter) => adapter,
-            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
-            Err(error) => return Err(error).context("failed to enumerate DXGI adapters"),
-        };
-        let mut desc = DXGI_ADAPTER_DESC1::default();
-        // SAFETY: the descriptor points to writable storage of the documented type.
-        unsafe { adapter.GetDesc1(&mut desc) }.context("failed to query DXGI adapter")?;
-        result.push(AdapterInfo {
-            index,
-            name: wide_string(&desc.Description),
-        });
-    }
-    Ok(result)
 }
 
 fn enumerate_displays_impl() -> Result<Vec<DisplayInfo>> {

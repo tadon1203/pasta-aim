@@ -1,49 +1,68 @@
 use std::{
     path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
+use windows::Win32::Graphics::Direct3D11::ID3D11Device4;
 
-use super::{
-    RunGeneration,
-    capture_worker::{FrameConsumer, FrameMetadata},
-};
+use super::RunGeneration;
 use crate::{
-    detector::{Detection, Detector},
-    settings::{ConfidenceThreshold, DirectMlDevice},
+    graphics::{
+        CaptureFramePool, FrameConsumer, FramePublisher, GpuDropReason, GpuFaultReport,
+        GpuFrameMetadata,
+    },
+    inference::{AdapterLuid, BackendInfo, pipeline::prepare_directml_pipeline},
+    settings::ConfidenceThreshold,
     timing::QpcClock,
 };
 
-pub(super) struct LoadedModelInfo {
+pub(super) struct PreparedModelInfo {
+    pub pipeline_id: u64,
+    pub prepare_id: String,
     pub input_size: (usize, usize),
-    pub directml_device: DirectMlDevice,
-    pub ep_assignment: crate::detector::EpAssignmentState,
+    pub backend_info: BackendInfo,
+    pub ep_assignment: crate::inference::EpAssignmentState,
+    pub capture_frames: CaptureFramePool,
 }
 
 pub(super) struct InferenceFrameResult {
-    pub metadata: FrameMetadata,
+    pub metadata: GpuFrameMetadata,
     pub inference_start_qpc: i64,
     pub inference_end_qpc: i64,
-    pub detection: Option<Detection>,
-    pub inference_ms: f64,
+    pub detection: Option<crate::inference::Detection>,
+    pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
+    pub gpu_preprocess_ms: f64,
 }
 
-pub(super) enum InferenceEvent {
-    Completed(InferenceFrameResult),
+pub(super) enum InferenceControlEvent {
     Failed {
         generation: RunGeneration,
         error: String,
+    },
+    Poisoned {
+        generation: RunGeneration,
+        error: String,
+        device_lost: bool,
+        report: Option<GpuFaultReport>,
     },
 }
 
 enum InferenceCommand {
     LoadModel {
         path: PathBuf,
-        device: DirectMlDevice,
-        reply: Sender<Result<LoadedModelInfo, String>>,
+        adapter_luid: AdapterLuid,
+        capture_device: ID3D11Device4,
+        publisher: FramePublisher,
+        pipeline_id: u64,
+        reply: Sender<Result<PreparedModelInfo, String>>,
     },
     SetConfidenceThreshold(ConfidenceThreshold),
     Start {
@@ -51,6 +70,7 @@ enum InferenceCommand {
     },
     Stop {
         generation: RunGeneration,
+        reply: Sender<()>,
     },
     Shutdown,
 }
@@ -62,7 +82,10 @@ enum InferenceRunState {
 
 pub(super) struct InferenceWorker {
     control_tx: Sender<InferenceCommand>,
-    event_rx: Receiver<InferenceEvent>,
+    latest_result: Arc<Mutex<Option<InferenceFrameResult>>>,
+    result_ready_rx: Receiver<()>,
+    event_rx: Receiver<InferenceControlEvent>,
+    result_superseded: Arc<AtomicU64>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -73,15 +96,32 @@ impl InferenceWorker {
         confidence_threshold: ConfidenceThreshold,
     ) -> Result<Self> {
         let (control_tx, control_rx) = unbounded();
+        let (result_ready_tx, result_ready_rx) = bounded(1);
         let (event_tx, event_rx) = unbounded();
+        let latest_result = Arc::new(Mutex::new(None));
+        let result_superseded = Arc::new(AtomicU64::new(0));
+        let thread_result = Arc::clone(&latest_result);
+        let thread_superseded = Arc::clone(&result_superseded);
         let join = thread::Builder::new()
             .name("nice-aimassist-inference".to_owned())
             .spawn(move || {
-                inference_loop(control_rx, event_tx, consumer, qpc, confidence_threshold)
+                inference_loop(
+                    control_rx,
+                    event_tx,
+                    result_ready_tx,
+                    thread_result,
+                    thread_superseded,
+                    consumer,
+                    qpc,
+                    confidence_threshold,
+                )
             })?;
         Ok(Self {
             control_tx,
+            latest_result,
+            result_ready_rx,
             event_rx,
+            result_superseded,
             join: Some(join),
         })
     }
@@ -89,12 +129,18 @@ impl InferenceWorker {
     pub(super) fn load_model(
         &self,
         path: PathBuf,
-        device: DirectMlDevice,
-    ) -> Result<LoadedModelInfo> {
+        adapter_luid: AdapterLuid,
+        capture_device: ID3D11Device4,
+        publisher: FramePublisher,
+        pipeline_id: u64,
+    ) -> Result<PreparedModelInfo> {
         let (tx, rx) = bounded(1);
         self.control_tx.send(InferenceCommand::LoadModel {
             path,
-            device,
+            adapter_luid,
+            capture_device,
+            publisher,
+            pipeline_id,
             reply: tx,
         })?;
         rx.recv()?.map_err(anyhow::Error::msg)
@@ -105,41 +151,60 @@ impl InferenceWorker {
             .send(InferenceCommand::Start { generation })?;
         Ok(())
     }
-
     pub(super) fn set_confidence_threshold(&self, value: ConfidenceThreshold) {
         let _ = self
             .control_tx
             .send(InferenceCommand::SetConfidenceThreshold(value));
     }
-
     pub(super) fn stop(&self, generation: RunGeneration) -> Result<()> {
+        let (reply, response) = bounded(1);
         self.control_tx
-            .send(InferenceCommand::Stop { generation })?;
+            .send(InferenceCommand::Stop { generation, reply })?;
+        response.recv()?;
         Ok(())
     }
-
-    pub(super) fn event_rx(&self) -> &Receiver<InferenceEvent> {
+    pub(super) fn result_ready_rx(&self) -> &Receiver<()> {
+        &self.result_ready_rx
+    }
+    pub(super) fn take_latest_result(&self) -> Option<InferenceFrameResult> {
+        self.latest_result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+    pub(super) fn event_rx(&self) -> &Receiver<InferenceControlEvent> {
         &self.event_rx
     }
-}
+    pub(super) fn take_result_superseded(&self) -> u64 {
+        self.result_superseded.swap(0, Ordering::AcqRel)
+    }
 
-impl Drop for InferenceWorker {
-    fn drop(&mut self) {
-        let _ = self.control_tx.send(InferenceCommand::Shutdown);
+    pub(super) fn shutdown(&mut self) {
         if let Some(join) = self.join.take() {
+            let _ = self.control_tx.send(InferenceCommand::Shutdown);
             let _ = join.join();
         }
     }
 }
 
+impl Drop for InferenceWorker {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn inference_loop(
     control_rx: Receiver<InferenceCommand>,
-    event_tx: Sender<InferenceEvent>,
+    event_tx: Sender<InferenceControlEvent>,
+    result_ready_tx: Sender<()>,
+    latest_result: Arc<Mutex<Option<InferenceFrameResult>>>,
+    result_superseded: Arc<AtomicU64>,
     consumer: FrameConsumer,
     qpc: QpcClock,
     mut confidence_threshold: ConfidenceThreshold,
 ) {
-    let mut detector: Option<Detector> = None;
+    let mut pipeline: Option<crate::inference::pipeline::InferencePipeline> = None;
     let mut state = InferenceRunState::Idle;
     loop {
         if matches!(state, InferenceRunState::Idle) {
@@ -147,7 +212,7 @@ fn inference_loop(
                 Ok(command) => {
                     if !handle_command(
                         command,
-                        &mut detector,
+                        &mut pipeline,
                         &mut state,
                         &consumer,
                         &mut confidence_threshold,
@@ -159,11 +224,10 @@ fn inference_loop(
             }
             continue;
         }
-
         while let Ok(command) = control_rx.try_recv() {
             if !handle_command(
                 command,
-                &mut detector,
+                &mut pipeline,
                 &mut state,
                 &consumer,
                 &mut confidence_threshold,
@@ -171,71 +235,92 @@ fn inference_loop(
                 return;
             }
         }
-        let Some(detector_ref) = detector.as_mut() else {
-            let generation = match state {
-                InferenceRunState::Running { generation, .. } => generation,
-                InferenceRunState::Idle => unreachable!(),
-            };
-            let _ = event_tx.send(InferenceEvent::Failed {
+        let Some(pipeline_ref) = pipeline.as_mut() else {
+            let generation = running_generation(&state);
+            let _ = event_tx.send(InferenceControlEvent::Failed {
                 generation,
-                error: "inference model is not loaded".to_owned(),
+                error: "inference pipeline is not prepared".to_owned(),
             });
             state = InferenceRunState::Idle;
             continue;
         };
-        let Some(frame) = consumer.try_take_latest() else {
+        let Some(mut frame) = consumer.try_take_latest() else {
             select! {
-                recv(control_rx) -> command => if let Ok(command) = command
-                    && !handle_command(command, &mut detector, &mut state, &consumer, &mut confidence_threshold)
-                {
-                    return;
-                },
+                recv(control_rx) -> command => if let Ok(command) = command && !handle_command(command, &mut pipeline, &mut state, &consumer, &mut confidence_threshold) { return; },
                 recv(consumer.ready_rx()) -> _ => {},
             }
             continue;
         };
-        let metadata = frame.metadata();
-        let generation = match state {
-            InferenceRunState::Running { generation, .. } => generation,
-            InferenceRunState::Idle => continue,
-        };
+        let generation = running_generation(&state);
+        let metadata = *frame.metadata();
         if metadata.generation != generation {
-            tracing::debug!(
-                frame_generation = metadata.generation,
-                active_generation = generation,
-                "discarding stale capture frame"
-            );
+            consumer.record_drop(GpuDropReason::StaleGeneration);
             continue;
         }
         let inference_start_qpc = qpc.now();
-        let result = detector_ref.infer_preprocessed(frame.input());
+        let started = Instant::now();
+        let result = pipeline_ref.infer(&mut frame);
+        let report = if result.is_err() {
+            pipeline_ref.take_fault_report()
+        } else {
+            None
+        };
+        let device_lost = pipeline_ref.device_lost();
         let inference_end_qpc = qpc.now();
-        let _ = frame;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let poisoned = consumer.is_poisoned();
+        drop(frame);
         match result {
             Ok(result) => {
-                let _ = event_tx.send(InferenceEvent::Completed(InferenceFrameResult {
+                let completed = InferenceFrameResult {
                     metadata,
                     inference_start_qpc,
                     inference_end_qpc,
                     detection: result.detection,
-                    inference_ms: result.inference_ms,
+                    ort_run_wall_ms: result.ort_run_wall_ms,
                     postprocess_ms: result.postprocess_ms,
-                }));
+                    gpu_preprocess_ms: result.gpu_preprocess_ms,
+                };
+                let mut latest = latest_result
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if latest.replace(completed).is_some() {
+                    result_superseded.fetch_add(1, Ordering::Relaxed);
+                }
+                drop(latest);
+                let _ = result_ready_tx.try_send(());
+                tracing::trace!(elapsed_ms, "GPU frame inference finished");
             }
             Err(error) => {
-                let _ = event_tx.send(InferenceEvent::Failed {
-                    generation,
-                    error: format!("inference failed: {error:#}"),
-                });
+                if poisoned {
+                    let _ = event_tx.send(InferenceControlEvent::Poisoned {
+                        generation,
+                        error: format!("GPU pipeline failed: {error:#}"),
+                        device_lost,
+                        report,
+                    });
+                } else {
+                    let _ = event_tx.send(InferenceControlEvent::Failed {
+                        generation,
+                        error: format!("inference failed: {error:#}"),
+                    });
+                }
                 state = InferenceRunState::Idle;
             }
         }
     }
 }
 
+fn running_generation(state: &InferenceRunState) -> RunGeneration {
+    match state {
+        InferenceRunState::Running { generation } => *generation,
+        InferenceRunState::Idle => unreachable!(),
+    }
+}
+
 fn handle_command(
     command: InferenceCommand,
-    detector: &mut Option<Detector>,
+    pipeline: &mut Option<crate::inference::pipeline::InferencePipeline>,
     state: &mut InferenceRunState,
     consumer: &FrameConsumer,
     confidence_threshold: &mut ConfidenceThreshold,
@@ -243,44 +328,71 @@ fn handle_command(
     match command {
         InferenceCommand::LoadModel {
             path,
-            device,
+            adapter_luid,
+            capture_device,
+            publisher,
+            pipeline_id,
             reply,
         } => {
-            let result = Detector::load(&path, device)
-                .map(|new_detector| {
-                    let info = LoadedModelInfo {
-                        input_size: new_detector.input_size(),
-                        directml_device: new_detector.directml_device(),
-                        ep_assignment: new_detector.ep_assignment().clone(),
-                    };
-                    let mut new_detector = new_detector;
-                    new_detector.set_confidence_threshold(*confidence_threshold);
-                    *detector = Some(new_detector);
-                    info
-                })
-                .map_err(|error| format!("{error:#}"));
+            let result = (|| {
+                let mut prepared = prepare_directml_pipeline(
+                    &path,
+                    adapter_luid,
+                    &capture_device,
+                    publisher,
+                    pipeline_id,
+                )
+                .map_err(|error| format!("{error:#}"))?;
+                prepared
+                    .pipeline
+                    .set_confidence_threshold(*confidence_threshold);
+                let input_size = (
+                    prepared.pipeline.input_spec().width,
+                    prepared.pipeline.input_spec().height,
+                );
+                let backend_info = prepared.pipeline.info().clone();
+                let prepare_id = prepared.pipeline.prepare_id().to_owned();
+                let info = PreparedModelInfo {
+                    pipeline_id,
+                    prepare_id,
+                    input_size,
+                    backend_info,
+                    ep_assignment: prepared.ep_assignment,
+                    capture_frames: prepared.capture_frames,
+                };
+                if let Some(old) = pipeline.replace(prepared.pipeline) {
+                    drop(old);
+                }
+                Ok(info)
+            })();
             let _ = reply.send(result);
         }
         InferenceCommand::SetConfidenceThreshold(value) => {
             *confidence_threshold = value;
-            if let Some(detector) = detector.as_mut() {
-                detector.set_confidence_threshold(value);
+            if let Some(pipeline) = pipeline.as_mut() {
+                pipeline.set_confidence_threshold(value);
             }
         }
         InferenceCommand::Start { generation } => {
-            // CaptureWorker clears the mailbox before starting a new generation.
-            // Do not clear here: a fresh frame for this generation may already
-            // have been published while this command was waiting behind a Run.
-            *state = InferenceRunState::Running { generation };
+            *state = InferenceRunState::Running { generation }
         }
-        InferenceCommand::Stop { generation } => {
-            if matches!(state, InferenceRunState::Running { generation: active, .. } if *active == generation)
+        InferenceCommand::Stop { generation, reply } => {
+            if matches!(state, InferenceRunState::Running { generation: active } if *active == generation)
             {
                 *state = InferenceRunState::Idle;
                 consumer.clear();
             }
+            let _ = reply.send(());
         }
-        InferenceCommand::Shutdown => return false,
+        InferenceCommand::Shutdown => {
+            *state = InferenceRunState::Idle;
+            if let Some(mut active) = pipeline.take() {
+                if let Err(error) = active.shutdown() {
+                    tracing::warn!(error = %format!("{error:#}"), "inference pipeline shutdown failed");
+                }
+            }
+            return false;
+        }
     }
     true
 }

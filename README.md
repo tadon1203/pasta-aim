@@ -13,7 +13,8 @@ Rust + egui で構成した、ローカル完結の最小構成です。
 - 検出 `Confidence` 閾値
 - Continuous推論の整数FPS上限
 - 単発推論による手動キャリブレーション
-- capture / preprocess / inference / postprocess / output / total の性能計測
+- DXGI captureからDirectMLまでのGPU frame transport
+- capture / GPU preprocess / inference / postprocess / output / total の性能計測
 
 意図的に含めていないもの:
 
@@ -79,6 +80,7 @@ MAKのphysical snapshotはfirmwareや一時的なsample状態によって取得�
 - `Refresh` で一覧を再読み込み
 - `Open models folder` でExplorerから配置先を開く
 - 新モデルのロードに失敗した場合、以前の正常なモデルを維持
+- 表示adapter切替はcapture adapterを唯一のGPU identityとしてshadow prepareし、成功時だけ一括commit
 - モデルが1個だけで設定が空なら自動ロード
 
 ## Sensitivity
@@ -134,9 +136,9 @@ Esc to cancel
 
 最初の推論はcold runとしてrolling統計から分離します。以降は直近256 sampleを保持します。
 
-- Capture: DXGI取得 + GPU→CPU readback
-- Preprocess: center crop + BGRA→RGB + normalize + NCHW
-- Inference: ONNX Runtime `Session::run()`
+- Capture: DXGI取得 + shared textureへのGPU copy submit
+- GPU preprocess: BGRA→RGB + normalize + NCHW compute shader（D3D12 timestamp queryで非blocking計測）
+- Inference: ONNX Runtime DirectML `run_binding()`
 - Postprocess: output parse + nearest target selection
 - Output submit: MAK SDK 呼び出し
 - Pipeline: capture開始からoutput submitまで
@@ -154,15 +156,25 @@ src/
   paths.rs       exe基準のmodels/settings path
   models.rs      models/ scanとExplorer起動
   hotkeys.rs     global hotkey登録・複数binding・入力capture
-  engine.rs      worker state machine
-  capture.rs     DXGI Desktop Duplication
-  detector.rs    ONNX Runtime / YOLO26
+  engine/
+    capture_worker.rs
+    inference_worker.rs
+    worker.rs      worker state machine
+  graphics/
+    capture.rs     DXGI Desktop DuplicationとGPU copy
+    frame_transport.rs
+    preprocess.rs  BGRA→FP32 NCHW compute shader
+  inference/
+    mod.rs         共通GPU frame/backend契約
+    postprocess.rs Detection / nearest target selection
+    ep_assignment.rs
+    directml/      ORT DirectML backendと限定unsafe境界
   mak_output.rs  MAK lifecycle / route / physical controller status
   metrics.rs     rolling performance metrics
 vendor/makxd/    MAK Suite Rust SDK
 ```
 
-DXGI / ONNX Session / MAK Device は単一worker threadが所有します。UIはcommandを送り、status snapshotを読むだけです。
+各DXGI capture workerがcapture deviceを所有し、inference workerが対応するD3D12/DirectML deviceとORT Sessionを所有します。表示adapter変更では新しいpipeline一式をshadow prepareし、成功したときだけgenerationと選択をcommitします。フレーム画像をCPUへreadbackせず、3-slot shared textureとcapture-ready/reuseの2 fenceでGPU間を引き渡します。
 
 ## ビルド / 検証
 

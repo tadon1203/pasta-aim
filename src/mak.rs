@@ -418,10 +418,8 @@ impl MakClient {
         tracing::debug!("disconnecting MAK for reconnect");
         let needs_drain = self.controller_release_pending;
         self.release_controller_best_effort();
-        if needs_drain {
-            if let Some(device) = &self.device {
-                let _ = device.drain();
-            }
+        if needs_drain && let Some(device) = &self.device {
+            let _ = device.drain();
         }
         if let Some(device) = &self.device {
             device
@@ -449,10 +447,8 @@ impl Drop for MakClient {
         tracing::debug!("shutting down MAK session");
         let needs_drain = self.controller_release_pending;
         self.release_controller_best_effort();
-        if needs_drain {
-            if let Some(device) = &self.device {
-                let _ = device.drain();
-            }
+        if needs_drain && let Some(device) = &self.device {
+            let _ = device.drain();
         }
         if let Some(device) = &self.device {
             device.disconnect();
