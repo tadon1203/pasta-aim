@@ -127,12 +127,21 @@ impl Default for ConfidenceThreshold {
 pub struct TargetYOffset(i16);
 
 impl TargetYOffset {
-    pub const MIN: i16 = -100;
-    pub const DEFAULT: i16 = 0;
+    /// Top edge of the target box.
+    pub const MIN: i16 = 0;
+    /// Center of the target box.
+    pub const DEFAULT: i16 = 50;
+    /// Bottom edge of the target box.
     pub const MAX: i16 = 100;
 
     pub fn new(value: i32) -> Self {
         Self(value.clamp(i32::from(Self::MIN), i32::from(Self::MAX)) as i16)
+    }
+
+    /// Aim point as a fraction of box height measured from the box center
+    /// (-0.5 = top edge, 0.0 = center, 0.5 = bottom edge).
+    pub fn center_relative(self) -> f32 {
+        (f32::from(self.0) - f32::from(Self::DEFAULT)) / 100.0
     }
 
     pub fn value(self) -> i16 {
@@ -208,9 +217,12 @@ mod tests {
     }
 
     #[test]
-    fn target_y_offset_is_signed_and_normalized_at_construction() {
-        assert_eq!(TargetYOffset::default().value(), 0);
-        assert_eq!(TargetYOffset::new(-101).value(), TargetYOffset::MIN);
+    fn target_y_offset_is_a_box_position_normalized_at_construction() {
+        assert_eq!(TargetYOffset::default().value(), 50);
+        assert_eq!(TargetYOffset::new(-1).value(), TargetYOffset::MIN);
         assert_eq!(TargetYOffset::new(101).value(), TargetYOffset::MAX);
+        assert_eq!(TargetYOffset::new(0).center_relative(), -0.5);
+        assert_eq!(TargetYOffset::new(50).center_relative(), 0.0);
+        assert_eq!(TargetYOffset::new(100).center_relative(), 0.5);
     }
 }

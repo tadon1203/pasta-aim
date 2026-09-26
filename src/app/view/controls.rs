@@ -126,7 +126,7 @@ impl App {
             self.apply_edit(edit, |app, value| {
                 app.set_target_y_offset(TargetYOffset::new(value))
             });
-            ui.small("Relative to target height; positive values move downward.");
+            ui.small("Aim point inside the target box: 0% = top, 50% = center, 100% = bottom.");
 
             let ready = status.ready_for(self.config.output_mode);
             let run_idle = status.run.phase == RunPhase::Idle;

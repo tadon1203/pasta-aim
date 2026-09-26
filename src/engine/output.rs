@@ -104,11 +104,12 @@ fn quantize(value: f32) -> i32 {
 
 fn plan(detection: Detection, input_size: (usize, usize), settings: OutputSettings) -> Plan {
     let dx = detection.center_x - input_size.0 as f32 * 0.5;
-    let dy = detection.center_y - input_size.1 as f32 * 0.5;
+    let aim_y =
+        detection.center_y + detection.box_height * settings.target_y_offset.center_relative();
+    let dy = aim_y - input_size.1 as f32 * 0.5;
     let gain = settings.sensitivity.gain();
-    let relative_y_offset = detection.box_height * settings.target_y_offset.value() as f32 / 100.0;
     let x = quantize(dx * gain);
-    let y = quantize(dy * gain + relative_y_offset);
+    let y = quantize(dy * gain);
     Plan {
         target: (dx, dy, detection.confidence, detection.class_id),
         step: (x != 0 || y != 0).then_some((x, y)),
@@ -228,22 +229,32 @@ mod tests {
     }
 
     #[test]
-    fn target_y_offset_is_relative_to_target_height_and_added_after_sensitivity() {
-        // Center is (50, 50); the detection is 10 px right and 20 px down.
-        let plan = plan(detection(70.0, 40.0), (100, 100), settings(50, 25));
-        assert_eq!(plan.step, Some((5, 20)));
+    fn target_y_offset_picks_a_point_in_the_box_before_sensitivity() {
+        // Center is (50, 50); the box center is 10 px right and 20 px down and
+        // the box is 40 px tall, so 75% aims 10 px below its center.
+        let plan = plan(detection(70.0, 40.0), (100, 100), settings(50, 75));
+        assert_eq!(plan.step, Some((5, 15)));
+        // 0% and 100% aim at the top and bottom edges.
+        assert_eq!(
+            super::plan(detection(70.0, 40.0), (100, 100), settings(100, 0)).step,
+            Some((10, 0))
+        );
+        assert_eq!(
+            super::plan(detection(70.0, 40.0), (100, 100), settings(100, 100)).step,
+            Some((10, 40))
+        );
     }
 
     #[test]
     fn zero_movement_produces_no_step() {
-        let plan = plan(detection(50.0, 40.0), (100, 100), settings(100, 0));
+        let plan = plan(detection(50.0, 40.0), (100, 100), settings(100, 50));
         assert_eq!(plan.step, Some((10, 0)));
         let centered = Detection {
             center_x: 50.0,
             ..detection(50.0, 40.0)
         };
         assert_eq!(
-            super::plan(centered, (100, 100), settings(100, 0)).step,
+            super::plan(centered, (100, 100), settings(100, 50)).step,
             None
         );
     }
