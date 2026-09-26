@@ -12,6 +12,8 @@ use crate::{
 
 pub struct App {
     config: Config,
+    /// `gpu_debug` as applied at process start; the toggle only takes effect on restart.
+    gpu_debug_at_startup: bool,
     engine: Engine,
     models: ModelCatalog,
     hotkeys: HotkeyRegistry,
@@ -32,6 +34,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, loaded: ConfigLoad) -> Self {
         let config = loaded.config;
+        let gpu_debug_at_startup = config.diagnostics.gpu_debug;
         let config_load_warning = loaded.warning;
         tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), output_mode = ?config.output_mode, injection_api = ?config.injection_api, "application initialized with settings");
         let (models, model_catalog_error) = match ModelCatalog::scan() {
@@ -51,6 +54,7 @@ impl App {
 
         let app = Self {
             config,
+            gpu_debug_at_startup,
             engine,
             models,
             hotkeys,

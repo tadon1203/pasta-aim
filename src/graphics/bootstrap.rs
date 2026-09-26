@@ -6,15 +6,12 @@ use windows::Win32::Graphics::Direct3D12::{
     ID3D12DeviceRemovedExtendedDataSettings,
 };
 
-use crate::config::LogLevel;
-
 static INITIALIZED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 /// Enables process-wide D3D12 diagnostics before any D3D12 device is created.
-pub fn initialize_graphics_diagnostics(level: LogLevel) -> Result<()> {
+pub fn initialize_graphics_diagnostics(gpu_debug: bool) -> Result<()> {
     let initialized = INITIALIZED.get_or_init(|| {
-        let enabled = matches!(level, LogLevel::Debug | LogLevel::Trace);
-        if !enabled {
+        if !gpu_debug {
             return Ok(());
         }
 

@@ -33,6 +33,8 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct DiagnosticsConfig {
     pub level: LogLevel,
+    /// D3D12 debug layer + DRED. Applied at startup only; slows inference.
+    pub gpu_debug: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +58,7 @@ impl<'de> Deserialize<'de> for DiagnosticsConfig {
         #[serde(deny_unknown_fields)]
         struct RawDiagnostics {
             level: Option<LogLevel>,
+            gpu_debug: Option<bool>,
             frame_trace: Option<bool>,
             mak_command_trace: Option<bool>,
         }
@@ -68,7 +71,10 @@ impl<'de> Deserialize<'de> for DiagnosticsConfig {
                 LogLevel::Info
             }
         });
-        Ok(Self { level })
+        Ok(Self {
+            level,
+            gpu_debug: raw.gpu_debug.unwrap_or(false),
+        })
     }
 }
 
@@ -307,6 +313,22 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let restored: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.diagnostics.level, LogLevel::Info);
+    }
+
+    #[test]
+    fn gpu_debug_defaults_off_and_is_independent_of_level() {
+        let diagnostics: DiagnosticsConfig = serde_json::from_str(r#"{"level": "trace"}"#).unwrap();
+        assert_eq!(diagnostics.level, LogLevel::Trace);
+        assert!(!diagnostics.gpu_debug);
+
+        let diagnostics = DiagnosticsConfig {
+            level: LogLevel::Warn,
+            gpu_debug: true,
+        };
+        let json = serde_json::to_string(&diagnostics).unwrap();
+        let restored: DiagnosticsConfig = serde_json::from_str(&json).unwrap();
+        assert!(restored.gpu_debug);
+        assert_eq!(restored.level, LogLevel::Warn);
     }
 
     #[test]

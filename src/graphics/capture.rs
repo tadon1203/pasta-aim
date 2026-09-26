@@ -444,6 +444,9 @@ impl DxgiCapture {
             );
             return Err(error).context("failed to signal capture-ready fence");
         }
+        // The immediate context buffers commands; without a flush the copy and
+        // Signal may not reach the GPU while the D3D12 queue already waits on it.
+        unsafe { self.context.Flush() };
         tracing::debug!(
             slot,
             value = ready_value,

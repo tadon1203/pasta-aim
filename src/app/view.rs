@@ -462,6 +462,12 @@ impl App {
                 ui.small(format!("Hold: {hold_shortcuts}"));
             }
             if status.performance.sample_count > 0 {
+                if self.gpu_debug_at_startup {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "GPU debug is on: timings are inflated.",
+                    );
+                }
                 ui.small(format!(
                     "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
                     status.performance.fps,
@@ -544,11 +550,34 @@ impl App {
                     }
                 });
                 ui.small("The selected level and more severe logs are written to the log file.");
+                let mut gpu_debug = self.config.diagnostics.gpu_debug;
+                if ui
+                    .checkbox(
+                        &mut gpu_debug,
+                        "D3D12 debug layer + DRED (restart required)",
+                    )
+                    .changed()
+                {
+                    self.config.diagnostics.gpu_debug = gpu_debug;
+                    self.persist();
+                }
+                ui.small("Slows inference by ~1-2 ms. Turn off when measuring performance.");
+                if self.config.diagnostics.gpu_debug != self.gpu_debug_at_startup {
+                    ui.colored_label(ui.visuals().warn_fg_color, "Restart to apply.");
+                }
                 ui.add_space(6.0);
                 egui::Grid::new("diagnostics_state")
                     .num_columns(2)
                     .spacing([16.0, 5.0])
                     .show(ui, |ui| {
+                        ui.label("GPU debug");
+                        ui.label(if self.gpu_debug_at_startup {
+                            "On"
+                        } else {
+                            "Off"
+                        });
+                        ui.end_row();
+
                         ui.label("Model state");
                         ui.label(model_phase_label(status.model.phase));
                         ui.end_row();

@@ -34,7 +34,7 @@ fn main() -> eframe::Result {
     logging::set_level(loaded.config.diagnostics.level);
     tracing::info!("nice-aimassist starting");
     if let Err(error) =
-        graphics::bootstrap::initialize_graphics_diagnostics(loaded.config.diagnostics.level)
+        graphics::bootstrap::initialize_graphics_diagnostics(loaded.config.diagnostics.gpu_debug)
     {
         tracing::error!(error = %format!("{error:#}"), "graphics diagnostics initialization failed");
         return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
