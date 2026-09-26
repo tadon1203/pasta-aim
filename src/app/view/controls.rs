@@ -10,8 +10,8 @@ use crate::{
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     mak::PhysicalControllerStatus,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, OutputMode, Sensitivity,
-        TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, MaxDelta, OutputMode,
+        Sensitivity, TargetYOffset,
     },
 };
 
@@ -127,6 +127,20 @@ impl App {
                 app.set_target_y_offset(TargetYOffset::new(value))
             });
             ui.small("Aim point inside the target box: 0% = top, 50% = center, 100% = bottom.");
+
+            ui.horizontal(|ui| {
+                ui.label("Max delta");
+                let edit = drag_value(
+                    ui,
+                    i32::from(self.config.max_delta.value()),
+                    0..=i32::from(MaxDelta::MAX),
+                    &mut self.dirty.max_delta,
+                );
+                self.apply_edit(edit, |app, value| {
+                    app.set_max_delta(MaxDelta::new(value as u16))
+                });
+            });
+            ui.small("Per-frame cap on movement length after sensitivity; 0 = unlimited.");
 
             let ready = status.ready_for(self.config.output_mode);
             let run_idle = status.run.phase == RunPhase::Idle;

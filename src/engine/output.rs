@@ -18,7 +18,7 @@ use anyhow::Result;
 use crate::{
     inference::Detection,
     mak::{MakClient, PhysicalControllerStatus},
-    settings::{OutputMode, Sensitivity, TargetYOffset},
+    settings::{MaxDelta, OutputMode, Sensitivity, TargetYOffset},
     sync::MutexExt,
 };
 
@@ -30,6 +30,7 @@ const CONTROLLER_ONE_SHOT_PULSE: Duration = Duration::from_millis(16);
 pub(super) struct OutputSettings {
     pub sensitivity: Sensitivity,
     pub target_y_offset: TargetYOffset,
+    pub max_delta: MaxDelta,
     pub mode: OutputMode,
 }
 
@@ -108,8 +109,18 @@ fn plan(detection: Detection, input_size: (usize, usize), settings: OutputSettin
         detection.center_y + detection.box_height * settings.target_y_offset.center_relative();
     let dy = aim_y - input_size.1 as f32 * 0.5;
     let gain = settings.sensitivity.gain();
-    let x = quantize(dx * gain);
-    let y = quantize(dy * gain);
+    let (mut sx, mut sy) = (dx * gain, dy * gain);
+    if let Some(limit) = settings.max_delta.limit() {
+        // Scale the vector so its direction is kept while its length is capped.
+        let length = sx.hypot(sy);
+        if length > limit {
+            let scale = limit / length;
+            sx *= scale;
+            sy *= scale;
+        }
+    }
+    let x = quantize(sx);
+    let y = quantize(sy);
     Plan {
         target: (dx, dy, detection.confidence, detection.class_id),
         step: (x != 0 || y != 0).then_some((x, y)),
@@ -216,6 +227,7 @@ mod tests {
         OutputSettings {
             sensitivity: Sensitivity::new(sensitivity),
             target_y_offset: TargetYOffset::new(target_y_offset),
+            max_delta: MaxDelta::default(),
             mode: OutputMode::Mouse,
         }
     }
@@ -242,6 +254,29 @@ mod tests {
         assert_eq!(
             super::plan(detection(70.0, 40.0), (100, 100), settings(100, 100)).step,
             Some((10, 40))
+        );
+    }
+
+    #[test]
+    fn max_delta_caps_movement_length_and_keeps_direction() {
+        // Movement is (10, 20) at 100% sensitivity; length ~22.4.
+        let capped = OutputSettings {
+            max_delta: MaxDelta::new(10),
+            ..settings(100, 50)
+        };
+        // Scaled to length 10: (4.47, 8.94) -> (4, 9).
+        assert_eq!(
+            plan(detection(70.0, 40.0), (100, 100), capped).step,
+            Some((4, 9))
+        );
+        // A cap above the movement length changes nothing.
+        let loose = OutputSettings {
+            max_delta: MaxDelta::new(100),
+            ..capped
+        };
+        assert_eq!(
+            plan(detection(70.0, 40.0), (100, 100), loose).step,
+            Some((10, 20))
         );
     }
 

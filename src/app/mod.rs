@@ -6,7 +6,8 @@ use crate::{
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Sensitivity, TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, MaxDelta, Sensitivity,
+        TargetYOffset,
     },
 };
 
@@ -34,6 +35,7 @@ struct UnsavedEdits {
     sensitivity: bool,
     confidence_threshold: bool,
     target_y_offset: bool,
+    max_delta: bool,
     fps_limit: bool,
 }
 
@@ -198,6 +200,12 @@ impl App {
         tracing::debug!(value = value.value(), "target Y offset changed");
         self.config.target_y_offset = value;
         self.engine.send(Command::SetTargetYOffset(value));
+    }
+
+    fn set_max_delta(&mut self, value: MaxDelta) {
+        tracing::debug!(value = value.value(), "max delta changed");
+        self.config.max_delta = value;
+        self.engine.send(Command::SetMaxDelta(value));
     }
 
     fn set_fps_limit(&mut self, fps_limit: FpsLimit) {

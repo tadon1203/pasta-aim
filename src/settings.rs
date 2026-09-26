@@ -122,6 +122,41 @@ impl Default for ConfidenceThreshold {
     }
 }
 
+/// Per-frame cap on the output movement length, in command units (after sensitivity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MaxDelta(u16);
+
+impl MaxDelta {
+    /// No cap.
+    pub const UNLIMITED: u16 = 0;
+    pub const DEFAULT: u16 = Self::UNLIMITED;
+    pub const MAX: u16 = i16::MAX as u16;
+
+    pub fn new(value: u16) -> Self {
+        Self(value.min(Self::MAX))
+    }
+
+    pub fn value(self) -> u16 {
+        self.0
+    }
+
+    /// The cap, or `None` when unlimited.
+    pub fn limit(self) -> Option<f32> {
+        (self.0 != Self::UNLIMITED).then_some(f32::from(self.0))
+    }
+
+    pub(crate) fn is_valid(self) -> bool {
+        self.0 <= Self::MAX
+    }
+}
+
+impl Default for MaxDelta {
+    fn default() -> Self {
+        Self(Self::DEFAULT)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TargetYOffset(i16);
@@ -214,6 +249,13 @@ mod tests {
         assert_eq!(ConfidenceThreshold::new(0).ratio(), 0.0);
         assert_eq!(ConfidenceThreshold::new(100).ratio(), 1.0);
         assert_eq!(ConfidenceThreshold::new(101).value(), 100);
+    }
+
+    #[test]
+    fn max_delta_zero_is_unlimited_and_large_values_are_clamped() {
+        assert_eq!(MaxDelta::default().limit(), None);
+        assert_eq!(MaxDelta::new(25).limit(), Some(25.0));
+        assert_eq!(MaxDelta::new(u16::MAX).value(), MaxDelta::MAX);
     }
 
     #[test]

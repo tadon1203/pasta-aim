@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     models, paths,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, OutputMode,
-        Sensitivity, TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, MaxDelta,
+        OutputMode, Sensitivity, TargetYOffset,
     },
 };
 
@@ -18,6 +18,9 @@ pub struct Config {
     pub sensitivity: Sensitivity,
     pub confidence_threshold: ConfidenceThreshold,
     pub target_y_offset: TargetYOffset,
+    /// Per-frame cap on the output movement length; 0 = unlimited.
+    #[serde(default)]
+    pub max_delta: MaxDelta,
     pub fps_limit: FpsLimit,
     pub output_mode: OutputMode,
     #[serde(default)]
@@ -59,6 +62,7 @@ impl Default for Config {
             sensitivity: Sensitivity::default(),
             confidence_threshold: ConfidenceThreshold::default(),
             target_y_offset: TargetYOffset::default(),
+            max_delta: MaxDelta::default(),
             fps_limit: FpsLimit::default(),
             output_mode: OutputMode::Mouse,
             injection_api: InjectionApi::default(),
@@ -166,6 +170,9 @@ impl Config {
                 TargetYOffset::MIN,
                 TargetYOffset::MAX
             );
+        }
+        if !self.max_delta.is_valid() {
+            bail!("max_delta must be at most {}", MaxDelta::MAX);
         }
         if !self.fps_limit.is_valid() {
             bail!("fps_limit must be in {}..={}", FpsLimit::MIN, FpsLimit::MAX);

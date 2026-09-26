@@ -164,6 +164,7 @@ pub(super) fn run_worker(
         output: OutputSettings {
             sensitivity: config.sensitivity,
             target_y_offset: config.target_y_offset,
+            max_delta: config.max_delta,
             mode: config.output_mode,
         },
         confidence_threshold: config.confidence_threshold,
@@ -282,6 +283,10 @@ impl Worker {
             }
             Command::SetTargetYOffset(value) => {
                 self.tuning.output.target_y_offset = value;
+                self.push_output_settings();
+            }
+            Command::SetMaxDelta(value) => {
+                self.tuning.output.max_delta = value;
                 self.push_output_settings();
             }
             Command::SetConfidenceThreshold(value) => {
