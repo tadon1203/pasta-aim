@@ -18,7 +18,7 @@ use crate::{
         CaptureFramePool, FrameConsumer, FramePublisher, GpuDropReason, GpuFaultReport,
         GpuFrameMetadata,
     },
-    inference::{AdapterLuid, BackendInfo, pipeline::prepare_directml_pipeline},
+    inference::{AdapterLuid, BackendInfo, TensorPrecision, pipeline::prepare_directml_pipeline},
     settings::ConfidenceThreshold,
     timing::QpcClock,
 };
@@ -27,6 +27,7 @@ pub(super) struct PreparedModelInfo {
     pub pipeline_id: u64,
     pub prepare_id: String,
     pub input_size: (usize, usize),
+    pub precision: TensorPrecision,
     pub backend_info: BackendInfo,
     pub ep_assignment: crate::inference::EpAssignmentState,
     pub capture_frames: CaptureFramePool,
@@ -51,7 +52,7 @@ pub(super) enum InferenceControlEvent {
         generation: RunGeneration,
         error: String,
         device_lost: bool,
-        report: Option<GpuFaultReport>,
+        report: Option<Box<GpuFaultReport>>,
     },
 }
 
@@ -297,7 +298,7 @@ fn inference_loop(
                         generation,
                         error: format!("GPU pipeline failed: {error:#}"),
                         device_lost,
-                        report,
+                        report: report.map(Box::new),
                     });
                 } else {
                     let _ = event_tx.send(InferenceControlEvent::Failed {
@@ -356,6 +357,7 @@ fn handle_command(
                     pipeline_id,
                     prepare_id,
                     input_size,
+                    precision: prepared.pipeline.input_spec().precision,
                     backend_info,
                     ep_assignment: prepared.ep_assignment,
                     capture_frames: prepared.capture_frames,
@@ -386,10 +388,10 @@ fn handle_command(
         }
         InferenceCommand::Shutdown => {
             *state = InferenceRunState::Idle;
-            if let Some(mut active) = pipeline.take() {
-                if let Err(error) = active.shutdown() {
-                    tracing::warn!(error = %format!("{error:#}"), "inference pipeline shutdown failed");
-                }
+            if let Some(mut active) = pipeline.take()
+                && let Err(error) = active.shutdown()
+            {
+                tracing::warn!(error = %format!("{error:#}"), "inference pipeline shutdown failed");
             }
             return false;
         }

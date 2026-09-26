@@ -5,40 +5,60 @@ use super::{
     device::GpuDeviceContext,
     frame_mailbox::{GPU_FRAME_SLOTS, GpuFrameLease},
 };
+use crate::inference::TensorPrecision;
 use anyhow::{Context, Result, bail};
 use windows::{
     Win32::Graphics::{
         Direct3D::Fxc::D3DCompile,
-        Direct3D::ID3DBlob,
+        Direct3D::{D3D_SHADER_MACRO, ID3DBlob},
         Direct3D12::*,
         Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R32_TYPELESS},
     },
     core::{Interface, PCSTR},
 };
 
+/// BGRA texture -> planar RGB (NCHW) buffer. Each thread writes one 32-bit
+/// word: one FP32 element, or two packed FP16 elements (`FP16` defined).
+/// Working on the flat element index keeps odd-sized planes correct.
 const SHADER: &str = r#"
 Texture2D<float4> source_image : register(t0);
 RWByteAddressBuffer destination : register(u0);
-cbuffer Params : register(b0) { uint width; uint height; uint pixels; };
-[numthreads(16, 16, 1)]
+cbuffer Params : register(b0) { uint width; uint pixels; uint elements; };
+float element(uint index) {
+    float value = 0.0;
+    if (index < elements) {
+        uint channel = index / pixels;
+        uint pixel = index - channel * pixels;
+        float4 color = source_image.Load(int3(pixel % width, pixel / width, 0));
+        value = channel == 0 ? color.r : (channel == 1 ? color.g : color.b);
+    }
+    return value;
+}
+[numthreads(256, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= width || id.y >= height) return;
-    float4 color = source_image.Load(int3(id.xy, 0));
-    uint pixel = id.y * width + id.x;
-    destination.Store(pixel * 4, asuint(color.r));
-    destination.Store((pixels + pixel) * 4, asuint(color.g));
-    destination.Store((pixels * 2 + pixel) * 4, asuint(color.b));
+#ifdef FP16
+    uint first = id.x * 2;
+    if (first >= elements) return;
+    destination.Store(id.x * 4, f32tof16(element(first)) | (f32tof16(element(first + 1)) << 16));
+#else
+    if (id.x >= elements) return;
+    destination.Store(id.x * 4, asuint(element(id.x)));
+#endif
 }
 "#;
 const COLOR_CHANNELS: usize = 3;
 const PREPROCESS_PARAMETER_COUNT: u32 = 3;
+const THREADS_PER_GROUP: usize = 256;
+const MAX_DISPATCH_GROUPS: usize = 65_535;
 
 pub struct GpuPreprocessor {
     queue: ID3D12CommandQueue,
     sources: [ID3D12Resource; GPU_FRAME_SLOTS],
     destination: ID3D12Resource,
     width: usize,
-    height: usize,
+    pixels: usize,
+    elements: usize,
+    dispatch_groups: u32,
     root_signature: ID3D12RootSignature,
     pipeline: ID3D12PipelineState,
     descriptor_heap: ID3D12DescriptorHeap,
@@ -72,17 +92,25 @@ impl GpuPreprocessor {
         destination: &ID3D12Resource,
         width: usize,
         height: usize,
+        precision: TensorPrecision,
     ) -> Result<Self> {
         let device = gpu.device();
         if width == 0 || height == 0 || width > u32::MAX as usize || height > u32::MAX as usize {
             bail!("invalid GPU preprocess dimensions {width}x{height}");
         }
         let pixels = width.checked_mul(height).context("input size overflowed")?;
-        pixels
+        let elements = pixels
             .checked_mul(COLOR_CHANNELS)
             .context("input tensor size overflowed")?;
+        let words = precision
+            .packed_words(elements)
+            .context("input tensor size overflowed")?;
+        let dispatch_groups = words.div_ceil(THREADS_PER_GROUP);
+        if words > u32::MAX as usize || dispatch_groups > MAX_DISPATCH_GROUPS {
+            bail!("input {width}x{height} is too large for the GPU preprocess dispatch");
+        }
 
-        let (root_signature, pipeline) = create_pipeline(device)?;
+        let (root_signature, pipeline) = create_pipeline(device, precision)?;
         let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             NumDescriptors: (GPU_FRAME_SLOTS * 2) as u32,
@@ -117,16 +145,28 @@ impl GpuPreprocessor {
         unsafe { command_list.Close() }
             .context("failed to close initial preprocess command list")?;
         let timestamps = TimestampRing::new(device)?;
-        name_d3d12(&command_list, &format!("{OWN_OBJECT_PREFIX}preprocess-list"));
+        name_d3d12(
+            &command_list,
+            &format!("{OWN_OBJECT_PREFIX}preprocess-list"),
+        );
         name_d3d12(&pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
-        name_d3d12(&root_signature, &format!("{OWN_OBJECT_PREFIX}preprocess-root"));
-        name_d3d12(&descriptor_heap, &format!("{OWN_OBJECT_PREFIX}preprocess-heap"));
+        name_d3d12(
+            &root_signature,
+            &format!("{OWN_OBJECT_PREFIX}preprocess-root"),
+        );
+        name_d3d12(
+            &descriptor_heap,
+            &format!("{OWN_OBJECT_PREFIX}preprocess-heap"),
+        );
         for (slot, allocator) in allocators.iter().enumerate() {
-            name_d3d12(allocator, &format!("{OWN_OBJECT_PREFIX}preprocess-allocator-{slot}"));
+            name_d3d12(
+                allocator,
+                &format!("{OWN_OBJECT_PREFIX}preprocess-allocator-{slot}"),
+            );
         }
 
         let cpu_base = unsafe { descriptor_heap.GetCPUDescriptorHandleForHeapStart() };
-        for slot in 0..GPU_FRAME_SLOTS {
+        for (slot, source) in sources.iter().enumerate() {
             let cpu = offset_cpu(cpu_base, slot as u32 * descriptor_stride);
             let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
                 Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -141,17 +181,16 @@ impl GpuPreprocessor {
                     },
                 },
             };
-            unsafe { device.CreateShaderResourceView(&sources[slot], Some(&srv), cpu) };
+            unsafe { device.CreateShaderResourceView(source, Some(&srv), cpu) };
         }
         let output_cpu = offset_cpu(cpu_base, (GPU_FRAME_SLOTS as u32) * descriptor_stride);
-        let output_elements = width * height * COLOR_CHANNELS;
         let uav = D3D12_UNORDERED_ACCESS_VIEW_DESC {
             Format: DXGI_FORMAT_R32_TYPELESS,
             ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
             Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
                 Buffer: D3D12_BUFFER_UAV {
                     FirstElement: 0,
-                    NumElements: output_elements as u32,
+                    NumElements: words as u32,
                     StructureByteStride: 0,
                     CounterOffsetInBytes: 0,
                     Flags: D3D12_BUFFER_UAV_FLAG_RAW,
@@ -172,7 +211,9 @@ impl GpuPreprocessor {
             sources: std::array::from_fn(|slot| sources[slot].clone()),
             destination: destination.clone(),
             width,
-            height,
+            pixels,
+            elements,
+            dispatch_groups: dispatch_groups as u32,
             root_signature,
             pipeline,
             descriptor_heap,
@@ -209,10 +250,7 @@ impl GpuPreprocessor {
         let timestamp_slot = slot;
         let gpu_base = unsafe { self.descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
         let source_gpu = offset_gpu(gpu_base, slot as u32 * self.descriptor_stride);
-        let output_gpu = offset_gpu(
-            gpu_base,
-            GPU_FRAME_SLOTS as u32 * self.descriptor_stride,
-        );
+        let output_gpu = offset_gpu(gpu_base, GPU_FRAME_SLOTS as u32 * self.descriptor_stride);
 
         if self.allocator_in_flight[slot].is_some_and(|value| completed < value) {
             self.fault_stage = GpuFaultStage::PreprocessSubmit;
@@ -250,11 +288,7 @@ impl GpuPreprocessor {
                 .SetComputeRootDescriptorTable(0, source_gpu);
             self.command_list
                 .SetComputeRootDescriptorTable(1, output_gpu);
-            let constants = [
-                self.width as u32,
-                self.height as u32,
-                (self.width * self.height) as u32,
-            ];
+            let constants = [self.width as u32, self.pixels as u32, self.elements as u32];
             self.command_list.SetComputeRoot32BitConstants(
                 2,
                 PREPROCESS_PARAMETER_COUNT,
@@ -266,11 +300,7 @@ impl GpuPreprocessor {
                 D3D12_QUERY_TYPE_TIMESTAMP,
                 (timestamp_slot * 2) as u32,
             );
-            self.command_list.Dispatch(
-                self.width.div_ceil(16) as u32,
-                self.height.div_ceil(16) as u32,
-                1,
-            );
+            self.command_list.Dispatch(self.dispatch_groups, 1, 1);
             self.command_list.EndQuery(
                 &self.timestamps.heap,
                 D3D12_QUERY_TYPE_TIMESTAMP,
@@ -433,7 +463,10 @@ impl Drop for TimestampRing {
     }
 }
 
-fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+fn create_pipeline(
+    device: &ID3D12Device,
+    precision: TensorPrecision,
+) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
     let ranges = [
         D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -516,12 +549,20 @@ fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12
     let target = PCSTR(c"cs_5_1".as_ptr().cast());
     let mut bytecode: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
+    let fp16_define = [
+        D3D_SHADER_MACRO {
+            Name: PCSTR(c"FP16".as_ptr().cast()),
+            Definition: PCSTR(c"1".as_ptr().cast()),
+        },
+        D3D_SHADER_MACRO::default(),
+    ];
+    let defines = (precision == TensorPrecision::Fp16).then_some(fp16_define.as_ptr());
     unsafe {
         D3DCompile(
             source.as_ptr().cast(),
             source.len(),
             PCSTR::null(),
-            None,
+            defines,
             None::<&windows::Win32::Graphics::Direct3D::ID3DInclude>,
             entry,
             target,

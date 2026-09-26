@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use ort::{
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{IoBinding, Session},
-    value::Tensor,
+    value::{DynValue, Outlet, PrimitiveTensorElementType, Tensor},
 };
 use windows::Win32::{
     AI::MachineLearning::DirectML::{DML_CREATE_DEVICE_FLAG_NONE, DMLCreateDevice, IDMLDevice},
@@ -20,8 +20,8 @@ use windows::Win32::{
 use crate::{
     graphics::device::GpuDeviceContext,
     inference::{
-        BackendInfo, BackendKind, BackendRunResult, InferenceBackend, ModelInputSpec,
-        ep_assignment, postprocess::select_nearest,
+        BackendInfo, BackendKind, BackendRunResult, Detection, InferenceBackend, ModelInputSpec,
+        TensorPrecision, ep_assignment, postprocess::select_nearest,
     },
     settings::ConfidenceThreshold,
 };
@@ -30,6 +30,59 @@ use super::{append_dml1, d3d12_resource_from_dml_tensor};
 
 static NEXT_PREPARE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The DirectML-allocated input tensor, in the model's input precision.
+enum InputTensor {
+    Fp16(Tensor<half::f16>),
+    Fp32(Tensor<f32>),
+}
+
+impl InputTensor {
+    /// Allocates the tensor and returns it with its backing D3D12 buffer.
+    fn create(
+        allocator: &Allocator,
+        spec: ModelInputSpec,
+        prepare_id: &str,
+    ) -> Result<(Self, ID3D12Resource)> {
+        match spec.precision {
+            TensorPrecision::Fp16 => {
+                let (tensor, resource) = allocate_input::<half::f16>(allocator, spec, prepare_id)?;
+                Ok((Self::Fp16(tensor), resource))
+            }
+            TensorPrecision::Fp32 => {
+                let (tensor, resource) = allocate_input::<f32>(allocator, spec, prepare_id)?;
+                Ok((Self::Fp32(tensor), resource))
+            }
+        }
+    }
+
+    fn bind(&self, binding: &mut IoBinding, name: String) -> Result<()> {
+        match self {
+            Self::Fp16(tensor) => binding.bind_input(name, tensor)?,
+            Self::Fp32(tensor) => binding.bind_input(name, tensor)?,
+        };
+        Ok(())
+    }
+}
+
+fn allocate_input<T: PrimitiveTensorElementType + std::fmt::Debug>(
+    allocator: &Allocator,
+    spec: ModelInputSpec,
+    prepare_id: &str,
+) -> Result<(Tensor<T>, ID3D12Resource)> {
+    let mut tensor = Tensor::<T>::new(allocator, [1, 3, spec.height, spec.width])?;
+    let input_bytes = spec
+        .width
+        .checked_mul(spec.height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .and_then(|elements| spec.precision.packed_words(elements))
+        .and_then(|words| words.checked_mul(4))
+        .context("DirectML input byte size overflowed")?;
+    // SAFETY: the tensor was just allocated from this session's DirectML allocator.
+    let resource = unsafe { d3d12_resource_from_dml_tensor(allocator, &mut tensor, prepare_id) }?;
+    validate_input_resource(&resource, input_bytes)?;
+    Ok((tensor, resource))
+}
+
 /// ONNX Runtime / DirectML session state. Device, queue, shared frames, and
 /// preprocessing are owned by the enclosing InferencePipeline.
 pub struct OrtDirectMlBackend {
@@ -37,12 +90,13 @@ pub struct OrtDirectMlBackend {
     input_spec: ModelInputSpec,
     prepare_id: String,
     binding: Option<IoBinding>,
-    input_tensor: Option<Tensor<f32>>,
+    input_tensor: Option<InputTensor>,
     input_resource: Option<ID3D12Resource>,
     allocator: Option<Allocator>,
     session: Option<Session>,
     dml_device: Option<IDMLDevice>,
     output_name: String,
+    output_precision: TensorPrecision,
     confidence_threshold: ConfidenceThreshold,
     ep_assignment: crate::inference::EpAssignmentState,
 }
@@ -115,7 +169,9 @@ impl OrtDirectMlBackend {
         let input_spec = ModelInputSpec {
             width: dims[3] as usize,
             height: dims[2] as usize,
+            precision: io_precision(&session.inputs()[0], "input")?,
         };
+        let output_precision = io_precision(&session.outputs()[0], "output")?;
         let input_name = session.inputs()[0].name().to_owned();
         let output_name = session.outputs()[0].name().to_owned();
         let ep_assignment = ep_assignment::read(&session)
@@ -135,20 +191,11 @@ impl OrtDirectMlBackend {
                 MemoryType::Default,
             )?,
         )?;
-        let mut input_tensor =
-            Tensor::<f32>::new(&allocator, [1, 3, input_spec.height, input_spec.width])?;
-        let input_bytes = input_spec
-            .width
-            .checked_mul(input_spec.height)
-            .and_then(|pixels| pixels.checked_mul(3))
-            .and_then(|elements| elements.checked_mul(std::mem::size_of::<f32>()))
-            .context("DirectML input byte size overflowed")?;
-        let input_resource =
-            unsafe { d3d12_resource_from_dml_tensor(&allocator, &mut input_tensor, prepare_id) }?;
-        validate_input_resource(&input_resource, input_bytes)?;
+        let (input_tensor, input_resource) =
+            InputTensor::create(&allocator, input_spec, prepare_id)?;
 
         let mut binding = session.create_binding()?;
-        binding.bind_input(input_name.clone(), &input_tensor)?;
+        input_tensor.bind(&mut binding, input_name)?;
         let cpu_memory = MemoryInfo::new(
             AllocationDevice::CPU,
             0,
@@ -172,6 +219,7 @@ impl OrtDirectMlBackend {
             session: Some(session),
             dml_device: Some(dml_device),
             output_name,
+            output_precision,
             confidence_threshold: ConfidenceThreshold::default(),
             ep_assignment,
         })
@@ -232,23 +280,12 @@ impl InferenceBackend for OrtDirectMlBackend {
             bail!("expected one model output, got {}", outputs.len());
         }
         let postprocess_start = Instant::now();
-        let (shape, data) = outputs[self.output_name.as_str()].try_extract_tensor::<f32>()?;
-        let dims: &[i64] = shape.as_ref();
-        let rows = match dims {
-            [1, rows, 6] if *rows > 0 => *rows as usize,
-            [rows, 6] if *rows > 0 => *rows as usize,
-            _ => bail!("unsupported YOLO output shape {dims:?}; expected [1, N, 6]"),
+        let threshold = self.confidence_threshold.ratio();
+        let output = &outputs[self.output_name.as_str()];
+        let detection = match self.output_precision {
+            TensorPrecision::Fp16 => detect::<half::f16>(output, self.input_spec, threshold)?,
+            TensorPrecision::Fp32 => detect::<f32>(output, self.input_spec, threshold)?,
         };
-        if data.len() < rows.saturating_mul(6) {
-            bail!("YOLO output buffer is shorter than its reported shape");
-        }
-        let detection = select_nearest(
-            data,
-            rows,
-            self.input_spec.width,
-            self.input_spec.height,
-            self.confidence_threshold.ratio(),
-        );
         Ok(BackendRunResult {
             detection,
             ort_run_wall_ms,
@@ -263,6 +300,40 @@ impl InferenceBackend for OrtDirectMlBackend {
     fn shutdown(&mut self) {
         OrtDirectMlBackend::shutdown(self);
     }
+}
+
+fn detect<T: PrimitiveTensorElementType + Copy + Into<f32>>(
+    output: &DynValue,
+    spec: ModelInputSpec,
+    confidence_threshold: f32,
+) -> Result<Option<Detection>> {
+    let (shape, data) = output.try_extract_tensor::<T>()?;
+    let dims: &[i64] = shape.as_ref();
+    let rows = match dims {
+        [1, rows, 6] if *rows > 0 => *rows as usize,
+        [rows, 6] if *rows > 0 => *rows as usize,
+        _ => bail!("unsupported YOLO output shape {dims:?}; expected [1, N, 6]"),
+    };
+    if data.len() < rows.saturating_mul(6) {
+        bail!("YOLO output buffer is shorter than its reported shape");
+    }
+    Ok(select_nearest(
+        data,
+        rows,
+        spec.width,
+        spec.height,
+        confidence_threshold,
+    ))
+}
+
+fn io_precision(outlet: &Outlet, role: &str) -> Result<TensorPrecision> {
+    let element_type = outlet
+        .dtype()
+        .tensor_type()
+        .with_context(|| format!("model {role} must be a tensor"))?;
+    TensorPrecision::from_element_type(element_type).with_context(|| {
+        format!("unsupported model {role} element type {element_type}; expected FP16 or FP32")
+    })
 }
 
 fn validate_input_resource(resource: &ID3D12Resource, expected_input_bytes: usize) -> Result<()> {

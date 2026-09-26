@@ -235,7 +235,7 @@ impl DxgiCapture {
             .context("failed to query capture adapter fence capabilities")?;
         let device5 = device.cast::<windows::Win32::Graphics::Direct3D11::ID3D11Device5>();
         tracing::info!(
-            luid_low = adapter_desc.AdapterLuid.LowPart as u32,
+            luid_low = adapter_desc.AdapterLuid.LowPart,
             luid_high = adapter_desc.AdapterLuid.HighPart,
             feature_level = ?unsafe { device.GetFeatureLevel() },
             device5 = device5.is_ok(),
@@ -355,8 +355,7 @@ impl DxgiCapture {
         destination: &ID3D11Texture2D,
         ready_fence: &ID3D11Fence,
         ready_value: u64,
-        width: usize,
-        height: usize,
+        (width, height): (usize, usize),
     ) -> Result<Option<CaptureSubmit>> {
         self.last_fault_stage = GpuFaultStage::CaptureCopy;
         if width == 0 || height == 0 {

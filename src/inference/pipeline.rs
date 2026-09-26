@@ -8,7 +8,8 @@ use crate::{
         device::GpuDeviceContext,
         frame_mailbox::{FramePublisher, GPU_FRAME_SLOTS, GpuFrameLease},
         gpu_diagnostics::{
-            GpuFaultReport, GpuFaultStage, collect_gpu_fault_report, d3d12_device_lost,
+            FenceProgress, GpuFaultReport, GpuFaultStage, collect_gpu_fault_report,
+            d3d12_device_lost,
         },
         preprocess::GpuPreprocessor,
         shared_frame_pool::{CaptureFramePool, InferenceFramePool, create_shared_frame_pool},
@@ -70,6 +71,7 @@ pub fn prepare_directml_pipeline(
         input_resource,
         input_spec.width,
         input_spec.height,
+        input_spec.precision,
     )?;
     publisher.set_pipeline_identity(pipeline_id, prepare_id.clone());
     let mut pipeline = InferencePipeline {
@@ -82,7 +84,7 @@ pub fn prepare_directml_pipeline(
         accepts_frames: true,
     };
     pipeline.set_confidence_threshold(ConfidenceThreshold::default());
-    tracing::info!(pipeline_id, backend = %backend_info.name, input_width = input_spec.width, input_height = input_spec.height, "inference_pipeline_prepared");
+    tracing::info!(pipeline_id, backend = %backend_info.name, input_width = input_spec.width, input_height = input_spec.height, precision = input_spec.precision.label(), "inference_pipeline_prepared");
     Ok(PreparedPipeline {
         pipeline,
         capture_frames,
@@ -216,9 +218,11 @@ impl InferencePipeline {
             &frames.mailbox,
             meta,
             stage,
-            reuse_value,
-            Some(unsafe { frames.capture_ready_fence.GetCompletedValue() }),
-            Some(unsafe { frames.reuse_fence.GetCompletedValue() }),
+            FenceProgress {
+                reuse_value,
+                ready_completed: Some(unsafe { frames.capture_ready_fence.GetCompletedValue() }),
+                reuse_completed: Some(unsafe { frames.reuse_fence.GetCompletedValue() }),
+            },
             error,
         );
         frames.mailbox.poison();

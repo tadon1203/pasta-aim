@@ -31,7 +31,7 @@ pub(super) struct CaptureFault {
 }
 
 pub(super) enum CaptureEvent {
-    Fault(CaptureFault),
+    Fault(Box<CaptureFault>),
     Stats(CaptureSourceMetrics),
     GpuCopy(GpuCopySample),
 }
@@ -415,8 +415,7 @@ fn capture_loop(
                     &transport_ref.textures[slot_id],
                     &transport_ref.capture_ready_fence,
                     ready_value,
-                    width,
-                    height,
+                    (width, height),
                 );
                 let submitted = match submitted {
                     Ok(Some(submitted)) => submitted,
@@ -612,13 +611,13 @@ fn capture_generation(state: &CaptureThreadState) -> Option<RunGeneration> {
     }
 }
 fn send_fault(event_tx: &Sender<CaptureEvent>, generation: Option<RunGeneration>, error: String) {
-    let _ = event_tx.send(CaptureEvent::Fault(CaptureFault {
+    let _ = event_tx.send(CaptureEvent::Fault(Box::new(CaptureFault {
         generation,
         error,
         report: None,
         poisoned: false,
         device_lost: false,
-    }));
+    })));
 }
 
 fn send_poisoned_fault(
@@ -628,13 +627,13 @@ fn send_poisoned_fault(
     device_lost: bool,
     report: Option<GpuFaultReport>,
 ) {
-    let _ = event_tx.send(CaptureEvent::Fault(CaptureFault {
+    let _ = event_tx.send(CaptureEvent::Fault(Box::new(CaptureFault {
         generation,
         error,
         report,
         poisoned: true,
         device_lost,
-    }));
+    })));
 }
 
 #[allow(clippy::too_many_arguments)]

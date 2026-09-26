@@ -1,6 +1,6 @@
 use crate::{
     graphics::DisplayInfo,
-    inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment},
+    inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
     mak::{MakRoutes, PhysicalControllerStatus},
     metrics::PerformanceSnapshot,
     settings::OutputMode,
@@ -28,6 +28,7 @@ pub struct ModelStatus {
     pub active_name: Option<String>,
     pub loading_name: Option<String>,
     pub input_size: Option<(usize, usize)>,
+    pub precision: Option<TensorPrecision>,
     pub error: Option<String>,
     pub ep_assignment: Option<EpAssignmentState>,
     pub ep_assignment_summary: Option<EpAssignmentSummary>,
@@ -40,6 +41,7 @@ impl Default for ModelStatus {
             active_name: None,
             loading_name: None,
             input_size: None,
+            precision: None,
             error: None,
             ep_assignment: None,
             ep_assignment_summary: None,

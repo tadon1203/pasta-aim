@@ -198,16 +198,27 @@ impl GpuFaultReport {
     }
 }
 
+/// Fence values observed when a fault was detected.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FenceProgress {
+    pub reuse_value: Option<u64>,
+    pub ready_completed: Option<u64>,
+    pub reuse_completed: Option<u64>,
+}
+
 pub fn collect_gpu_fault_report(
     gpu: &GpuDeviceContext,
     mailbox: &FramePublisher,
     metadata: GpuFrameMetadata,
     stage: GpuFaultStage,
-    reuse_value: Option<u64>,
-    ready_completed: Option<u64>,
-    reuse_completed: Option<u64>,
+    fences: FenceProgress,
     error: &Error,
 ) -> GpuFaultReport {
+    let FenceProgress {
+        reuse_value,
+        ready_completed,
+        reuse_completed,
+    } = fences;
     log_d3d12_messages(gpu.device(), true);
     let snapshot = mailbox.diagnostic_snapshot();
     let removed = d3d12_device_removed_reason(gpu.device());
@@ -458,8 +469,10 @@ mod tests {
 
     #[test]
     fn normalize_message_collapses_object_addresses() {
-        let a = normalize_message("List (0x0000023240CFABF0:'x') resource (0x0000023240D94B90:'y')");
-        let b = normalize_message("List (0x0000023240D2F900:'x') resource (0x0000023240D94B91:'y')");
+        let a =
+            normalize_message("List (0x0000023240CFABF0:'x') resource (0x0000023240D94B90:'y')");
+        let b =
+            normalize_message("List (0x0000023240D2F900:'x') resource (0x0000023240D94B91:'y')");
         assert_eq!(a, b);
         assert!(a.contains("0x*"));
     }

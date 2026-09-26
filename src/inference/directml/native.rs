@@ -1,5 +1,12 @@
+use std::fmt::Debug;
+
 use anyhow::{Context, Result};
-use ort::{AsPointer, memory::Allocator, session::builder::SessionBuilder, value::Tensor};
+use ort::{
+    AsPointer,
+    memory::Allocator,
+    session::builder::SessionBuilder,
+    value::{PrimitiveTensorElementType, Tensor},
+};
 use windows::Win32::AI::MachineLearning::DirectML::IDMLDevice;
 use windows::{Win32::Graphics::Direct3D12::ID3D12CommandQueue, core::Interface};
 
@@ -28,9 +35,9 @@ pub(crate) unsafe fn append_dml1(
 
 /// # Safety
 /// `tensor` must be a live tensor allocated by this DirectML session's allocator.
-pub(crate) unsafe fn d3d12_resource_from_dml_tensor(
+pub(crate) unsafe fn d3d12_resource_from_dml_tensor<T: PrimitiveTensorElementType + Debug>(
     allocator: &Allocator,
-    tensor: &mut Tensor<f32>,
+    tensor: &mut Tensor<T>,
     prepare_id: &str,
 ) -> Result<windows::Win32::Graphics::Direct3D12::ID3D12Resource> {
     let api = ort::ep::directml::api().context("ONNX Runtime DirectML API is unavailable")?;

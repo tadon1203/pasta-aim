@@ -9,7 +9,7 @@ use crate::{
     },
     graphics::DisplayInfo,
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
-    inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
+    inference::{EpAssignmentState, TensorPrecision, ep_assignment::EpAssignedNode},
     mak::PhysicalControllerStatus,
     metrics::{MetricSummary, PerformanceSnapshot},
     models,
@@ -72,7 +72,8 @@ impl App {
                 ui.small("No .onnx models found in the models folder.");
             }
             if let Some((width, height)) = status.model.input_size {
-                ui.small(format!("Active input: {width}×{height}"));
+                let precision = status.model.precision.map_or("", TensorPrecision::label);
+                ui.small(format!("Active input: {width}×{height} {precision}"));
             }
             if let Some(error) = &status.model.error {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Model: {error}"));
@@ -712,7 +713,10 @@ impl App {
         let input = status
             .model
             .input_size
-            .map(|(w, h)| format!("{w}x{h}"))
+            .map(|(w, h)| match status.model.precision {
+                Some(precision) => format!("{w}x{h} {}", precision.label()),
+                None => format!("{w}x{h}"),
+            })
             .unwrap_or_else(|| "Unknown".to_owned());
         let controller_routes = status
             .mak

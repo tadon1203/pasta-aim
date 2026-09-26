@@ -443,6 +443,7 @@ impl Worker {
             self.edit_status(|status| {
                 status.model.phase = ModelPhase::Ready;
                 status.model.input_size = Some(info.input_size);
+                status.model.precision = Some(info.precision);
                 status.model.error = None;
                 status.model.ep_assignment = Some(info.ep_assignment);
                 status.model.ep_assignment_summary = assignment_summary;
@@ -567,6 +568,7 @@ impl Worker {
                 tracing::info!(backend = %loaded.backend_info.name, backend_kind = ?loaded.backend_info.kind, luid_low = loaded.backend_info.adapter_luid.low, luid_high = loaded.backend_info.adapter_luid.high, "prepared model backend committed");
                 self.inference_worker = candidate;
                 let size = loaded.input_size;
+                let precision = loaded.precision;
                 let assignment = loaded.ep_assignment;
                 let assignment_summary = ep_assignment_summary(&assignment);
                 self.model_ready = true;
@@ -577,6 +579,7 @@ impl Worker {
                     status.model.active_name = Some(name.clone());
                     status.model.loading_name = None;
                     status.model.input_size = Some(size);
+                    status.model.precision = Some(precision);
                     status.model.error = None;
                     status.model.ep_assignment = Some(assignment);
                     status.model.ep_assignment_summary = assignment_summary;
@@ -1010,7 +1013,7 @@ impl Worker {
 
     fn handle_capture_event(&mut self, event: CaptureEvent) {
         match event {
-            CaptureEvent::Fault(fault) => self.handle_capture_fault(fault),
+            CaptureEvent::Fault(fault) => self.handle_capture_fault(*fault),
             CaptureEvent::Stats(value) => self.metrics.update_capture_source(value),
             CaptureEvent::GpuCopy(sample) => {
                 let _present_qpc = sample.present_qpc;
@@ -1039,7 +1042,11 @@ impl Worker {
                     .as_ref()
                     .is_some_and(|report| Some(report.pipeline_id) == self.active_pipeline_id);
                 if self.active_generation == Some(generation) || belongs_to_active_pipeline {
-                    self.recover_poisoned_pipeline(error, device_lost, report);
+                    self.recover_poisoned_pipeline(
+                        error,
+                        device_lost,
+                        report.map(|report| *report),
+                    );
                 }
             }
         }
@@ -1074,11 +1081,9 @@ impl Worker {
                 Some(reason),
             );
             self.edit_status(|status| {
-                status.run.error = Some(if device_lost {
-                    format!("{error}; GPU pipeline invalid after its single automatic reprepare")
-                } else {
-                    format!("{error}; GPU pipeline invalid after its single automatic reprepare")
-                });
+                status.run.error = Some(format!(
+                    "{error}; GPU pipeline invalid after its single automatic reprepare"
+                ));
             });
             return;
         }

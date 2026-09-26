@@ -137,7 +137,10 @@ pub fn create_shared_frame_pool(
                     .with_context(|| format!("D3D12 failed to open shared texture slot={slot}"));
             }
         };
-        name_d3d12(&resource, &format!("{OWN_OBJECT_PREFIX}inference-slot-{slot}"));
+        name_d3d12(
+            &resource,
+            &format!("{OWN_OBJECT_PREFIX}inference-slot-{slot}"),
+        );
         let opened = unsafe { resource.GetDesc() };
         if opened.Width != u64::from(width_u32)
             || opened.Height != height_u32
