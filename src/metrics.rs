@@ -16,7 +16,8 @@ pub struct StageTimings {
     pub acquire_wait_ms: f64,
     pub capture_ms: f64,
     pub copy_submit_ms: f64,
-    pub gpu_preprocess_ms: f64,
+    /// Only measured on some frames.
+    pub gpu_preprocess_ms: Option<f64>,
     pub queue_age_ms: f64,
     pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
@@ -196,7 +197,7 @@ impl Metrics {
             }),
             gpu_copy: summarize_values(&self.gpu_copy_samples, &mut scratch),
             preprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.gpu_preprocess_ms)
+                sample.timings.gpu_preprocess_ms
             }),
             queue_age: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.queue_age_ms)

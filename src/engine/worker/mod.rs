@@ -50,6 +50,7 @@ struct Tuning {
     output: OutputSettings,
     confidence_threshold: ConfidenceThreshold,
     fps_limit: FpsLimit,
+    low_latency: bool,
 }
 
 struct Worker {
@@ -121,6 +122,7 @@ fn inference_config(
 ) -> InferenceConfig {
     InferenceConfig {
         confidence_threshold: tuning.confidence_threshold,
+        low_latency: tuning.low_latency,
         output: tuning.output,
         mak: Arc::clone(mak),
         gate: gate.clone(),
@@ -166,6 +168,7 @@ pub(super) fn run_worker(
         },
         confidence_threshold: config.confidence_threshold,
         fps_limit: config.fps_limit,
+        low_latency: config.low_latency,
     };
     let mak = Arc::new(Mutex::new(MakClient::new()));
     let gate = MotionGate::new();
@@ -289,6 +292,12 @@ impl Worker {
                 self.tuning.fps_limit = value;
                 if let Err(error) = self.capture_worker.set_fps_limit(value) {
                     self.set_run_error(format!("Failed to set FPS limit: {error:#}"));
+                }
+            }
+            Command::SetLowLatency(enabled) => {
+                self.tuning.low_latency = enabled;
+                if let Some((name, path)) = self.active_model.clone() {
+                    self.load_model(false, name, path);
                 }
             }
             Command::SetOutput(mode) => self.set_output_mode(mode),

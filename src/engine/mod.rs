@@ -68,6 +68,8 @@ pub enum Command {
     SetConfidenceThreshold(ConfidenceThreshold),
     SetTargetYOffset(TargetYOffset),
     SetFpsLimit(FpsLimit),
+    /// Reloads the active model, since the DirectML wait mode is a session option.
+    SetLowLatency(bool),
     SetOutput(OutputMode),
     SetInjectionApi(InjectionApi),
     SetCaptureSelection {

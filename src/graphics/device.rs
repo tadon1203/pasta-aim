@@ -6,7 +6,8 @@ use windows::{
             Direct3D::D3D_FEATURE_LEVEL_11_0,
             Direct3D12::{
                 D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_QUEUE_DESC,
-                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
+                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME,
+                D3D12_COMMAND_QUEUE_PRIORITY_HIGH, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
                 D3D12_FENCE_FLAG_NONE, D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device,
                 ID3D12Fence,
             },
@@ -60,14 +61,7 @@ impl GpuDeviceContext {
         unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device) }
             .context("failed to create D3D12 device")?;
         let device: ID3D12Device = device.context("D3D12CreateDevice returned no device")?;
-        let queue_desc = D3D12_COMMAND_QUEUE_DESC {
-            Type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
-            Priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
-            Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
-            NodeMask: 0,
-        };
-        let queue: ID3D12CommandQueue = unsafe { device.CreateCommandQueue(&queue_desc) }
-            .context("failed to create D3D12 compute queue")?;
+        let queue = create_compute_queue(&device)?;
         name_d3d12(&queue, &format!("{OWN_OBJECT_PREFIX}compute-queue"));
         let idle_fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
             .context("failed to create teardown fence")?;
@@ -123,6 +117,40 @@ impl GpuDeviceContext {
         }
         Ok(())
     }
+}
+
+/// Creates the compute queue at the highest priority the process may use, so
+/// small inference jobs are not queued behind the game's frames.
+fn create_compute_queue(device: &ID3D12Device) -> Result<ID3D12CommandQueue> {
+    let mut last_error = None;
+    for (priority, name) in [
+        (
+            D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME,
+            "global realtime",
+        ),
+        (D3D12_COMMAND_QUEUE_PRIORITY_HIGH, "high"),
+        (D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, "normal"),
+    ] {
+        let desc = D3D12_COMMAND_QUEUE_DESC {
+            Type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
+            Priority: priority.0,
+            Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+            NodeMask: 0,
+        };
+        // SAFETY: `desc` is a valid queue description for this device.
+        match unsafe { device.CreateCommandQueue::<ID3D12CommandQueue>(&desc) } {
+            Ok(queue) => {
+                tracing::info!(priority = name, "D3D12 compute queue priority");
+                return Ok(queue);
+            }
+            Err(error) => {
+                tracing::debug!(priority = name, %error, "D3D12 queue priority unavailable");
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.expect("at least one priority was tried"))
+        .context("failed to create D3D12 compute queue")
 }
 
 impl Drop for GpuDeviceContext {

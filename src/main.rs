@@ -23,6 +23,8 @@ mod models;
 #[cfg(windows)]
 mod paths;
 #[cfg(windows)]
+mod platform;
+#[cfg(windows)]
 mod settings;
 #[cfg(windows)]
 mod sync;
@@ -35,6 +37,7 @@ fn main() -> eframe::Result {
     let _logging = logging::init();
     logging::set_level(loaded.config.diagnostics.level);
     tracing::info!("nice-aimassist starting");
+    platform::disable_process_power_throttling();
     if let Err(error) =
         graphics::bootstrap::initialize_graphics_diagnostics(loaded.config.diagnostics.gpu_debug)
     {

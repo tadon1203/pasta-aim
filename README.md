@@ -15,6 +15,7 @@ models/
 
 - モデルは `models/` 内の `.onnx` をファイル名で選択します。ロードに失敗した場合は以前のモデルを維持します。
 - 入出力が FP32 / FP16 のどちらのモデルにも対応しています。精度はモデルから自動判別し、UI の `Active input` に表示します。
+- モデルは入力サイズが固定で、出力が `[1, N, 6]`（x1, y1, x2, y2, score, class）の end-to-end 形式（NMS 埋め込み）である必要があります。動的 shape や end2end でないモデルは、ロード時に理由付きで拒否されます。
 - `settings.json` は `version = 2` のみ対応です。古い形式はデフォルト設定になります。
 
 ## 設定項目
@@ -23,13 +24,15 @@ models/
 - **Target Y offset**: ターゲット高さに対する補正です（-100〜100%、既定 0%）。Sensitivity 適用後に加算されます。
 - **Confidence**: 検出を採用する最小値です（0〜100%、既定 50%）。
 - **FPS limit**: Continuous のみに適用します（1〜1000、既定 240）。`Run once` には適用しません。
+- **Low-latency mode**: DirectML の完了待ちをスピン待ちにします。最悪遅延が下がる代わりに、動作中は CPU コアを 1 つ使い切ります。切り替えるとモデルを再ロードします。
 - **Output**: Mouse / Controller をユーザーが選択します。route が消えても自動では切り替えません。
 - **Hotkeys**: 1 つのアクションに複数のショートカットを割り当てられます。Continuous は Hold shortcut のどれかが押されている間動作します。重複は不可です。
 
 ## 構造
 
 - `src/app/`: UI
-- `src/engine/`: capture worker と inference worker を調整する worker
+- `src/engine/`: capture worker と inference worker を調整する worker。出力（検出→MAK 送信）は inference thread 上で行います
+- `src/platform.rs`: スレッド優先度・MMCSS・電力スロットリング解除
 - `src/graphics/`: DXGI capture、GPU preprocess、共有フレームプール
 - `src/inference/`: ORT DirectML 推論と postprocess
 - `src/mak.rs`: MAK の接続・route 管理

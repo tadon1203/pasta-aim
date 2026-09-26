@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use ort::{
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
-    session::{IoBinding, Session},
+    session::{IoBinding, Session, builder::SessionBuilder},
     value::{DynValue, Outlet, PrimitiveTensorElementType, Tensor},
 };
 use windows::Win32::{
@@ -99,12 +99,14 @@ pub struct OrtDirectMlBackend {
     prepare_id: String,
     output_name: String,
     output_precision: TensorPrecision,
+    /// Rows of the static `[1, rows, 6]` output, validated at load.
+    output_rows: usize,
     confidence_threshold: ConfidenceThreshold,
     ep_assignment: EpAssignmentState,
 }
 
 impl OrtDirectMlBackend {
-    pub fn prepare(path: &Path, gpu: &GpuDeviceContext) -> Result<Self> {
+    pub fn prepare(path: &Path, gpu: &GpuDeviceContext, low_latency: bool) -> Result<Self> {
         let prepare_id = format!(
             "{}-{}",
             std::process::id(),
@@ -112,7 +114,7 @@ impl OrtDirectMlBackend {
         );
         let total_start = Instant::now();
         tracing::info!(prepare_id = %prepare_id, model = %path.display(), "directml_prepare_begin");
-        let result = Self::prepare_inner(path, gpu, &prepare_id);
+        let result = Self::prepare_inner(path, gpu, &prepare_id, low_latency);
         match result {
             Ok(backend) => {
                 tracing::info!(prepare_id = %prepare_id, total_ms = total_start.elapsed().as_secs_f64() * 1000.0, "directml_prepare_complete");
@@ -125,7 +127,12 @@ impl OrtDirectMlBackend {
         }
     }
 
-    fn prepare_inner(path: &Path, gpu: &GpuDeviceContext, prepare_id: &str) -> Result<Self> {
+    fn prepare_inner(
+        path: &Path,
+        gpu: &GpuDeviceContext,
+        prepare_id: &str,
+        low_latency: bool,
+    ) -> Result<Self> {
         if !path.is_file() {
             bail!("model does not exist: {}", path.display());
         }
@@ -134,13 +141,8 @@ impl OrtDirectMlBackend {
             .context("failed to create IDMLDevice")?;
         let dml_device: IDMLDevice = dml_device.context("DMLCreateDevice returned no device")?;
 
-        let mut builder = Session::builder()?
-            .with_memory_pattern(false)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?
-            .with_parallel_execution(false)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?
-            .with_config_entry("session.record_ep_graph_assignment_info", "1")
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let mut builder =
+            session_builder(low_latency).map_err(|error| anyhow::anyhow!(error.to_string()))?;
         // SAFETY: gpu owns the D3D12 device and its single compute queue for
         // longer than this session and both are passed to DML1 unchanged.
         unsafe { append_dml1(&mut builder, &dml_device, gpu.queue(), prepare_id) }?;
@@ -174,6 +176,8 @@ impl OrtDirectMlBackend {
             precision: io_precision(&session.inputs()[0], "input")?,
         };
         let output_precision = io_precision(&session.outputs()[0], "output")?;
+        let output_rows = validate_output_shape(&session.outputs()[0])?;
+        validate_metadata(&session, input_spec)?;
         let input_name = session.inputs()[0].name().to_owned();
         let output_name = session.outputs()[0].name().to_owned();
         let ep_assignment = ep_assignment::read(&session)
@@ -215,6 +219,7 @@ impl OrtDirectMlBackend {
             prepare_id: prepare_id.to_owned(),
             output_name,
             output_precision,
+            output_rows,
             confidence_threshold: ConfidenceThreshold::default(),
             ep_assignment,
         })
@@ -246,40 +251,35 @@ impl OrtDirectMlBackend {
         let started = Instant::now();
         let outputs = self.session.run_binding(&self.binding)?;
         let ort_run_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-        if outputs.len() != 1 {
-            bail!("expected one model output, got {}", outputs.len());
-        }
         let postprocess_start = Instant::now();
         let threshold = self.confidence_threshold.ratio();
         let output = &outputs[self.output_name.as_str()];
         let detection = match self.output_precision {
-            TensorPrecision::Fp16 => detect::<half::f16>(output, self.input_spec, threshold)?,
-            TensorPrecision::Fp32 => detect::<f32>(output, self.input_spec, threshold)?,
+            TensorPrecision::Fp16 => {
+                detect::<half::f16>(output, self.input_spec, self.output_rows, threshold)?
+            }
+            TensorPrecision::Fp32 => {
+                detect::<f32>(output, self.input_spec, self.output_rows, threshold)?
+            }
         };
         Ok(InferenceResult {
             detection,
             ort_run_wall_ms,
             postprocess_ms: postprocess_start.elapsed().as_secs_f64() * 1000.0,
-            gpu_preprocess_ms: 0.0,
+            gpu_preprocess_ms: None,
         })
     }
 }
 
+/// Shape and dtype were validated at load, so this only reads the rows.
 fn detect<T: PrimitiveTensorElementType + Copy + Into<f32>>(
     output: &DynValue,
     spec: ModelInputSpec,
+    rows: usize,
     confidence_threshold: f32,
 ) -> Result<Option<Detection>> {
-    let (shape, data) = output.try_extract_tensor::<T>()?;
-    let dims: &[i64] = shape.as_ref();
-    let rows = match dims {
-        [1, rows, 6] if *rows > 0 => *rows as usize,
-        [rows, 6] if *rows > 0 => *rows as usize,
-        _ => bail!("unsupported YOLO output shape {dims:?}; expected [1, N, 6]"),
-    };
-    if data.len() < rows.saturating_mul(6) {
-        bail!("YOLO output buffer is shorter than its reported shape");
-    }
+    let (_, data) = output.try_extract_tensor::<T>()?;
+    debug_assert!(data.len() >= rows * 6);
     Ok(select_nearest(
         data,
         rows,
@@ -287,6 +287,82 @@ fn detect<T: PrimitiveTensorElementType + Copy + Into<f32>>(
         spec.height,
         confidence_threshold,
     ))
+}
+
+fn session_builder(low_latency: bool) -> ort::Result<SessionBuilder> {
+    let mut builder = Session::builder()?
+        .with_memory_pattern(false)?
+        .with_parallel_execution(false)?
+        // DirectML does the work; extra ORT worker threads only add wakeups.
+        .with_intra_threads(1)?
+        .with_intra_op_spinning(false)?
+        .with_inter_op_spinning(false)?
+        .with_config_entry("session.record_ep_graph_assignment_info", "1")?;
+    if low_latency {
+        // Busy-wait for GPU completion instead of sleeping on an event: lower
+        // tail latency at the cost of one fully used CPU core.
+        builder = builder.with_config_entry("ep.dml.enable_cpu_sync_spinning", "1")?;
+    }
+    Ok(builder)
+}
+
+/// The output must be a static end-to-end `[1, N, 6]` (or `[N, 6]`) detection
+/// list; returns `N`.
+fn validate_output_shape(outlet: &Outlet) -> Result<usize> {
+    let dims: &[i64] = outlet
+        .dtype()
+        .tensor_shape()
+        .context("model output must be a tensor")?
+        .as_ref();
+    match dims {
+        [1, rows, 6] | [rows, 6] if *rows > 0 => Ok(*rows as usize),
+        _ => bail!(
+            "expected a static end-to-end output [1, N, 6] (x1, y1, x2, y2, score, class), got {dims:?};              export the model with NMS embedded and a fixed input size"
+        ),
+    }
+}
+
+/// Rejects models whose Ultralytics-style export metadata contradicts what the
+/// pipeline assumes. Models without metadata are accepted; the shape checks
+/// above are what the pipeline actually relies on.
+fn validate_metadata(session: &Session, spec: ModelInputSpec) -> Result<()> {
+    let Ok(metadata) = session.metadata() else {
+        return Ok(());
+    };
+    let flag = |key: &str| {
+        metadata
+            .custom(key)
+            .map(|value| value.trim().eq_ignore_ascii_case("true"))
+    };
+    if flag("dynamic") == Some(true) {
+        bail!("model was exported with dynamic shapes (metadata dynamic=True); export it static");
+    }
+    if flag("end2end") == Some(false) && flag("nms") != Some(true) {
+        bail!("model is not end-to-end (metadata end2end=False); export it with NMS embedded");
+    }
+    if let Some((height, width)) = metadata.custom("imgsz").as_deref().and_then(parse_imgsz)
+        && (height, width) != (spec.height, spec.width)
+    {
+        bail!(
+            "model metadata imgsz {height}x{width} does not match its input {}x{}",
+            spec.height,
+            spec.width
+        );
+    }
+    Ok(())
+}
+
+/// Parses Ultralytics' `imgsz` metadata, e.g. `[640, 640]`, as `(height, width)`.
+fn parse_imgsz(value: &str) -> Option<(usize, usize)> {
+    let sizes: Vec<usize> = value
+        .trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')'))
+        .split(',')
+        .map(|part| part.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    match sizes[..] {
+        [height, width] => Some((height, width)),
+        _ => None,
+    }
 }
 
 fn io_precision(outlet: &Outlet, role: &str) -> Result<TensorPrecision> {
@@ -317,4 +393,22 @@ fn validate_input_resource(resource: &ID3D12Resource, expected_input_bytes: usiz
         bail!("DirectML input resource does not allow unordered access");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imgsz_metadata_is_height_then_width() {
+        assert_eq!(parse_imgsz("[480, 640]"), Some((480, 640)));
+        assert_eq!(parse_imgsz("(640, 640)"), Some((640, 640)));
+    }
+
+    #[test]
+    fn unrecognized_imgsz_metadata_is_ignored() {
+        assert_eq!(parse_imgsz("640"), None);
+        assert_eq!(parse_imgsz("[a, b]"), None);
+        assert_eq!(parse_imgsz(""), None);
+    }
 }

@@ -75,6 +75,7 @@ pub(super) enum InferenceEvent {
 /// Everything the inference thread needs besides its GPU pipeline.
 pub(super) struct InferenceConfig {
     pub confidence_threshold: ConfidenceThreshold,
+    pub low_latency: bool,
     pub output: OutputSettings,
     pub mak: Arc<Mutex<MakClient>>,
     pub gate: MotionGate,
@@ -119,6 +120,7 @@ impl InferenceWorker {
         let join = thread::Builder::new()
             .name("nice-aimassist-inference".to_owned())
             .spawn(move || {
+                let _boost = crate::platform::boost_current_thread("inference");
                 InferenceThread::new(control_rx, event_tx, consumer, qpc, config).run()
             })?;
         Ok(Self {
@@ -209,6 +211,7 @@ struct InferenceThread {
     qpc: QpcClock,
     state: RunState,
     confidence_threshold: ConfidenceThreshold,
+    low_latency: bool,
     output: OutputStage,
     gate: MotionGate,
 }
@@ -229,6 +232,7 @@ impl InferenceThread {
             pipeline: None,
             state: RunState::Idle,
             confidence_threshold: config.confidence_threshold,
+            low_latency: config.low_latency,
             output: OutputStage::new(config.mak, config.output),
             gate: config.gate,
         }
@@ -463,6 +467,7 @@ impl InferenceThread {
             publisher,
             pipeline_id,
             self.confidence_threshold,
+            self.low_latency,
         )?;
         let input_size = (input_spec.width, input_spec.height);
         self.output.set_input_size(input_size);

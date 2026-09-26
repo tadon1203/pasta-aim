@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     app::App,
-    engine::{CapturePhase, Command, EngineStatus, RunPhase},
+    engine::{CapturePhase, Command, EngineStatus, ModelPhase, RunPhase},
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     mak::PhysicalControllerStatus,
     settings::{
@@ -204,6 +204,23 @@ impl App {
                     app.set_fps_limit(FpsLimit::new(value as u16))
                 });
                 ui.small("Continuous only");
+            });
+
+            let can_change_latency =
+                status.run.phase == RunPhase::Idle && status.model.phase != ModelPhase::Loading;
+            ui.add_enabled_ui(can_change_latency, |ui| {
+                let mut low_latency = self.config.low_latency;
+                if ui
+                    .checkbox(&mut low_latency, "Low-latency mode")
+                    .on_hover_text(
+                        "Busy-waits for the GPU instead of sleeping. Lowers worst-case latency                          but keeps one CPU core fully busy while running. Reloads the model.",
+                    )
+                    .changed()
+                {
+                    self.config.low_latency = low_latency;
+                    self.engine.send(Command::SetLowLatency(low_latency));
+                    self.persist();
+                }
             });
 
             let hold_shortcuts = bindings_summary(&self.config, HotkeyAction::ContinuousHold);

@@ -1,6 +1,7 @@
 use std::mem::ManuallyDrop;
 
 use super::gpu_diagnostics::{GpuDropReason, GpuFaultStage, OWN_OBJECT_PREFIX, name_d3d12};
+use super::profile_sampler::ProfileSampler;
 use super::{
     device::GpuDeviceContext,
     frame_mailbox::{GPU_FRAME_SLOTS, GpuFrameLease},
@@ -51,22 +52,25 @@ const PREPROCESS_PARAMETER_COUNT: u32 = 3;
 const THREADS_PER_GROUP: usize = 256;
 const MAX_DISPATCH_GROUPS: usize = 65_535;
 
+/// Field order is drop order: the recorded lists go before everything they refer to.
 pub struct GpuPreprocessor {
+    /// One list per frame slot, recorded once: shapes and descriptors are static,
+    /// so a frame only needs to be submitted.
+    command_lists: [ID3D12GraphicsCommandList; GPU_FRAME_SLOTS],
+    /// Same dispatch without timestamp queries, for frames that are not measured.
+    untimed_lists: [ID3D12GraphicsCommandList; GPU_FRAME_SLOTS],
+    // Objects the recorded lists refer to.
+    _allocators: [ID3D12CommandAllocator; GPU_FRAME_SLOTS],
+    _descriptor_heap: ID3D12DescriptorHeap,
+    _pipeline: ID3D12PipelineState,
+    _root_signature: ID3D12RootSignature,
+    _destination: ID3D12Resource,
+    _sources: [ID3D12Resource; GPU_FRAME_SLOTS],
     queue: ID3D12CommandQueue,
-    sources: [ID3D12Resource; GPU_FRAME_SLOTS],
-    destination: ID3D12Resource,
-    width: usize,
-    pixels: usize,
-    elements: usize,
-    dispatch_groups: u32,
-    root_signature: ID3D12RootSignature,
-    pipeline: ID3D12PipelineState,
-    descriptor_heap: ID3D12DescriptorHeap,
-    descriptor_stride: u32,
-    allocators: [ID3D12CommandAllocator; GPU_FRAME_SLOTS],
-    allocator_in_flight: [Option<u64>; GPU_FRAME_SLOTS],
-    command_list: ID3D12GraphicsCommandList,
+    /// Reuse-fence value after which each slot's list may be executed again.
+    list_in_flight: [Option<u64>; GPU_FRAME_SLOTS],
     timestamps: TimestampRing,
+    sampler: ProfileSampler,
     fault_stage: GpuFaultStage,
 }
 
@@ -75,6 +79,8 @@ pub struct PreprocessTicket {
     pub query_slot: usize,
     pub completion_value: u64,
     pub frame_seq: u64,
+    /// Whether this submission recorded timestamps.
+    pub timed: bool,
 }
 
 struct TimestampRing {
@@ -133,22 +139,7 @@ impl GpuPreprocessor {
         let allocators: [ID3D12CommandAllocator; GPU_FRAME_SLOTS] = allocators
             .try_into()
             .map_err(|_| anyhow::anyhow!("failed to create all preprocess allocators"))?;
-        let command_list: ID3D12GraphicsCommandList = unsafe {
-            device.CreateCommandList(
-                0,
-                D3D12_COMMAND_LIST_TYPE_COMPUTE,
-                &allocators[0],
-                None::<&ID3D12PipelineState>,
-            )
-        }
-        .context("failed to create preprocess command list")?;
-        unsafe { command_list.Close() }
-            .context("failed to close initial preprocess command list")?;
         let timestamps = TimestampRing::new(device)?;
-        name_d3d12(
-            &command_list,
-            &format!("{OWN_OBJECT_PREFIX}preprocess-list"),
-        );
         name_d3d12(&pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
         name_d3d12(
             &root_signature,
@@ -206,22 +197,56 @@ impl GpuPreprocessor {
             )
         };
 
+        let gpu_base = unsafe { descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
+        let output_gpu = offset_gpu(gpu_base, GPU_FRAME_SLOTS as u32 * descriptor_stride);
+        let constants = [width as u32, pixels as u32, elements as u32];
+        let record_all = |timed: bool| -> Result<[ID3D12GraphicsCommandList; GPU_FRAME_SLOTS]> {
+            let mut lists = Vec::with_capacity(GPU_FRAME_SLOTS);
+            for slot in 0..GPU_FRAME_SLOTS {
+                let list = SlotRecording {
+                    device,
+                    allocator: &allocators[slot],
+                    pipeline: &pipeline,
+                    root_signature: &root_signature,
+                    descriptor_heap: &descriptor_heap,
+                    source: &sources[slot],
+                    destination,
+                    source_gpu: offset_gpu(gpu_base, slot as u32 * descriptor_stride),
+                    output_gpu,
+                    timestamps: &timestamps,
+                    slot,
+                    constants,
+                    dispatch_groups: dispatch_groups as u32,
+                    timed,
+                }
+                .record()?;
+                let kind = if timed { "timed" } else { "untimed" };
+                name_d3d12(
+                    &list,
+                    &format!("{OWN_OBJECT_PREFIX}preprocess-list-{kind}-{slot}"),
+                );
+                lists.push(list);
+            }
+            lists
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("failed to record all preprocess command lists"))
+        };
+        let command_lists = record_all(true)?;
+        let untimed_lists = record_all(false)?;
+
         Ok(Self {
+            command_lists,
+            untimed_lists,
+            _allocators: allocators,
+            _descriptor_heap: descriptor_heap,
+            _pipeline: pipeline,
+            _root_signature: root_signature,
+            _destination: destination.clone(),
+            _sources: std::array::from_fn(|slot| sources[slot].clone()),
             queue: gpu.queue().clone(),
-            sources: std::array::from_fn(|slot| sources[slot].clone()),
-            destination: destination.clone(),
-            width,
-            pixels,
-            elements,
-            dispatch_groups: dispatch_groups as u32,
-            root_signature,
-            pipeline,
-            descriptor_heap,
-            descriptor_stride,
-            allocators,
-            allocator_in_flight: [None; GPU_FRAME_SLOTS],
-            command_list,
+            list_in_flight: [None; GPU_FRAME_SLOTS],
             timestamps,
+            sampler: ProfileSampler::default(),
             fault_stage: GpuFaultStage::PreprocessSubmit,
         })
     }
@@ -247,93 +272,26 @@ impl GpuPreprocessor {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
             bail!("D3D12 reuse fence reports device removed");
         }
-        let timestamp_slot = slot;
-        let gpu_base = unsafe { self.descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
-        let source_gpu = offset_gpu(gpu_base, slot as u32 * self.descriptor_stride);
-        let output_gpu = offset_gpu(gpu_base, GPU_FRAME_SLOTS as u32 * self.descriptor_stride);
-
-        if self.allocator_in_flight[slot].is_some_and(|value| completed < value) {
+        if self.list_in_flight[slot].is_some_and(|value| completed < value) {
             self.fault_stage = GpuFaultStage::PreprocessSubmit;
             lease.record_drop(GpuDropReason::ReuseNotComplete);
-            bail!("preprocess slot allocator reused before its reuse fence completed");
+            bail!("preprocess slot command list reused before its reuse fence completed");
         }
         self.fault_stage = GpuFaultStage::D3D12ReadyWait;
         if let Err(error) = unsafe { self.queue.Wait(ready_fence, lease.capture_ready_value()) } {
             return Err(error).context("D3D12 queue wait on capture fence failed");
         }
         self.fault_stage = GpuFaultStage::PreprocessSubmit;
-        if let Err(error) = unsafe { self.allocators[slot].Reset() } {
-            return Err(error).context("failed to reset preprocess command allocator");
+        let timed = self.sampler.should_measure();
+        if timed {
+            self.timestamps.pending[slot] = Some(reuse_value);
         }
-        if let Err(error) = unsafe {
-            self.command_list
-                .Reset(&self.allocators[slot], Some(&self.pipeline))
-        } {
-            return Err(error).context("failed to reset preprocess command list");
-        }
-
-        let to_read = transition(
-            &self.sources[slot],
-            D3D12_RESOURCE_STATE_COMMON,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-        );
-        unsafe { self.command_list.ResourceBarrier(&[to_read]) };
-        unsafe {
-            self.command_list
-                .SetComputeRootSignature(&self.root_signature);
-            self.command_list.SetPipelineState(&self.pipeline);
-            self.command_list
-                .SetDescriptorHeaps(&[Some(self.descriptor_heap.clone())]);
-            self.command_list
-                .SetComputeRootDescriptorTable(0, source_gpu);
-            self.command_list
-                .SetComputeRootDescriptorTable(1, output_gpu);
-            let constants = [self.width as u32, self.pixels as u32, self.elements as u32];
-            self.command_list.SetComputeRoot32BitConstants(
-                2,
-                PREPROCESS_PARAMETER_COUNT,
-                constants.as_ptr().cast(),
-                0,
-            );
-            self.command_list.EndQuery(
-                &self.timestamps.heap,
-                D3D12_QUERY_TYPE_TIMESTAMP,
-                (timestamp_slot * 2) as u32,
-            );
-            self.command_list.Dispatch(self.dispatch_groups, 1, 1);
-            self.command_list.EndQuery(
-                &self.timestamps.heap,
-                D3D12_QUERY_TYPE_TIMESTAMP,
-                (timestamp_slot * 2 + 1) as u32,
-            );
-            self.command_list.ResolveQueryData(
-                &self.timestamps.heap,
-                D3D12_QUERY_TYPE_TIMESTAMP,
-                (timestamp_slot * 2) as u32,
-                2,
-                &self.timestamps.readback,
-                (timestamp_slot * 2 * std::mem::size_of::<u64>()) as u64,
-            );
-            self.timestamps.pending[timestamp_slot] = Some(reuse_value);
-            self.command_list.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
-                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
-                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                Anonymous: D3D12_RESOURCE_BARRIER_0 {
-                    UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
-                        pResource: ManuallyDrop::new(Some(self.destination.clone())),
-                    }),
-                },
-            }]);
-            self.command_list.ResourceBarrier(&[transition(
-                &self.sources[slot],
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COMMON,
-            )]);
-        }
-        if let Err(error) = unsafe { self.command_list.Close() } {
-            return Err(error).context("failed to close preprocess command list");
-        }
-        let command_list = match self.command_list.cast() {
+        let list = if timed {
+            &self.command_lists[slot]
+        } else {
+            &self.untimed_lists[slot]
+        };
+        let command_list = match list.cast() {
             Ok(command_list) => command_list,
             Err(error) => {
                 return Err(error).context("failed to cast compute command list");
@@ -348,15 +306,21 @@ impl GpuPreprocessor {
             self.fault_stage = GpuFaultStage::PreprocessSubmit;
             bail!("GPU frame lease ownership changed before reuse was submitted");
         }
-        self.allocator_in_flight[slot] = Some(reuse_value);
+        self.list_in_flight[slot] = Some(reuse_value);
         Ok(PreprocessTicket {
-            query_slot: timestamp_slot,
+            query_slot: slot,
             completion_value: reuse_value,
             frame_seq: lease.metadata().frame_seq,
+            timed,
         })
     }
 
-    pub fn collect(&mut self, ticket: PreprocessTicket, reuse_fence: &ID3D12Fence) -> Result<f64> {
+    /// Returns the GPU time of a measured frame, `None` for an unmeasured one.
+    pub fn collect(
+        &mut self,
+        ticket: PreprocessTicket,
+        reuse_fence: &ID3D12Fence,
+    ) -> Result<Option<f64>> {
         let completed = unsafe { reuse_fence.GetCompletedValue() };
         if completed == u64::MAX {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
@@ -369,12 +333,107 @@ impl GpuPreprocessor {
                 ticket.completion_value
             );
         }
+        if !ticket.timed {
+            return Ok(None);
+        }
         self.timestamps
             .collect(ticket.query_slot, ticket.completion_value)
+            .map(Some)
     }
 
     pub fn fault_stage(&self) -> GpuFaultStage {
         self.fault_stage
+    }
+}
+
+/// Everything needed to record one slot's preprocess dispatch.
+struct SlotRecording<'a> {
+    device: &'a ID3D12Device,
+    allocator: &'a ID3D12CommandAllocator,
+    pipeline: &'a ID3D12PipelineState,
+    root_signature: &'a ID3D12RootSignature,
+    descriptor_heap: &'a ID3D12DescriptorHeap,
+    source: &'a ID3D12Resource,
+    destination: &'a ID3D12Resource,
+    source_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+    output_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+    timestamps: &'a TimestampRing,
+    slot: usize,
+    constants: [u32; PREPROCESS_PARAMETER_COUNT as usize],
+    dispatch_groups: u32,
+    /// Bracket the dispatch with timestamp queries and resolve them.
+    timed: bool,
+}
+
+impl SlotRecording<'_> {
+    fn record(&self) -> Result<ID3D12GraphicsCommandList> {
+        let list: ID3D12GraphicsCommandList = unsafe {
+            self.device.CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                self.allocator,
+                self.pipeline,
+            )
+        }
+        .context("failed to create preprocess command list")?;
+        let first_query = (self.slot * 2) as u32;
+        unsafe {
+            list.ResourceBarrier(&[transition(
+                self.source,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            )]);
+            list.SetComputeRootSignature(self.root_signature);
+            list.SetPipelineState(self.pipeline);
+            list.SetDescriptorHeaps(&[Some(self.descriptor_heap.clone())]);
+            list.SetComputeRootDescriptorTable(0, self.source_gpu);
+            list.SetComputeRootDescriptorTable(1, self.output_gpu);
+            list.SetComputeRoot32BitConstants(
+                2,
+                PREPROCESS_PARAMETER_COUNT,
+                self.constants.as_ptr().cast(),
+                0,
+            );
+            if self.timed {
+                list.EndQuery(
+                    &self.timestamps.heap,
+                    D3D12_QUERY_TYPE_TIMESTAMP,
+                    first_query,
+                );
+            }
+            list.Dispatch(self.dispatch_groups, 1, 1);
+            if self.timed {
+                list.EndQuery(
+                    &self.timestamps.heap,
+                    D3D12_QUERY_TYPE_TIMESTAMP,
+                    first_query + 1,
+                );
+                list.ResolveQueryData(
+                    &self.timestamps.heap,
+                    D3D12_QUERY_TYPE_TIMESTAMP,
+                    first_query,
+                    2,
+                    &self.timestamps.readback,
+                    (self.slot * 2 * std::mem::size_of::<u64>()) as u64,
+                );
+            }
+            list.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    UAV: ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                        pResource: ManuallyDrop::new(Some(self.destination.clone())),
+                    }),
+                },
+            }]);
+            list.ResourceBarrier(&[transition(
+                self.source,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            )]);
+        }
+        unsafe { list.Close() }.context("failed to close preprocess command list")?;
+        Ok(list)
     }
 }
 

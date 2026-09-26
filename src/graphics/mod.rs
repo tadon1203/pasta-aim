@@ -4,6 +4,7 @@ pub mod device;
 pub mod frame_mailbox;
 pub mod gpu_diagnostics;
 pub mod preprocess;
+mod profile_sampler;
 pub mod shared_frame_pool;
 
 pub use capture::DxgiCapture;

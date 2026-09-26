@@ -149,6 +149,7 @@ impl CaptureWorker {
                         return;
                     }
                 };
+                let _boost = crate::platform::boost_current_thread("capture");
                 CaptureThread::new(control_rx, event_tx, thread_publisher, graphics, qpc, gate)
                     .run();
             })?;

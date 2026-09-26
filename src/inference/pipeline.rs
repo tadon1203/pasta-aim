@@ -24,7 +24,7 @@ pub struct InferenceResult {
     pub detection: Option<Detection>,
     pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
-    pub gpu_preprocess_ms: f64,
+    pub gpu_preprocess_ms: Option<f64>,
 }
 
 /// Field order is drop order: ORT objects first, then the preprocessor and frame
@@ -53,9 +53,10 @@ pub fn prepare_directml_pipeline(
     publisher: FramePublisher,
     pipeline_id: u64,
     confidence_threshold: ConfidenceThreshold,
+    low_latency: bool,
 ) -> Result<PreparedPipeline> {
     let gpu = GpuDeviceContext::new(adapter_luid)?;
-    let mut backend = OrtDirectMlBackend::prepare(model, &gpu)?;
+    let mut backend = OrtDirectMlBackend::prepare(model, &gpu, low_latency)?;
     backend.set_confidence_threshold(confidence_threshold);
     let input_spec = backend.input_spec();
     let prepare_id = backend.prepare_id().to_owned();

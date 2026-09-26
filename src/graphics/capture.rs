@@ -15,17 +15,18 @@ use windows::Win32::Graphics::{
         DXGI_ADAPTER_DESC3, DXGI_ADAPTER_FLAG3_SUPPORT_MONITORED_FENCES,
         DXGI_ADAPTER_FLAG3_SUPPORT_NON_MONITORED_FENCES, DXGI_ERROR_ACCESS_LOST,
         DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIAdapter4,
-        IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+        IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
     },
 };
 use windows::core::Interface;
 
 use super::gpu_diagnostics::GpuFaultStage;
+use super::profile_sampler::ProfileSampler;
 use super::{DisplayInfo, select_output};
 
+/// Highest value accepted by `IDXGIDevice::SetGPUThreadPriority`.
+const GPU_THREAD_PRIORITY: i32 = 7;
 const GPU_QUERY_RING_SIZE: usize = 16;
-const GPU_PROFILE_COLD_FRAMES: u64 = 16;
-const GPU_PROFILE_STEADY_STRIDE: u64 = 16;
 
 pub(crate) enum CapturePoll {
     Fresh(AcquiredDesktopFrame),
@@ -80,7 +81,7 @@ struct GpuQuerySlot {
 struct D3d11GpuProfiler {
     slots: Vec<GpuQuerySlot>,
     next_slot: usize,
-    accepted_frames: u64,
+    sampler: ProfileSampler,
 }
 
 impl D3d11GpuProfiler {
@@ -97,7 +98,7 @@ impl D3d11GpuProfiler {
         Ok(Self {
             slots,
             next_slot: 0,
-            accepted_frames: 0,
+            sampler: ProfileSampler::default(),
         })
     }
 
@@ -106,15 +107,7 @@ impl D3d11GpuProfiler {
             slot.in_flight = false;
         }
         self.next_slot = 0;
-        self.accepted_frames = 0;
-    }
-
-    fn should_measure(&mut self) -> bool {
-        let frame = self.accepted_frames;
-        self.accepted_frames = self.accepted_frames.saturating_add(1);
-        frame < GPU_PROFILE_COLD_FRAMES
-            || (frame >= GPU_PROFILE_COLD_FRAMES
-                && (frame - GPU_PROFILE_COLD_FRAMES).is_multiple_of(GPU_PROFILE_STEADY_STRIDE))
+        self.sampler.reset();
     }
 
     fn begin(&mut self, context: &ID3D11DeviceContext4) -> Option<usize> {
@@ -391,7 +384,7 @@ impl DxgiCapture {
             .context("failed to cast desktop texture to D3D11 resource")?;
         let capture_started = Instant::now();
         let copy_started = Instant::now();
-        let query_slot = if self.gpu_profiler.should_measure() {
+        let query_slot = if self.gpu_profiler.sampler.should_measure() {
             self.gpu_profiler.begin(&self.context)
         } else {
             None
@@ -488,6 +481,18 @@ impl Drop for DxgiCapture {
     }
 }
 
+/// Asks the GPU scheduler to run this device's work ahead of other processes'
+/// (the game's) when the GPU is saturated. Best effort.
+fn raise_gpu_thread_priority(device: &ID3D11Device4) {
+    let Ok(dxgi_device) = device.cast::<IDXGIDevice>() else {
+        return;
+    };
+    // SAFETY: plain call on a live DXGI device.
+    if let Err(error) = unsafe { dxgi_device.SetGPUThreadPriority(GPU_THREAD_PRIORITY) } {
+        tracing::warn!(%error, "could not raise D3D11 GPU thread priority");
+    }
+}
+
 fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device4, ID3D11DeviceContext4)> {
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
@@ -509,6 +514,7 @@ fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device4, ID3D11Device
         return Err(error).context("failed to create D3D11 device");
     }
     let device: ID3D11Device4 = device.context("D3D11 returned no device")?.cast()?;
+    raise_gpu_thread_priority(&device);
     let context = context
         .context("D3D11 returned no immediate context")?
         .cast()?;

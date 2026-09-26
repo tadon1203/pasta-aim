@@ -25,6 +25,9 @@ pub struct Config {
     pub hotkeys: Vec<HotkeyBinding>,
     pub selected_adapter: crate::inference::AdapterLuid,
     pub capture_output: u32,
+    /// Busy-waits on DirectML completion for lower tail latency at the cost of one CPU core.
+    #[serde(default)]
+    pub low_latency: bool,
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
 }
@@ -62,6 +65,7 @@ impl Default for Config {
             hotkeys: default_hotkeys(),
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
             capture_output: 0,
+            low_latency: false,
             diagnostics: DiagnosticsConfig::default(),
         }
     }
@@ -300,5 +304,17 @@ mod tests {
         let restored: DiagnosticsConfig = serde_json::from_str(&json).unwrap();
         assert!(restored.gpu_debug);
         assert_eq!(restored.level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn low_latency_defaults_off_and_round_trips() {
+        assert!(!Config::default().low_latency);
+        let config = Config {
+            low_latency: true,
+            ..Config::default()
+        };
+        let restored: Config =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert!(restored.low_latency);
     }
 }
