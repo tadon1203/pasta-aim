@@ -72,7 +72,6 @@ impl Worker {
             let _ = self.inference_worker.stop(generation);
             let _ = self.capture_worker.stop();
             self.run.active = None;
-            self.mak().release_controller_best_effort();
             let label = match mode {
                 RunMode::Continuous => "Failed to start inference",
                 RunMode::OneShot => "Single inference failed",
@@ -102,7 +101,7 @@ impl Worker {
         });
     }
 
-    /// Stops any active run and releases the controller. Safe to call when idle.
+    /// Stops any active run. Safe to call when idle.
     pub(super) fn stop_run(&mut self) {
         self.stop_run_inner(true);
     }
@@ -112,8 +111,6 @@ impl Worker {
     fn stop_run_inner(&mut self, clear_overlay: bool) {
         if let Some(run) = self.run.active.take() {
             tracing::info!(generation = run.generation, "inference stopped");
-            // The inference thread acknowledges the stop before anything is
-            // released, so it cannot submit output after the release below.
             let _ = self.inference_worker.stop(run.generation);
             let _ = self.capture_worker.stop();
         }
@@ -122,12 +119,7 @@ impl Worker {
         if clear_overlay && let Some(overlay) = &self.overlay {
             overlay.clear();
         }
-        self.mak().release_controller_best_effort();
-        let pending = self.mak().controller_release_pending();
-        self.status.edit(|status| {
-            status.run.phase = RunPhase::Idle;
-            status.mak.controller_release_pending = pending;
-        });
+        self.status.edit(|status| status.run.phase = RunPhase::Idle);
     }
 
     pub(super) fn fail_run(&mut self, error: String) {
@@ -138,16 +130,12 @@ impl Worker {
 
     pub(super) fn run_block_reason(&self) -> Option<String> {
         let mak = self.mak();
-        run_block_reason(
-            RunReadiness {
-                model_ready: self.model_ready,
-                capture_ready: self.status.get().capture.phase == CapturePhase::Ready,
-                mak_connected: mak.is_connected(),
-                mouse_route: mak.mouse_available(),
-                controller_route: mak.controller_available(),
-            },
-            self.tuning.output.mode,
-        )
+        run_block_reason(RunReadiness {
+            model_ready: self.model_ready,
+            capture_ready: self.status.get().capture.phase == CapturePhase::Ready,
+            mak_connected: mak.is_connected(),
+            mouse_route: mak.mouse_available(),
+        })
         .map(str::to_owned)
     }
 
@@ -199,8 +187,6 @@ impl Worker {
             status.run.last_command = report.command;
             status.run.last_total_ms = Some(report.timings.total_ms);
             status.run.error = None;
-            status.mak.physical_controller = report.mak.physical_controller;
-            status.mak.controller_release_pending = report.mak.controller_release_pending;
             if let Some(performance) = performance {
                 status.performance = performance;
             }

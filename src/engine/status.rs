@@ -3,9 +3,8 @@ use std::sync::Arc;
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
-    mak::{MakRoutes, PhysicalControllerStatus},
+    mak::MakRoutes,
     metrics::PerformanceSnapshot,
-    settings::OutputMode,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -141,8 +140,6 @@ pub struct MakStatus {
     pub port: Option<String>,
     pub firmware: Option<u32>,
     pub routes: MakRoutes,
-    pub physical_controller: PhysicalControllerStatus,
-    pub controller_release_pending: bool,
     pub error: Option<String>,
 }
 
@@ -153,8 +150,6 @@ impl Default for MakStatus {
             port: None,
             firmware: None,
             routes: MakRoutes::default(),
-            physical_controller: PhysicalControllerStatus::Unknown,
-            controller_release_pending: false,
             error: None,
         }
     }
@@ -172,7 +167,7 @@ pub struct RunStatus {
     pub phase: RunPhase,
     pub error: Option<String>,
     pub last_target: Option<(f32, f32, f32, i32)>,
-    pub last_command: Option<(i32, i32, OutputMode)>,
+    pub last_command: Option<(i32, i32)>,
     pub last_total_ms: Option<f64>,
 }
 
@@ -194,10 +189,9 @@ pub(super) struct RunReadiness {
     pub capture_ready: bool,
     pub mak_connected: bool,
     pub mouse_route: bool,
-    pub controller_route: bool,
 }
 
-pub(super) fn run_block_reason(readiness: RunReadiness, mode: OutputMode) -> Option<&'static str> {
+pub(super) fn run_block_reason(readiness: RunReadiness) -> Option<&'static str> {
     if !readiness.model_ready {
         return Some("Model is not ready");
     }
@@ -207,13 +201,10 @@ pub(super) fn run_block_reason(readiness: RunReadiness, mode: OutputMode) -> Opt
     if !readiness.mak_connected {
         return Some("MAK is not connected");
     }
-    match mode {
-        OutputMode::Mouse if !readiness.mouse_route => Some("Mouse route is unavailable"),
-        OutputMode::Controller if !readiness.controller_route => {
-            Some("Controller route is unavailable")
-        }
-        _ => None,
+    if !readiness.mouse_route {
+        return Some("Mouse route is unavailable");
     }
+    None
 }
 
 #[derive(Debug, Clone, Default)]
@@ -233,58 +224,51 @@ impl EngineStatus {
             capture_ready: self.capture.phase == CapturePhase::Ready,
             mak_connected: self.mak.phase == MakPhase::Connected && self.mak.error.is_none(),
             mouse_route: self.mak.routes.mouse,
-            controller_route: self.mak.routes.controller_available(),
         }
     }
 
-    pub fn ready_for(&self, mode: OutputMode) -> bool {
-        self.block_reason(mode).is_none()
+    pub fn ready(&self) -> bool {
+        self.block_reason().is_none()
     }
 
-    pub fn block_reason(&self, mode: OutputMode) -> Option<&'static str> {
-        run_block_reason(self.readiness(), mode)
+    pub fn block_reason(&self) -> Option<&'static str> {
+        run_block_reason(self.readiness())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        inference::ep_assignment::{
-            EpAssignedNode, EpAssignmentReport, EpAssignmentState, EpProviderAssignment,
-        },
-        mak::ControllerKind,
+    use crate::inference::ep_assignment::{
+        EpAssignedNode, EpAssignmentReport, EpAssignmentState, EpProviderAssignment,
     };
 
-    fn ready_controller_status() -> EngineStatus {
+    fn ready_status() -> EngineStatus {
         let mut status = EngineStatus::default();
         status.model.phase = ModelPhase::Ready;
         status.capture.phase = CapturePhase::Ready;
         status.mak.phase = MakPhase::Connected;
-        status.mak.routes.controllers.push(ControllerKind::Xbox360);
+        status.mak.routes.mouse = true;
         status
     }
 
     #[test]
-    fn pending_controller_zero_handoff_does_not_block_active_output() {
-        let mut status = ready_controller_status();
-        status.mak.controller_release_pending = true;
-
-        assert!(status.ready_for(OutputMode::Controller));
-        assert_eq!(status.block_reason(OutputMode::Controller), None);
+    fn ready_when_everything_including_the_mouse_route_is_available() {
+        assert!(ready_status().ready());
     }
 
     #[test]
-    fn disconnected_mak_still_blocks_controller_output() {
-        let mut status = ready_controller_status();
-        status.mak.phase = MakPhase::Reconnecting;
-        status.mak.controller_release_pending = true;
+    fn missing_mouse_route_blocks_output() {
+        let mut status = ready_status();
+        status.mak.routes.mouse = false;
+        assert_eq!(status.block_reason(), Some("Mouse route is unavailable"));
+    }
 
-        assert!(!status.ready_for(OutputMode::Controller));
-        assert_eq!(
-            status.block_reason(OutputMode::Controller),
-            Some("MAK is not connected")
-        );
+    #[test]
+    fn disconnected_mak_blocks_output() {
+        let mut status = ready_status();
+        status.mak.phase = MakPhase::Reconnecting;
+        assert_eq!(status.block_reason(), Some("MAK is not connected"));
     }
 
     #[test]

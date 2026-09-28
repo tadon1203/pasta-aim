@@ -4,26 +4,19 @@
 //! command channel, MAK routes through the shared client); the per-frame path
 //! never leaves the inference thread.
 
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicI64, AtomicU64, Ordering},
-    },
-    thread,
-    time::Duration,
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
 use anyhow::Result;
 
 use crate::{
     inference::Detection,
-    mak::{MakClient, PhysicalControllerStatus},
-    settings::{MaxDelta, OutputMode, Sensitivity, TargetYOffset},
+    mak::MakClient,
+    settings::{MaxDelta, Sensitivity, TargetYOffset},
     sync::MutexExt,
 };
-
-/// How long a one-shot controller command is held before the stick is released.
-const CONTROLLER_ONE_SHOT_PULSE: Duration = Duration::from_millis(16);
 
 /// User-tunable output parameters, sent to the inference thread on change.
 #[derive(Debug, Clone, Copy)]
@@ -31,7 +24,6 @@ pub(super) struct OutputSettings {
     pub sensitivity: Sensitivity,
     pub target_y_offset: TargetYOffset,
     pub max_delta: MaxDelta,
-    pub mode: OutputMode,
 }
 
 /// Rejects frames that were presented before the last output finished: they
@@ -81,14 +73,12 @@ impl MotionGate {
 
 /// `(dx, dy, confidence, class_id)` relative to the model input center.
 pub(super) type TargetInfo = (f32, f32, f32, i32);
-/// `(x, y, mode)` actually submitted to MAK.
-pub(super) type CommandInfo = (i32, i32, OutputMode);
+/// `(x, y)` actually submitted to MAK.
+pub(super) type CommandInfo = (i32, i32);
 
 pub(super) struct OutputOutcome {
     pub target: Option<TargetInfo>,
     pub command: Option<CommandInfo>,
-    /// A one-shot controller command needs its stick released after the pulse.
-    pub pulse: bool,
 }
 
 /// Movement to submit for a detection, before it is routed to a MAK device.
@@ -150,63 +140,27 @@ impl OutputStage {
         self.input_size = input_size;
     }
 
-    /// Submits output for one frame. Without a usable movement the controller
-    /// is released instead.
-    pub(super) fn emit(
-        &mut self,
-        detection: Option<Detection>,
-        one_shot: bool,
-    ) -> Result<OutputOutcome> {
-        let mut mak = self.mak.lock_recover();
+    /// Submits the mouse movement for one frame, if there is a target to move to.
+    pub(super) fn emit(&mut self, detection: Option<Detection>) -> Result<OutputOutcome> {
         let Some(detection) = detection else {
-            mak.release_controller()?;
             return Ok(OutputOutcome {
                 target: None,
                 command: None,
-                pulse: false,
             });
         };
         let Plan { target, step } = plan(detection, self.input_size, self.settings);
         let Some((x, y)) = step else {
-            mak.release_controller()?;
             return Ok(OutputOutcome {
                 target: Some(target),
                 command: None,
-                pulse: false,
             });
         };
-        let mode = self.settings.mode;
-        match mode {
-            OutputMode::Mouse => mak.move_mouse(x, y)?,
-            OutputMode::Controller => mak.set_right_stick(x, y)?,
-        }
+        self.mak.lock_recover().move_mouse(x, y)?;
         Ok(OutputOutcome {
             target: Some(target),
-            command: Some((x, y, mode)),
-            pulse: one_shot && mode == OutputMode::Controller,
+            command: Some((x, y)),
         })
     }
-
-    /// Holds a one-shot controller command for a moment, then releases it.
-    pub(super) fn pulse_release(&mut self) -> Result<()> {
-        thread::sleep(CONTROLLER_ONE_SHOT_PULSE);
-        self.mak.lock_recover().release_controller()
-    }
-
-    pub(super) fn mak_snapshot(&self) -> MakSnapshot {
-        let mak = self.mak.lock_recover();
-        MakSnapshot {
-            physical_controller: mak.physical_controller_status(),
-            controller_release_pending: mak.controller_release_pending(),
-        }
-    }
-}
-
-/// MAK state that changes as a side effect of output.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct MakSnapshot {
-    pub physical_controller: PhysicalControllerStatus,
-    pub controller_release_pending: bool,
 }
 
 #[cfg(test)]
@@ -229,7 +183,6 @@ mod tests {
             sensitivity: Sensitivity::new(sensitivity),
             target_y_offset: TargetYOffset::new(target_y_offset),
             max_delta: MaxDelta::default(),
-            mode: OutputMode::Mouse,
         }
     }
 

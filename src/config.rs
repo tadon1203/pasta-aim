@@ -7,7 +7,7 @@ use crate::{
     models, paths,
     settings::{
         ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, MaxDelta,
-        OutputMode, OverlayConfig, Sensitivity, TargetYOffset,
+        OverlayConfig, Sensitivity, TargetYOffset,
     },
 };
 
@@ -23,7 +23,6 @@ pub struct Config {
     /// Per-frame cap on the output movement length; 0 = unlimited.
     pub max_delta: MaxDelta,
     pub fps_limit: FpsLimit,
-    pub output_mode: OutputMode,
     pub injection_api: InjectionApi,
     pub hotkeys: Vec<HotkeyBinding>,
     pub selected_adapter: crate::inference::AdapterLuid,
@@ -63,7 +62,6 @@ impl Default for Config {
             target_y_offset: TargetYOffset::default(),
             max_delta: MaxDelta::default(),
             fps_limit: FpsLimit::default(),
-            output_mode: OutputMode::Mouse,
             injection_api: InjectionApi::default(),
             hotkeys: default_hotkeys(),
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
@@ -220,7 +218,6 @@ mod tests {
             "confidence_threshold": 50,
             "target_y_offset": 0,
             "fps_limit": 240,
-            "output_mode": "mouse",
             "hotkeys": [
                 {"action": "continuous_hold", "shortcut": "F8"},
                 {"action": "run_once", "shortcut": "xinput:a"}
@@ -239,9 +236,9 @@ mod tests {
     #[test]
     fn missing_fields_fall_back_to_defaults_and_keep_the_rest() {
         let config: Config =
-            serde_json::from_str(r#"{"sensitivity": 250, "output_mode": "controller"}"#).unwrap();
+            serde_json::from_str(r#"{"sensitivity": 250, "low_latency": true}"#).unwrap();
         assert_eq!(config.sensitivity.value(), 250);
-        assert_eq!(config.output_mode, OutputMode::Controller);
+        assert!(config.low_latency);
         assert_eq!(config.confidence_threshold, ConfidenceThreshold::default());
         assert_eq!(config.hotkeys.len(), default_hotkeys().len());
         assert_eq!(config.overlay, OverlayConfig::default());

@@ -1,6 +1,6 @@
 # nice-aimassist
 
-Windows 専用の Rust + egui アプリです。DXGI Desktop Duplication で画面中央をキャプチャし、YOLO ONNX モデルを ONNX Runtime + DirectML で推論して、MAK SDK 経由でマウス / コントローラーへ出力します。
+Windows 専用の Rust + egui アプリです。DXGI Desktop Duplication で画面中央をキャプチャし、YOLO ONNX モデルを ONNX Runtime + DirectML で推論して、MAK SDK 経由でマウスへ出力します。
 
 ## 実行ディレクトリ
 
@@ -26,7 +26,7 @@ models/
 - **FPS limit**: Continuous のみに適用します（1〜1000、既定 240）。`Run once` には適用しません。
 - **Low-latency mode**: DirectML の完了待ちをスピン待ちにします。最悪遅延が下がる代わりに、動作中は CPU コアを 1 つ使い切ります。切り替えるとモデルを再ロードします。
 - **Overlay**: 検出したターゲットの box をモデル入力領域（画面中央）に重ねて表示します（既定 OFF）。線幅（1〜8px）、色、不透明度、アウトライン幅（0〜4px、0 で無し）、アウトライン色を変更できます。ボーダーレス / ウィンドウ化フルスクリーンで動作し、排他フルスクリーンでは表示されません。オーバーレイ自体は画面キャプチャから除外されるため、モデルに映り込みません。
-- **Output**: Mouse / Controller をユーザーが選択します。route が消えても自動では切り替えません。
+- **Output**: マウス出力のみです（コントローラー出力は廃止）。ホットキーには XInput コントローラーを使えます。
 - **Hotkeys**: 1 つのアクションに複数のショートカットを割り当てられます。Continuous は Hold shortcut のどれかが押されている間動作します。重複は不可です。
 
 ## 構造

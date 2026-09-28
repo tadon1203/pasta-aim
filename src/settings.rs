@@ -17,22 +17,6 @@ impl InjectionApi {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputMode {
-    Mouse,
-    Controller,
-}
-
-impl OutputMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Mouse => "Mouse",
-            Self::Controller => "Controller",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyAction {

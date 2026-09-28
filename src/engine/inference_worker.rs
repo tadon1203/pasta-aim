@@ -11,10 +11,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device4;
 
 use super::{
     RunGeneration, RunMode,
-    output::{
-        CommandInfo, MakSnapshot, MotionGate, OutputOutcome, OutputSettings, OutputStage,
-        TargetInfo,
-    },
+    output::{CommandInfo, MotionGate, OutputOutcome, OutputSettings, OutputStage, TargetInfo},
 };
 use crate::{
     graphics::{
@@ -50,7 +47,6 @@ pub(super) struct FrameReport {
     pub detected: bool,
     pub target: Option<TargetInfo>,
     pub command: Option<CommandInfo>,
-    pub mak: MakSnapshot,
     /// A one-shot run finished with this frame.
     pub one_shot_done: bool,
 }
@@ -341,7 +337,7 @@ impl InferenceThread {
 
         let one_shot = mode == RunMode::OneShot;
         let output_started_qpc = self.qpc.now();
-        let outcome = match self.output.emit(result.detection, one_shot) {
+        let outcome = match self.output.emit(result.detection) {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.output_failed(generation, error);
@@ -375,12 +371,6 @@ impl InferenceThread {
                 &outcome,
             );
         }
-        if outcome.pulse
-            && let Err(error) = self.output.pulse_release()
-        {
-            self.output_failed(generation, error);
-            return true;
-        }
         if one_shot {
             self.state = RunState::Idle;
             self.consumer.clear();
@@ -393,7 +383,6 @@ impl InferenceThread {
             detected: result.detection.is_some(),
             target: outcome.target,
             command: outcome.command,
-            mak: self.output.mak_snapshot(),
             one_shot_done: one_shot,
         };
         let _ = self.event_tx.send(InferenceEvent::Frame(Box::new(report)));

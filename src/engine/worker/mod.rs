@@ -36,12 +36,11 @@ use crate::{
     metrics::Metrics,
     models,
     overlay::{Overlay, OverlayPublisher},
-    settings::{ConfidenceThreshold, FpsLimit, OutputMode},
+    settings::{ConfidenceThreshold, FpsLimit},
     sync::MutexExt,
     timing::QpcClock,
 };
 
-const PHYSICAL_CONTROLLER_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// How often the engine polls MAK connection state when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -82,7 +81,6 @@ struct Worker {
     run: RunControl,
     summary: RunSummary,
     metrics: Metrics,
-    last_physical_probe: Instant,
     // Must be dropped after all DXGI/DirectML objects owned by this worker.
     graphics: Option<GraphicsThread>,
 }
@@ -175,7 +173,6 @@ pub(super) fn run_worker(
             sensitivity: config.sensitivity,
             target_y_offset: config.target_y_offset,
             max_delta: config.max_delta,
-            mode: config.output_mode,
         },
         confidence_threshold: config.confidence_threshold,
         fps_limit: config.fps_limit,
@@ -226,7 +223,6 @@ pub(super) fn run_worker(
         run: RunControl::default(),
         summary: RunSummary::new(),
         metrics: Metrics::new(),
-        last_physical_probe: Instant::now() - PHYSICAL_CONTROLLER_POLL_INTERVAL,
         graphics,
     };
 
@@ -252,13 +248,10 @@ pub(super) fn run_worker(
 }
 
 impl Worker {
-    /// Periodic work that no event triggers: MAK connection changes, controller
-    /// probing, and folding capture-side counters into metrics.
+    /// Periodic work that no event triggers: MAK connection changes and
+    /// folding capture-side counters into metrics.
     fn housekeeping(&mut self) {
         self.poll_mak_events();
-        if !self.run.is_continuous() {
-            self.maybe_probe_physical_controller();
-        }
         self.drain_gate_discards();
     }
 
@@ -328,7 +321,6 @@ impl Worker {
                     self.load_model(false, name, path);
                 }
             }
-            Command::SetOutput(mode) => self.set_output_mode(mode),
             Command::SetOverlay(config) => {
                 if let Some(overlay) = &self.overlay {
                     overlay.set_config(config);
@@ -362,7 +354,6 @@ impl Worker {
                 self.auto_reprepare_attempted = false;
                 self.retry_suspended_pipeline();
             }
-            Command::ProbeController => self.probe_physical_controller(),
             Command::RescanDisplays => self.refresh_capture_catalog(),
             Command::Shutdown => {
                 tracing::info!("engine worker shutdown requested");
@@ -371,20 +362,6 @@ impl Worker {
             }
         }
         true
-    }
-
-    fn set_output_mode(&mut self, mode: OutputMode) {
-        self.stop_run();
-        if self.tuning.output.mode == OutputMode::Controller && mode != OutputMode::Controller {
-            self.mak().release_controller_best_effort();
-        }
-        self.tuning.output.mode = mode;
-        self.push_output_settings();
-        if mode == OutputMode::Controller {
-            self.last_physical_probe = Instant::now() - PHYSICAL_CONTROLLER_POLL_INTERVAL;
-        }
-        self.sync_release_pending_status();
-        self.status.edit(|status| status.run.error = None);
     }
 
     fn overlay_publisher(&self) -> Option<OverlayPublisher> {

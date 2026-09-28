@@ -1,14 +1,13 @@
 use eframe::egui;
 
 use super::{
-    labels::{mak_phase_label, mak_phase_mark, physical_controller_label, route_label},
+    labels::{mak_phase_label, mak_phase_mark, route_label},
     widgets::error_label,
 };
 use crate::{
     app::App,
     engine::{Command, EngineStatus, MakPhase, RunPhase},
     graphics::DisplayInfo,
-    mak::PhysicalControllerStatus,
 };
 
 impl App {
@@ -30,12 +29,16 @@ impl App {
                         .width(430.0)
                         .show_ui(ui, |ui| {
                             for display in &status.graphics.displays {
-                                let active = status.capture.selected.as_ref().is_some_and(|selected| {
-                                    selected.adapter_index == display.adapter_index
-                                        && selected.output_index == display.output_index
-                                });
+                                let active =
+                                    status.capture.selected.as_ref().is_some_and(|selected| {
+                                        selected.adapter_index == display.adapter_index
+                                            && selected.output_index == display.output_index
+                                    });
                                 if ui.selectable_label(active, display.label()).clicked() {
-                                    self.select_display(display.adapter_index, display.output_index);
+                                    self.select_display(
+                                        display.adapter_index,
+                                        display.output_index,
+                                    );
                                 }
                             }
                         });
@@ -61,8 +64,10 @@ impl App {
                         if let Some(firmware) = status.mak.firmware {
                             ui.weak(format!("· FW {firmware}"));
                         }
-                        if matches!(status.mak.phase, MakPhase::Connecting | MakPhase::Reconnecting)
-                        {
+                        if matches!(
+                            status.mak.phase,
+                            MakPhase::Connecting | MakPhase::Reconnecting
+                        ) {
                             ui.spinner();
                         }
                     });
@@ -70,35 +75,6 @@ impl App {
 
                     ui.label("Mouse route");
                     ui.label(route_label(status.mak.routes.mouse));
-                    ui.end_row();
-
-                    ui.label("Controller route");
-                    if status.mak.routes.controllers.is_empty() {
-                        ui.label("— Not routed");
-                    } else {
-                        let labels = status
-                            .mak
-                            .routes
-                            .controllers
-                            .iter()
-                            .map(|kind| kind.label())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        ui.label(format!("● {labels}"));
-                    }
-                    ui.end_row();
-
-                    ui.label("Physical controller");
-                    ui.horizontal(|ui| {
-                        ui.label(physical_controller_label(status.mak.physical_controller));
-                        if status.mak.routes.controller_available()
-                            && status.mak.phase == MakPhase::Connected
-                            && status.run.phase == RunPhase::Idle
-                            && ui.small_button("Check").clicked()
-                        {
-                            self.engine.send(Command::ProbeController);
-                        }
-                    });
                     ui.end_row();
 
                     ui.label("XInput hotkey pad");
@@ -110,12 +86,6 @@ impl App {
                     );
                     ui.end_row();
                 });
-
-            if status.mak.physical_controller == PhysicalControllerStatus::Unavailable {
-                ui.small(
-                    "The controller route exists, but a physical snapshot could not be read. This can mean no controller sample is available or the firmware does not support physical snapshots.",
-                );
-            }
 
             ui.horizontal(|ui| match status.mak.phase {
                 MakPhase::Connected => {

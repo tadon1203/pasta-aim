@@ -8,11 +8,9 @@ use crate::{
     app::App,
     engine::{CapturePhase, Command, EngineStatus, ModelPhase, RunPhase},
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
-    mak::PhysicalControllerStatus,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, MaxDelta, OutputMode,
-        OverlayConfig, OverlayLineWidth, OverlayOpacity, OverlayOutlineWidth, Sensitivity,
-        TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, MaxDelta, OverlayConfig,
+        OverlayLineWidth, OverlayOpacity, OverlayOutlineWidth, Sensitivity, TargetYOffset,
     },
 };
 
@@ -20,27 +18,6 @@ impl App {
     pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
         ui.group(|ui| {
             ui.strong("Output");
-            ui.horizontal(|ui| {
-                if ui
-                    .radio_value(&mut self.config.output_mode, OutputMode::Mouse, "Mouse")
-                    .changed()
-                {
-                    self.engine.send(Command::SetOutput(OutputMode::Mouse));
-                    self.persist();
-                }
-                if ui
-                    .radio_value(
-                        &mut self.config.output_mode,
-                        OutputMode::Controller,
-                        "Controller",
-                    )
-                    .changed()
-                {
-                    self.engine.send(Command::SetOutput(OutputMode::Controller));
-                    self.persist();
-                }
-            });
-
             ui.label("Injection API");
             ui.horizontal(|ui| {
                 if ui
@@ -51,7 +28,8 @@ impl App {
                     )
                     .changed()
                 {
-                    self.engine.send(Command::SetInjectionApi(self.config.injection_api));
+                    self.engine
+                        .send(Command::SetInjectionApi(self.config.injection_api));
                     self.persist();
                 }
                 if ui
@@ -62,30 +40,14 @@ impl App {
                     )
                     .changed()
                 {
-                    self.engine.send(Command::SetInjectionApi(self.config.injection_api));
+                    self.engine
+                        .send(Command::SetInjectionApi(self.config.injection_api));
                     self.persist();
                 }
             });
 
-            match self.config.output_mode {
-                OutputMode::Mouse if !status.mak.routes.mouse => {
-                    warn_label(ui, "Waiting for a mouse route.");
-                }
-                OutputMode::Controller if !status.mak.routes.controller_available() => {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "Waiting for a controller route.",
-                    );
-                }
-                OutputMode::Controller
-                    if status.mak.physical_controller == PhysicalControllerStatus::Unavailable =>
-                {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "Controller route is ready, but the physical controller could not be confirmed.",
-                    );
-                }
-                _ => {}
+            if !status.mak.routes.mouse {
+                warn_label(ui, "Waiting for a mouse route.");
             }
         });
     }
@@ -143,7 +105,7 @@ impl App {
             });
             ui.small("Per-frame cap on movement length after sensitivity; 0 = unlimited.");
 
-            let ready = status.ready_for(self.config.output_mode);
+            let ready = status.ready();
             let run_idle = status.run.phase == RunPhase::Idle;
             if ui
                 .add_enabled(ready && run_idle, egui::Button::new("Run once"))
@@ -157,7 +119,7 @@ impl App {
                 ui.small(format!("Shortcuts: {once_shortcuts}"));
             }
 
-            if !ready && let Some(reason) = status.block_reason(self.config.output_mode) {
+            if !ready && let Some(reason) = status.block_reason() {
                 ui.horizontal(|ui| {
                     ui.small(reason);
                     if status.capture.phase == CapturePhase::Failed
@@ -179,11 +141,8 @@ impl App {
                 } else {
                     ui.label("Target     no detection");
                 }
-                if let Some((x, y, mode)) = status.run.last_command {
-                    ui.label(format!(
-                        "Command    x={x:+}   y={y:+}   via {}",
-                        mode.label()
-                    ));
+                if let Some((x, y)) = status.run.last_command {
+                    ui.label(format!("Command    x={x:+}   y={y:+}"));
                 }
                 if let Some(ms) = status.run.last_total_ms {
                     ui.label(format!("Pipeline   {ms:.2} ms"));

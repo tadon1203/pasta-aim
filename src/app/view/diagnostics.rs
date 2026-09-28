@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::{
-    labels::{capture_phase_label, mak_phase_label, model_phase_label, physical_controller_label},
+    labels::{capture_phase_label, mak_phase_label, model_phase_label},
     widgets::{error_label, warn_label},
 };
 use crate::{
@@ -133,18 +133,6 @@ impl App {
                             ui.end_row();
                         }
 
-                        ui.label("Physical controller");
-                        ui.label(physical_controller_label(status.mak.physical_controller));
-                        ui.end_row();
-
-                        ui.label("Controller release");
-                        ui.label(if status.mak.controller_release_pending {
-                            "Pending zero-state handoff"
-                        } else {
-                            "Clear"
-                        });
-                        ui.end_row();
-
                         ui.label("XInput hotkey pad");
                         ui.label(
                             self.hotkeys
@@ -239,18 +227,7 @@ impl App {
                 None => format!("{w}x{h}"),
             })
             .unwrap_or_else(|| "Unknown".to_owned());
-        let controller_routes = status
-            .mak
-            .routes
-            .controllers
-            .iter()
-            .map(|kind| kind.label())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mak_routes = format!(
-            "mouse={}, controllers=[{}]",
-            status.mak.routes.mouse, controller_routes
-        );
+        let mak_routes = format!("mouse={}", status.mak.routes.mouse);
         let xinput = self
             .hotkeys
             .xinput_slot()
@@ -260,7 +237,7 @@ impl App {
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\ncontroller release pending: {}\nphysical controller: {}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/admitted FPS: {:.1}/{:.1}\nadmission drop: {:.1}%\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\nqueue age p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nGPU slot drops: {} · mailbox overwrites: {} · slots in flight: {}\ncausal discards: {}\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/admitted FPS: {:.1}/{:.1}\nadmission drop: {:.1}%\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\nqueue age p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nGPU slot drops: {} · mailbox overwrites: {} · slots in flight: {}\ncausal discards: {}\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             status
                 .capture
@@ -276,8 +253,6 @@ impl App {
                 .firmware
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_owned()),
-            status.mak.controller_release_pending,
-            physical_controller_label(status.mak.physical_controller),
             keyboard_release.p50_ms,
             keyboard_release.p95_ms,
             keyboard_release.samples,

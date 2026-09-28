@@ -1,7 +1,4 @@
-use crate::{
-    engine::{CapturePhase, MakPhase, ModelPhase},
-    mak::PhysicalControllerStatus,
-};
+use crate::engine::{CapturePhase, MakPhase, ModelPhase};
 
 pub(super) fn model_phase_label(phase: ModelPhase) -> &'static str {
     match phase {
@@ -41,15 +38,5 @@ pub(super) fn route_label(available: bool) -> &'static str {
         "● Ready"
     } else {
         "— Not routed"
-    }
-}
-
-pub(super) fn physical_controller_label(status: PhysicalControllerStatus) -> &'static str {
-    match status {
-        PhysicalControllerStatus::NotRouted => "— Not routed",
-        PhysicalControllerStatus::Checking => "◌ Checking…",
-        PhysicalControllerStatus::Connected => "● Connected",
-        PhysicalControllerStatus::Unavailable => "○ Unavailable / not confirmed",
-        PhysicalControllerStatus::Unknown => "? Unknown",
     }
 }

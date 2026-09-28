@@ -36,8 +36,8 @@ use eframe::egui;
 use crate::{
     config::Config,
     settings::{
-        ConfidenceThreshold, FpsLimit, InjectionApi, MaxDelta, OutputMode, OverlayConfig,
-        Sensitivity, TargetYOffset,
+        ConfidenceThreshold, FpsLimit, InjectionApi, MaxDelta, OverlayConfig, Sensitivity,
+        TargetYOffset,
     },
 };
 use crossbeam_channel as crossbeam;
@@ -72,7 +72,6 @@ pub enum Command {
     SetFpsLimit(FpsLimit),
     /// Reloads the active model, since the DirectML wait mode is a session option.
     SetLowLatency(bool),
-    SetOutput(OutputMode),
     SetOverlay(OverlayConfig),
     SetInjectionApi(InjectionApi),
     SetCaptureSelection {
@@ -84,7 +83,6 @@ pub enum Command {
     RefreshMakRoutes,
     RescanMak,
     RetryCapture,
-    ProbeController,
     RescanDisplays,
     Shutdown,
 }
