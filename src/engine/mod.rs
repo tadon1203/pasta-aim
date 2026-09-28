@@ -1,8 +1,11 @@
 use crate::sync::MutexExt;
 mod capture_worker;
+mod frame_trace;
 mod inference_worker;
+mod loop_metrics;
 mod output;
 mod status;
+mod target_track;
 mod telemetry;
 mod worker;
 
@@ -15,6 +18,7 @@ pub(super) enum RunMode {
     OneShot,
 }
 
+pub use loop_metrics::LoopSnapshot;
 pub use status::{
     CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
     ep_assignment_summary, provider_display_name,
@@ -72,6 +76,8 @@ pub enum Command {
     SetFpsLimit(FpsLimit),
     /// Reloads the active model, since the DirectML wait mode is a session option.
     SetLowLatency(bool),
+    /// Applies to the next run.
+    SetFrameTrace(bool),
     SetOverlay(OverlayConfig),
     SetInjectionApi(InjectionApi),
     SetCaptureSelection {

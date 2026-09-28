@@ -5,9 +5,12 @@ use crate::{
     engine::CapturePhase,
     engine::{
         RunGeneration, RunMode, RunPhase,
+        frame_trace::{FrameTraceWriter, TraceHeader},
         inference_worker::{FrameReport, InferenceEvent},
+        loop_metrics::{LoopFrame, LoopSnapshot},
         status::{RunReadiness, run_block_reason},
     },
+    paths,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -64,10 +67,12 @@ impl Worker {
         }
         let generation = self.run.next_generation();
         self.gate.reset();
+        self.loop_metrics.reset();
+        let trace = self.open_frame_trace();
         let started = self
             .capture_worker
             .start(mode, generation)
-            .and_then(|()| self.inference_worker.start(generation, mode));
+            .and_then(|()| self.inference_worker.start(generation, mode, trace));
         if let Err(error) = started {
             let _ = self.inference_worker.stop(generation);
             let _ = self.capture_worker.stop();
@@ -98,7 +103,30 @@ impl Worker {
         self.status.edit(|status| {
             status.run.phase = phase;
             status.run.error = None;
+            status.tracking = LoopSnapshot::default();
         });
+    }
+
+    /// A trace that cannot be opened is logged and skipped; it never blocks a run.
+    fn open_frame_trace(&self) -> Option<FrameTraceWriter> {
+        if !self.tuning.frame_trace {
+            return None;
+        }
+        let output = self.tuning.output;
+        let header = TraceHeader {
+            qpc_hz: self.qpc.frequency_hz(),
+            input_size: self.status.get().model.input_size,
+            sensitivity_percent: output.sensitivity.value(),
+            target_y_offset_percent: output.target_y_offset.value(),
+            max_delta: output.max_delta.value(),
+        };
+        match FrameTraceWriter::create(&paths::logs_dir(), &header) {
+            Ok(writer) => Some(writer),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "frame trace could not be started");
+                None
+            }
+        }
     }
 
     /// Stops any active run. Safe to call when idle.
@@ -180,6 +208,17 @@ impl Worker {
             .record_qpc(self.qpc, report.inference_start_qpc, report.timings);
         self.drain_gate_discards();
         self.summary.record(report.detected, report.command);
+        self.loop_metrics.record(
+            self.qpc,
+            LoopFrame {
+                present_qpc: report.metadata.present_qpc,
+                output_complete_qpc: report.output_complete_qpc,
+                track: report.track,
+                error: report.target.map(|(dx, dy, _, _)| (dx, dy)),
+                sent: report.command.is_some(),
+            },
+        );
+        let tracking = self.loop_metrics.snapshot_if_due();
         let performance = self.metrics.snapshot_if_due(report.one_shot_done);
         self.status.edit(|status| {
             status.capture.desktop_size = Some(report.metadata.desktop_size);
@@ -189,6 +228,9 @@ impl Worker {
             status.run.error = None;
             if let Some(performance) = performance {
                 status.performance = performance;
+            }
+            if let Some(tracking) = tracking {
+                status.tracking = tracking;
             }
         });
         if report.one_shot_done {
@@ -204,6 +246,7 @@ impl Worker {
         let discards = self.gate.take_discards();
         if discards > 0 {
             self.metrics.record_causal_discards(discards);
+            self.loop_metrics.record_discards(discards);
         }
     }
 }

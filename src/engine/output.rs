@@ -11,6 +11,7 @@ use std::sync::{
 
 use anyhow::Result;
 
+use super::target_track::{TargetTracker, Track};
 use crate::{
     inference::Detection,
     mak::MakClient,
@@ -36,6 +37,8 @@ pub(super) struct MotionGate(Arc<GateState>);
 struct GateState {
     last_complete_qpc: AtomicI64,
     discards: AtomicU64,
+    /// Never reset; lets a trace correlate discards with frames.
+    discards_total: AtomicU64,
 }
 
 const NO_MOTION: i64 = i64::MIN;
@@ -45,6 +48,7 @@ impl MotionGate {
         Self(Arc::new(GateState {
             last_complete_qpc: AtomicI64::new(NO_MOTION),
             discards: AtomicU64::new(0),
+            discards_total: AtomicU64::new(0),
         }))
     }
 
@@ -62,8 +66,13 @@ impl MotionGate {
         let stale = last != NO_MOTION && present_qpc <= last;
         if stale {
             self.0.discards.fetch_add(1, Ordering::Relaxed);
+            self.0.discards_total.fetch_add(1, Ordering::Relaxed);
         }
         stale
+    }
+
+    pub(super) fn discards_total(&self) -> u64 {
+        self.0.discards_total.load(Ordering::Relaxed)
     }
 
     pub(super) fn take_discards(&self) -> u64 {
@@ -79,14 +88,32 @@ pub(super) type CommandInfo = (i32, i32);
 pub(super) struct OutputOutcome {
     pub target: Option<TargetInfo>,
     pub command: Option<CommandInfo>,
+    pub track: Option<Track>,
+    /// Movement before rounding (after sensitivity and the max delta cap).
+    pub planned: Option<(f32, f32)>,
 }
 
-/// Movement to submit for a detection, before it is routed to a MAK device.
+/// Movement wanted for a detection, before rounding.
 #[derive(Debug, PartialEq)]
 struct Plan {
     target: TargetInfo,
-    /// `None` when the movement rounds to zero.
-    step: Option<(i32, i32)>,
+    movement: (f32, f32),
+}
+
+/// Rounds `movement + carry` to whole counts and returns the new remainder.
+/// `None` when the result is zero (the remainder is still kept by the caller).
+fn quantize_with_carry(
+    movement: (f32, f32),
+    carry: (f32, f32),
+) -> (Option<(i32, i32)>, (f32, f32)) {
+    let (wx, wy) = (movement.0 + carry.0, movement.1 + carry.1);
+    let (x, y) = (quantize(wx), quantize(wy));
+    // A clamped (saturated) axis must not leave a huge remainder behind.
+    let remainder = (
+        (wx - x as f32).clamp(-0.5, 0.5),
+        (wy - y as f32).clamp(-0.5, 0.5),
+    );
+    ((x != 0 || y != 0).then_some((x, y)), remainder)
 }
 
 fn quantize(value: f32) -> i32 {
@@ -109,11 +136,9 @@ fn plan(detection: Detection, input_size: (usize, usize), settings: OutputSettin
             sy *= scale;
         }
     }
-    let x = quantize(sx);
-    let y = quantize(sy);
     Plan {
         target: (dx, dy, detection.confidence, detection.class_id),
-        step: (x != 0 || y != 0).then_some((x, y)),
+        movement: (sx, sy),
     }
 }
 
@@ -121,6 +146,10 @@ pub(super) struct OutputStage {
     mak: Arc<Mutex<MakClient>>,
     settings: OutputSettings,
     input_size: (usize, usize),
+    tracker: TargetTracker,
+    /// Rounding remainder carried to the next frame of the same target, so
+    /// low gains do not stall inside the dead zone of whole counts.
+    carry: (f32, f32),
 }
 
 impl OutputStage {
@@ -129,7 +158,15 @@ impl OutputStage {
             mak,
             settings,
             input_size: (0, 0),
+            tracker: TargetTracker::default(),
+            carry: (0.0, 0.0),
         }
+    }
+
+    /// Forgets the previous target and remainder; called when a run starts.
+    pub(super) fn reset(&mut self) {
+        self.tracker.reset();
+        self.carry = (0.0, 0.0);
     }
 
     pub(super) fn set_settings(&mut self, settings: OutputSettings) {
@@ -142,23 +179,35 @@ impl OutputStage {
 
     /// Submits the mouse movement for one frame, if there is a target to move to.
     pub(super) fn emit(&mut self, detection: Option<Detection>) -> Result<OutputOutcome> {
+        let track = self.tracker.update(detection.as_ref());
+        if track.is_none_or(|track| track.switched) {
+            self.carry = (0.0, 0.0);
+        }
         let Some(detection) = detection else {
             return Ok(OutputOutcome {
                 target: None,
                 command: None,
+                track,
+                planned: None,
             });
         };
-        let Plan { target, step } = plan(detection, self.input_size, self.settings);
+        let Plan { target, movement } = plan(detection, self.input_size, self.settings);
+        let (step, carry) = quantize_with_carry(movement, self.carry);
+        self.carry = carry;
         let Some((x, y)) = step else {
             return Ok(OutputOutcome {
                 target: Some(target),
                 command: None,
+                track,
+                planned: Some(movement),
             });
         };
         self.mak.lock_recover().move_mouse(x, y)?;
         Ok(OutputOutcome {
             target: Some(target),
             command: Some((x, y)),
+            track,
+            planned: Some(movement),
         })
     }
 }
@@ -186,6 +235,11 @@ mod tests {
         }
     }
 
+    /// Movement without carry-over: `None` when it rounds to zero.
+    fn step_of(plan: &Plan) -> Option<(i32, i32)> {
+        quantize_with_carry(plan.movement, (0.0, 0.0)).0
+    }
+
     #[test]
     fn quantize_uses_i16_bounds() {
         assert_eq!(quantize(1.4), 1);
@@ -199,16 +253,12 @@ mod tests {
         // Center is (50, 50); the box center is 10 px right and 20 px down and
         // the box is 40 px tall, so 75% aims 10 px below its center.
         let plan = plan(detection(70.0, 40.0), (100, 100), settings(50, 75));
-        assert_eq!(plan.step, Some((5, 15)));
+        assert_eq!(step_of(&plan), Some((5, 15)));
         // 0% and 100% aim at the top and bottom edges.
-        assert_eq!(
-            super::plan(detection(70.0, 40.0), (100, 100), settings(100, 0)).step,
-            Some((10, 0))
-        );
-        assert_eq!(
-            super::plan(detection(70.0, 40.0), (100, 100), settings(100, 100)).step,
-            Some((10, 40))
-        );
+        let top = super::plan(detection(70.0, 40.0), (100, 100), settings(100, 0));
+        assert_eq!(step_of(&top), Some((10, 0)));
+        let bottom = super::plan(detection(70.0, 40.0), (100, 100), settings(100, 100));
+        assert_eq!(step_of(&bottom), Some((10, 40)));
     }
 
     #[test]
@@ -219,33 +269,48 @@ mod tests {
             ..settings(100, 50)
         };
         // Scaled to length 10: (4.47, 8.94) -> (4, 9).
-        assert_eq!(
-            plan(detection(70.0, 40.0), (100, 100), capped).step,
-            Some((4, 9))
-        );
+        let plan_capped = plan(detection(70.0, 40.0), (100, 100), capped);
+        assert_eq!(step_of(&plan_capped), Some((4, 9)));
         // A cap above the movement length changes nothing.
         let loose = OutputSettings {
             max_delta: MaxDelta::new(100),
             ..capped
         };
-        assert_eq!(
-            plan(detection(70.0, 40.0), (100, 100), loose).step,
-            Some((10, 20))
-        );
+        let plan_loose = plan(detection(70.0, 40.0), (100, 100), loose);
+        assert_eq!(step_of(&plan_loose), Some((10, 20)));
     }
 
     #[test]
     fn zero_movement_produces_no_step() {
-        let plan = plan(detection(50.0, 40.0), (100, 100), settings(100, 50));
-        assert_eq!(plan.step, Some((10, 0)));
+        let plan_off_center = plan(detection(50.0, 40.0), (100, 100), settings(100, 50));
+        assert_eq!(step_of(&plan_off_center), Some((10, 0)));
         let centered = Detection {
             center_x: 50.0,
             ..detection(50.0, 40.0)
         };
-        assert_eq!(
-            super::plan(centered, (100, 100), settings(100, 50)).step,
-            None
-        );
+        let plan_centered = plan(centered, (100, 100), settings(100, 50));
+        assert_eq!(step_of(&plan_centered), None);
+    }
+
+    #[test]
+    fn carry_over_accumulates_sub_count_movement() {
+        // 0.3 counts per frame: nothing at first, then a whole count once 0.6 has built up.
+        let mut carry = (0.0, 0.0);
+        let mut sent = Vec::new();
+        for _ in 0..4 {
+            let (step, next) = quantize_with_carry((0.3, -0.3), carry);
+            carry = next;
+            sent.push(step);
+        }
+        assert_eq!(sent, vec![None, Some((1, -1)), None, None]);
+        assert!((carry.0 - 0.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn saturated_axis_does_not_keep_a_huge_remainder() {
+        let (step, carry) = quantize_with_carry((1.0e9, 0.0), (0.0, 0.0));
+        assert_eq!(step, Some((i16::MAX as i32, 0)));
+        assert_eq!(carry, (0.5, 0.0));
     }
 
     #[test]

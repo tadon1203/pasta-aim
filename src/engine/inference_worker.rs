@@ -11,7 +11,9 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device4;
 
 use super::{
     RunGeneration, RunMode,
+    frame_trace::{FrameTraceRecord, FrameTraceWriter},
     output::{CommandInfo, MotionGate, OutputOutcome, OutputSettings, OutputStage, TargetInfo},
+    target_track::Track,
 };
 use crate::{
     graphics::{
@@ -47,6 +49,8 @@ pub(super) struct FrameReport {
     pub detected: bool,
     pub target: Option<TargetInfo>,
     pub command: Option<CommandInfo>,
+    pub track: Option<Track>,
+    pub output_complete_qpc: i64,
     /// A one-shot run finished with this frame.
     pub one_shot_done: bool,
 }
@@ -94,6 +98,7 @@ enum InferenceCommand {
     Start {
         generation: RunGeneration,
         mode: RunMode,
+        trace: Option<FrameTraceWriter>,
     },
     Stop {
         generation: RunGeneration,
@@ -149,9 +154,17 @@ impl InferenceWorker {
         response.recv()?.map_err(anyhow::Error::msg)
     }
 
-    pub(super) fn start(&self, generation: RunGeneration, mode: RunMode) -> Result<()> {
-        self.control_tx
-            .send(InferenceCommand::Start { generation, mode })?;
+    pub(super) fn start(
+        &self,
+        generation: RunGeneration,
+        mode: RunMode,
+        trace: Option<FrameTraceWriter>,
+    ) -> Result<()> {
+        self.control_tx.send(InferenceCommand::Start {
+            generation,
+            mode,
+            trace,
+        })?;
         Ok(())
     }
 
@@ -214,6 +227,7 @@ struct InferenceThread {
     output: OutputStage,
     gate: MotionGate,
     overlay: Option<OverlayPublisher>,
+    trace: Option<FrameTraceWriter>,
 }
 
 impl InferenceThread {
@@ -236,6 +250,7 @@ impl InferenceThread {
             output: OutputStage::new(config.mak, config.output),
             gate: config.gate,
             overlay: config.overlay,
+            trace: None,
         }
     }
 
@@ -363,6 +378,22 @@ impl InferenceThread {
             mak_write_ms: qpc.elapsed_ms(output_started_qpc, output_complete_qpc),
             total_ms: qpc.elapsed_ms(metadata.present_qpc, output_complete_qpc),
         };
+        if let Some(trace) = &self.trace {
+            trace.record(FrameTraceRecord {
+                frame_seq: metadata.frame_seq,
+                present_qpc: metadata.present_qpc,
+                ready_qpc: metadata.ready_qpc,
+                inference_start_qpc,
+                output_start_qpc: output_started_qpc,
+                output_complete_qpc,
+                candidates: result.candidates,
+                selected: result.detection,
+                track: outcome.track,
+                planned: outcome.planned,
+                sent: outcome.command,
+                gate_discards_total: self.gate.discards_total(),
+            });
+        }
         if crate::logging::frame_trace_enabled() {
             trace_frame(
                 &metadata,
@@ -383,6 +414,8 @@ impl InferenceThread {
             detected: result.detection.is_some(),
             target: outcome.target,
             command: outcome.command,
+            track: outcome.track,
+            output_complete_qpc,
             one_shot_done: one_shot,
         };
         let _ = self.event_tx.send(InferenceEvent::Frame(Box::new(report)));
@@ -426,7 +459,13 @@ impl InferenceThread {
                 }
             }
             InferenceCommand::SetOutput(settings) => self.output.set_settings(settings),
-            InferenceCommand::Start { generation, mode } => {
+            InferenceCommand::Start {
+                generation,
+                mode,
+                trace,
+            } => {
+                self.output.reset();
+                self.trace = trace;
                 self.state = RunState::Running { generation, mode };
             }
             InferenceCommand::Stop { generation, reply } => {
@@ -436,9 +475,11 @@ impl InferenceThread {
                     self.consumer.clear();
                 }
                 let _ = reply.send(());
+                self.trace = None;
             }
             InferenceCommand::Shutdown => {
                 self.state = RunState::Idle;
+                self.trace = None;
                 return false;
             }
         }

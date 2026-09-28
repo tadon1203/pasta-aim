@@ -14,7 +14,7 @@ use crate::{
         preprocess::GpuPreprocessor,
         shared_frame_pool::{CaptureFramePool, InferenceFramePool, create_shared_frame_pool},
     },
-    inference::{AdapterLuid, Detection, EpAssignmentState, ModelInputSpec},
+    inference::{AdapterLuid, Candidates, Detection, EpAssignmentState, ModelInputSpec},
     settings::ConfidenceThreshold,
 };
 
@@ -22,6 +22,7 @@ use super::directml::OrtDirectMlBackend;
 
 pub struct InferenceResult {
     pub detection: Option<Detection>,
+    pub candidates: Candidates,
     pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
     pub gpu_preprocess_ms: Option<f64>,

@@ -7,7 +7,7 @@ use ort::value::TensorElementType;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use ep_assignment::{EpAssignedNode, EpAssignmentState, EpProviderAssignment};
-pub use postprocess::Detection;
+pub use postprocess::{Candidates, Detection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdapterLuid {

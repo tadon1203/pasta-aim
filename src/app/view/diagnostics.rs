@@ -7,11 +7,57 @@ use super::{
 use crate::{
     app::App,
     config::LogLevel,
-    engine::{Command, EngineStatus, cpu_fallback_nodes, provider_display_name},
+    engine::{Command, EngineStatus, LoopSnapshot, cpu_fallback_nodes, provider_display_name},
     graphics::DisplayInfo,
     inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
     metrics::{MetricSummary, PerformanceSnapshot},
 };
+
+fn draw_tracking(ui: &mut egui::Ui, tracking: &LoopSnapshot) {
+    ui.strong("Tracking loop");
+    if tracking.samples == 0 && tracking.locked_frames == 0 {
+        ui.small("No data yet. Lock a target during a continuous run.");
+        return;
+    }
+    egui::Grid::new("tracking_loop")
+        .num_columns(2)
+        .spacing([16.0, 5.0])
+        .show(ui, |ui| {
+            ui.label("Loop period p50/p95");
+            ui.label(format!(
+                "{:.1}/{:.1} ms ({} sends)",
+                tracking.period_p50_ms, tracking.period_p95_ms, tracking.samples
+            ));
+            ui.end_row();
+
+            ui.label("Frames dropped by gate");
+            ui.label(format!("{:.1}%", tracking.discard_ratio * 100.0));
+            ui.end_row();
+
+            ui.label("Error RMS (locked)");
+            ui.label(format!(
+                "{:.2} px ({} frames)",
+                tracking.rms_error_px, tracking.locked_frames
+            ));
+            ui.end_row();
+
+            ui.label("Overshoots");
+            ui.label(tracking.overshoots.to_string());
+            ui.end_row();
+
+            ui.label("Time to converge last/p50");
+            ui.label(format!(
+                "{} / {}",
+                format_ms(tracking.convergence_last_ms),
+                format_ms(tracking.convergence_p50_ms)
+            ));
+            ui.end_row();
+        });
+}
+
+fn format_ms(value: Option<f64>) -> String {
+    value.map_or_else(|| "—".to_owned(), |ms| format!("{ms:.0} ms"))
+}
 
 impl App {
     pub(super) fn draw_diagnostics(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
@@ -57,6 +103,18 @@ impl App {
                 if self.config.diagnostics.gpu_debug != self.gpu_debug_at_startup {
                     warn_label(ui, "Restart to apply.");
                 }
+                let mut frame_trace = self.config.diagnostics.frame_trace;
+                if ui
+                    .checkbox(&mut frame_trace, "Write a per-frame trace for each run")
+                    .changed()
+                {
+                    self.config.diagnostics.frame_trace = frame_trace;
+                    self.engine.send(Command::SetFrameTrace(frame_trace));
+                    self.persist();
+                }
+                ui.small("JSON Lines in logs/trace-*.jsonl, applied from the next run.");
+                ui.add_space(6.0);
+                draw_tracking(ui, &status.tracking);
                 ui.add_space(6.0);
                 egui::Grid::new("diagnostics_state")
                     .num_columns(2)

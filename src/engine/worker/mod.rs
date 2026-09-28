@@ -25,6 +25,7 @@ use super::{
     CapturePhase, Command, EngineEvent, EngineStatus,
     capture_worker::CaptureWorker,
     inference_worker::{InferenceConfig, InferenceWorker},
+    loop_metrics::LoopMetrics,
     output::{MotionGate, OutputSettings},
     telemetry::{RunSummary, StatusHub},
 };
@@ -51,6 +52,7 @@ struct Tuning {
     confidence_threshold: ConfidenceThreshold,
     fps_limit: FpsLimit,
     low_latency: bool,
+    frame_trace: bool,
 }
 
 struct Worker {
@@ -81,6 +83,7 @@ struct Worker {
     run: RunControl,
     summary: RunSummary,
     metrics: Metrics,
+    loop_metrics: LoopMetrics,
     // Must be dropped after all DXGI/DirectML objects owned by this worker.
     graphics: Option<GraphicsThread>,
 }
@@ -177,6 +180,7 @@ pub(super) fn run_worker(
         confidence_threshold: config.confidence_threshold,
         fps_limit: config.fps_limit,
         low_latency: config.low_latency,
+        frame_trace: config.diagnostics.frame_trace,
     };
     let mak = Arc::new(Mutex::new(MakClient::new()));
     let gate = MotionGate::new();
@@ -223,6 +227,7 @@ pub(super) fn run_worker(
         run: RunControl::default(),
         summary: RunSummary::new(),
         metrics: Metrics::new(),
+        loop_metrics: LoopMetrics::new(),
         graphics,
     };
 
@@ -321,6 +326,7 @@ impl Worker {
                     self.load_model(false, name, path);
                 }
             }
+            Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetOverlay(config) => {
                 if let Some(overlay) = &self.overlay {
                     overlay.set_config(config);

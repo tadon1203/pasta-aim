@@ -39,6 +39,8 @@ pub struct DiagnosticsConfig {
     pub level: LogLevel,
     /// D3D12 debug layer + DRED. Applied at startup only; slows inference.
     pub gpu_debug: bool,
+    /// Writes a per-frame JSON Lines trace to `logs/` for each run.
+    pub frame_trace: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -302,6 +304,7 @@ mod tests {
         let diagnostics = DiagnosticsConfig {
             level: LogLevel::Warn,
             gpu_debug: true,
+            ..Default::default()
         };
         let json = serde_json::to_string(&diagnostics).unwrap();
         let restored: DiagnosticsConfig = serde_json::from_str(&json).unwrap();

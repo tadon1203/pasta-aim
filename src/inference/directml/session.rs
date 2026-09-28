@@ -20,8 +20,9 @@ use windows::Win32::{
 use crate::{
     graphics::device::GpuDeviceContext,
     inference::{
-        Detection, EpAssignmentState, ModelInputSpec, TensorPrecision, ep_assignment,
-        pipeline::InferenceResult, postprocess::select_nearest,
+        EpAssignmentState, ModelInputSpec, TensorPrecision, ep_assignment,
+        pipeline::InferenceResult,
+        postprocess::{Selection, select_nearest},
     },
     settings::ConfidenceThreshold,
 };
@@ -254,7 +255,7 @@ impl OrtDirectMlBackend {
         let postprocess_start = Instant::now();
         let threshold = self.confidence_threshold.ratio();
         let output = &outputs[self.output_name.as_str()];
-        let detection = match self.output_precision {
+        let selection = match self.output_precision {
             TensorPrecision::Fp16 => {
                 detect::<half::f16>(output, self.input_spec, self.output_rows, threshold)?
             }
@@ -263,7 +264,8 @@ impl OrtDirectMlBackend {
             }
         };
         Ok(InferenceResult {
-            detection,
+            detection: selection.nearest,
+            candidates: selection.candidates,
             ort_run_wall_ms,
             postprocess_ms: postprocess_start.elapsed().as_secs_f64() * 1000.0,
             gpu_preprocess_ms: None,
@@ -277,7 +279,7 @@ fn detect<T: PrimitiveTensorElementType + Copy + Into<f32>>(
     spec: ModelInputSpec,
     rows: usize,
     confidence_threshold: f32,
-) -> Result<Option<Detection>> {
+) -> Result<Selection> {
     let (_, data) = output.try_extract_tensor::<T>()?;
     debug_assert!(data.len() >= rows * 6);
     Ok(select_nearest(

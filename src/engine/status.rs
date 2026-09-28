@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::loop_metrics::LoopSnapshot;
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
@@ -215,6 +216,7 @@ pub struct EngineStatus {
     pub mak: MakStatus,
     pub run: RunStatus,
     pub performance: PerformanceSnapshot,
+    pub tracking: LoopSnapshot,
 }
 
 impl EngineStatus {
