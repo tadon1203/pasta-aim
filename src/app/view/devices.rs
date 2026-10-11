@@ -8,6 +8,7 @@ use crate::{
     app::App,
     engine::{Command, EngineStatus, MakcuPhase, RunPhase},
     graphics::DisplayInfo,
+    makcu::format_firmware,
 };
 
 impl App {
@@ -62,7 +63,7 @@ impl App {
                             ui.weak(format!("· {port}"));
                         }
                         if let Some(firmware) = status.makcu.firmware {
-                            ui.weak(format!("· FW {firmware}"));
+                            ui.weak(format!("· FW {}", format_firmware(firmware)));
                         }
                         if matches!(
                             status.makcu.phase,

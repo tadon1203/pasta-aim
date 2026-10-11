@@ -34,7 +34,7 @@ const READ_TIMEOUT_MS: u32 = 50;
 const WRITE_TIMEOUT_MS: u32 = 50;
 
 /// The ports of the Windows system. Its `open` gives the port with an empty input buffer.
-pub(super) struct WindowsConnector;
+pub(in crate::makcu) struct WindowsConnector;
 
 impl Connector for WindowsConnector {
     fn ports(&self) -> io::Result<Vec<String>> {

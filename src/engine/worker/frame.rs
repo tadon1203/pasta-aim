@@ -377,13 +377,21 @@ mod tests {
             telemetry::{RunSummary, StatusHub},
         },
         inference::{AdapterLuid, Candidates, Detection},
-        makcu::MakcuClient,
+        makcu::{FakeMakcu, MakcuClient},
         metrics::Metrics,
         timing::QpcClock,
     };
     use std::sync::{Arc, Mutex, mpsc};
 
-    fn worker() -> (Worker, Arc<makxd::MockTransport>) {
+    /// The Move frames that the fake MAKCU received.
+    fn moves(fake: &FakeMakcu) -> Vec<Vec<u8>> {
+        fake.frames()
+            .into_iter()
+            .filter(|frame| frame[4] == 0x18)
+            .collect()
+    }
+
+    fn worker() -> (Worker, FakeMakcu) {
         let config = Config::default();
         let tuning = Tuning {
             output: OutputSettings {
@@ -397,7 +405,7 @@ mod tests {
             low_latency: config.low_latency,
             frame_trace: false,
         };
-        let (makcu, transport) = MakcuClient::mock();
+        let (makcu, fake) = MakcuClient::fake();
         let ui_ctx = eframe::egui::Context::default();
         let (event_tx, _) = mpsc::channel();
         let mut worker = Worker {
@@ -448,7 +456,7 @@ mod tests {
         });
         worker.output_stage.set_input_size((100, 100));
         worker.start_run(RunMode::Continuous);
-        (worker, transport)
+        (worker, fake)
     }
 
     fn inferred(worker: &Worker, present_qpc: i64) -> InferredFrame {
@@ -513,28 +521,28 @@ mod tests {
             Command::SetLowLatency(true),
         ] {
             let shutdown = matches!(command, Command::Shutdown);
-            let (mut worker, transport) = worker();
+            let (mut worker, fake) = worker();
             let frame = inferred(&worker, worker.qpc.now());
             let (tx, rx) = crossbeam_channel::unbounded();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, frame), !shutdown);
-            assert!(transport.sent_commands().is_empty());
+            assert!(moves(&fake).is_empty());
             assert!(worker.status.get().run.last_command.is_none());
         }
     }
 
     #[test]
     fn valid_result_outputs() {
-        let (mut worker, transport) = worker();
+        let (mut worker, fake) = worker();
         let (_tx, rx) = crossbeam_channel::unbounded();
         let frame = inferred(&worker, worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
-        assert!(!transport.sent_commands().is_empty());
+        assert!(!moves(&fake).is_empty());
     }
 
     #[test]
     fn failed_model_and_display_changes_preserve_selection_and_run_policy() {
-        let (mut worker, _) = worker();
+        let (mut worker, _fake) = worker();
         let old_generation = worker.run.active.unwrap().generation;
         worker.set_capture_selection(99, 99);
         assert_eq!(worker.active_pipeline_id, Some(1));
@@ -550,7 +558,7 @@ mod tests {
 
     #[test]
     fn one_shot_ignores_fps_wait_and_finishes_after_one_output() {
-        let (mut worker, transport) = worker();
+        let (mut worker, fake) = worker();
         worker.stop_run();
         worker.start_run(RunMode::OneShot);
         let now = Instant::now();
@@ -567,7 +575,7 @@ mod tests {
         let (_tx, rx) = crossbeam_channel::unbounded();
         let frame = inferred(&worker, worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
-        assert!(!transport.sent_commands().is_empty());
+        assert!(!moves(&fake).is_empty());
         assert!(worker.run.active.is_none());
         assert_eq!(worker.status.get().run.phase, RunPhase::Idle);
     }

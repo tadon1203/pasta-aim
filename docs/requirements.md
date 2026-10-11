@@ -1,6 +1,6 @@
 # Requirements
 
-A Windows app that captures the center of a display, finds targets with a YOLO model, and moves the mouse toward the Selected target through a MAK device. Low and stable latency comes before features.
+A Windows app that captures the center of a display, finds targets with a YOLO model, and moves the mouse toward the Selected target through a MAKCU device. Low and stable latency comes before features.
 
 The terms are defined in [CONTEXT.md](../CONTEXT.md).
 
@@ -43,8 +43,7 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 | Confidence      | 0 to 100 %           | 50 %           |
 | Target Y offset | 0 to 100 %           | 50 %           |
 | Sensitivity     | 1 to 10000 %         | 100 %          |
-| Max delta       | 0 to 32767           | 0 (no limit)   |
-| Injection API   | `MAK_API`, `KM_API`  | `MAK_API`      |
+| Max delta       | 0 to 32767           | 512            |
 
 - **Confidence** is the Confidence threshold.
 - The Selected target is the Candidate detection nearest to the center of the Model input region.
@@ -52,8 +51,9 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 - **Sensitivity** is a whole percent. The gain is the Sensitivity divided by 100.
 - **Max delta** limits the length of the Movement of one frame, after the Sensitivity. The direction stays the same. 0 means no limit.
 - The Rounding remainder goes to the next frame of the same Target track. A Target switch, a lost target, and the start of a Run clear it.
-- The output is mouse movement only, through MAK. There is no controller output.
-- The UI shows the MAK connection and the Mouse route. The user can refresh the routes, rescan for the device, and connect again.
+- The output is mouse movement only, through MAKCU. There is no controller output.
+- MAKCU needs firmware V4.085 or newer. An older device is refused, and the Devices panel shows the error, such as `MAKCU firmware V4.084 is older than V4.085`.
+- The UI shows the MAKCU connection, the firmware, and the Mouse route. The user can refresh the routes, rescan for the device, and connect again.
 
 ## Runs
 

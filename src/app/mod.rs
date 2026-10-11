@@ -47,7 +47,7 @@ impl App {
         let gpu_debug_at_startup = config.diagnostics.gpu_debug;
         let config_load_warning = loaded.warning;
         let config_file_unusable = loaded.file_unusable;
-        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), injection_api = ?config.injection_api, "application initialized with settings");
+        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), "application initialized with settings");
         let (models, model_catalog_error) = match ModelCatalog::scan() {
             Ok(catalog) => (catalog, None),
             Err(error) => {

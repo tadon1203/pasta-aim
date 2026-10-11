@@ -18,6 +18,6 @@ These are the rules for code and documentation that lint cannot check. Do not wr
 
 - A test stays in the file of the code that it tests, in `#[cfg(test)] mod tests`.
 - A test name is a sentence that states the behavior.
-- A test needs no hardware: no display, no GPU, and no MAK device. A test that needs a desktop session and a GPU has `#[ignore]` with that reason, so `cargo test` does not run it.
-- Replace only MAK, with the `mock` feature of `makxd`. There is no stand-in for a GPU or an operating system API.
+- A test needs no hardware: no display, no GPU, and no MAKCU device. A test that needs a desktop session and a GPU has `#[ignore]` with that reason, so `cargo test` does not run it.
+- Replace only MAKCU, with `FakeMakcu` at the `Connector` seam. There is no stand-in for a GPU or an operating system API.
 - Keep logic out of the code that calls a GPU or an operating system API, so that a test reaches the logic without hardware.

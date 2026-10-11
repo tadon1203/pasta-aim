@@ -1,6 +1,6 @@
 # nice-aimassist
 
-A Windows app that captures the center of a display, finds targets with a YOLO model, and moves the mouse through a MAK device.
+A Windows app that captures the center of a display, finds targets with a YOLO model, and moves the mouse through a MAKCU device.
 
 ## Documentation
 
@@ -37,7 +37,7 @@ The checks to run are in [CLAUDE.md](./CLAUDE.md#commands).
 - UI: egui (eframe)
 - Capture: DXGI Desktop Duplication
 - Inference: ONNX Runtime with DirectML
-- Output: the MAK SDK, vendored in `vendor/makxd`
+- Output: the MAKCU client in `src/makcu`, which needs MAKCU firmware V4.085 or newer
 
 ## Agent skills
 

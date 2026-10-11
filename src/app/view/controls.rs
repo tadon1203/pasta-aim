@@ -9,8 +9,8 @@ use crate::{
     engine::{CapturePhase, Command, EngineStatus, ModelPhase, RunPhase},
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, MaxDelta,
-        Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, MaxDelta, Sensitivity,
+        TargetYOffset,
     },
 };
 
@@ -18,34 +18,6 @@ impl App {
     pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
         ui.group(|ui| {
             ui.strong("Output");
-            ui.label("Injection API");
-            ui.horizontal(|ui| {
-                if ui
-                    .radio_value(
-                        &mut self.config.injection_api,
-                        InjectionApi::MakApi,
-                        InjectionApi::MakApi.label(),
-                    )
-                    .changed()
-                {
-                    self.engine
-                        .send(Command::SetInjectionApi(self.config.injection_api));
-                    self.persist();
-                }
-                if ui
-                    .radio_value(
-                        &mut self.config.injection_api,
-                        InjectionApi::KmApi,
-                        InjectionApi::KmApi.label(),
-                    )
-                    .changed()
-                {
-                    self.engine
-                        .send(Command::SetInjectionApi(self.config.injection_api));
-                    self.persist();
-                }
-            });
-
             if !status.makcu.routes.mouse {
                 warn_label(ui, "Waiting for a mouse route.");
             }

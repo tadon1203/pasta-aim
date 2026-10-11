@@ -179,9 +179,6 @@ pub(super) fn run_worker(
 
     worker.refresh_capture_catalog();
     worker.initialize_capture();
-    if let Err(error) = worker.makcu.set_injection_api(config.injection_api) {
-        tracing::error!(error = %format!("{error:#}"), "initial injection API setup failed");
-    }
     worker.connect_makcu_initial();
     if let Some(name) = config.model {
         match models::resolve_model(&name) {
@@ -302,20 +299,6 @@ impl Worker {
                 self.tuning.capture = settings;
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
-            Command::SetInjectionApi(api) => {
-                let result = self.makcu.set_injection_api(api);
-                match result {
-                    Ok(()) => {}
-                    Err(error) => {
-                        tracing::error!(
-                            error = %format!("{error:#}"),
-                            requested_api = ?api,
-                            "injection API change failed"
-                        );
-                        self.set_run_error(format!("Injection API change failed: {error:#}"));
-                    }
-                }
-            }
             Command::SetCaptureSelection { adapter, output } => {
                 self.auto_reprepare_attempted = false;
                 self.set_capture_selection(adapter, output)

@@ -30,7 +30,6 @@ pub fn set_level(level: LogLevel) {
     let trace = level == LogLevel::Trace;
     FRAME_TRACE.store(trace, Ordering::Release);
     MAKCU_COMMAND_TRACE.store(trace, Ordering::Release);
-    makxd::set_command_trace(trace);
 
     if let Some(handle) = LEVEL_HANDLE.get()
         && let Err(error) = handle.modify(|filter| *filter = level_filter(level))

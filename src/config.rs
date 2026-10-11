@@ -7,8 +7,8 @@ use serde_json::{Map, Value};
 use crate::{
     models, paths,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi,
-        MaxDelta, Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, MaxDelta,
+        Sensitivity, TargetYOffset,
     },
 };
 
@@ -26,7 +26,6 @@ pub struct Config {
     pub max_delta: MaxDelta,
     pub fps_limit: FpsLimit,
     pub capture: CaptureSettings,
-    pub injection_api: InjectionApi,
     pub hotkeys: Vec<HotkeyBinding>,
     pub selected_adapter: crate::inference::AdapterLuid,
     pub capture_output: u32,
@@ -67,7 +66,6 @@ impl Default for Config {
             max_delta: MaxDelta::default(),
             fps_limit: FpsLimit::default(),
             capture: CaptureSettings::default(),
-            injection_api: InjectionApi::default(),
             hotkeys: default_hotkeys(),
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
             capture_output: 0,
@@ -399,7 +397,20 @@ mod tests {
         assert_eq!(config.hotkeys.len(), 2);
         assert_eq!(config.hotkeys[0].shortcut, "F8");
         assert_eq!(config.hotkeys[1].shortcut, "xinput:a");
-        assert_eq!(config.injection_api, InjectionApi::MakApi);
+    }
+
+    #[test]
+    fn old_injection_api_key_is_removed_and_the_rest_is_kept() {
+        let loaded = Config::parse(br#"{"injection_api": "km_api", "fps_limit": 120}"#);
+        assert_eq!(loaded.config.fps_limit.value(), 120);
+        assert!(!loaded.file_unusable);
+        let warning = loaded.warning.unwrap();
+        assert!(warning.contains("injection_api"));
+    }
+
+    #[test]
+    fn max_delta_defaults_to_512() {
+        assert_eq!(Config::default().max_delta.value(), 512);
     }
 
     #[test]

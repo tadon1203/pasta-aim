@@ -47,7 +47,7 @@ The template of this document. Text in `<>` is a placeholder: replace it, and ke
 One Windows process, written in Rust. Each thread owns its resources, and the threads talk through channels. The terms are defined in [CONTEXT.md](./CONTEXT.md).
 
 - **UI thread** (`src/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
-- **Engine thread** (`src/engine`): it owns the Pipeline and the MAK client. The Pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
+- **Engine thread** (`src/engine`): it owns the Pipeline and the MAKCU client. The Pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
 - **Input thread** (`src/hotkeys`): global keyboard hotkeys and XInput polling. It turns a Shortcut into an engine command. It holds no run state of the engine.
 - **Trace thread** (`src/engine`): it formats and writes the Frame trace.
 
@@ -65,12 +65,12 @@ Data flow:
 | ------------------- | ------------------------------------------------------------------------------------------- |
 | `src/app`           | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
 | `src/engine`        | The engine thread: commands, status, output, the Target track, loop metrics, and the trace. |
-| `src/engine/worker` | The frame transaction, the Run, model loading, Pipeline replacement, and the MAK lifecycle. |
+| `src/engine/worker` | The frame transaction, the Run, model loading, Pipeline replacement, and the MAKCU lifecycle. |
 | `src/graphics`      | The capture, the shared frame texture and its fences, the GPU preprocess, and GPU faults.   |
 | `src/inference`     | The inference Pipeline, the postprocess, and the selection of the target.                   |
 | `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new Shortcut, and XInput.                  |
-| `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing, MAK). |
-| `vendor/makxd`      | The MAK SDK, vendored.                                                                      |
+| `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
+| `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing).      |
 
 ## Invariants
 
@@ -88,6 +88,7 @@ Data flow:
 - The engine thread waits only on its command channel. It does not sleep on the frame path. It sets the next capture time from the actual start of the current capture, and it gives no credit for lost time.
 - The engine thread does not lock the shared status on the frame path. It edits its own copy and publishes snapshots.
 - The engine thread never waits for the Trace thread. A failure of the trace never stops the engine.
-- Only the engine thread uses the MAK client. The engine stops the Run before it reconnects MAK.
+- Only the engine thread uses the MAKCU client. The engine stops the Run before it reconnects MAKCU.
+- The engine thread writes a Movement to the MAKCU port itself. No thread or queue sits between the Movement and the port.
 - The Rounding remainder stays inside one Target track. A Target switch, a lost target, and the start of a Run clear it.
 - Global Shortcut dispatch stops while the user records a new Shortcut.

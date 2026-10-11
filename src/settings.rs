@@ -21,23 +21,6 @@ impl Default for CaptureSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum InjectionApi {
-    #[default]
-    MakApi,
-    KmApi,
-}
-
-impl InjectionApi {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::MakApi => "MAK_API",
-            Self::KmApi => "KM_API",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyAction {
@@ -134,7 +117,7 @@ pub struct MaxDelta(u16);
 impl MaxDelta {
     /// No cap.
     pub const UNLIMITED: u16 = 0;
-    pub const DEFAULT: u16 = Self::UNLIMITED;
+    pub const DEFAULT: u16 = 512;
     pub const MAX: u16 = i16::MAX as u16;
 
     pub fn new(value: u16) -> Self {
@@ -256,8 +239,9 @@ mod tests {
     }
 
     #[test]
-    fn max_delta_zero_is_unlimited_and_large_values_are_clamped() {
-        assert_eq!(MaxDelta::default().limit(), None);
+    fn max_delta_defaults_to_512_zero_is_unlimited_and_large_values_are_clamped() {
+        assert_eq!(MaxDelta::default().value(), 512);
+        assert_eq!(MaxDelta::new(MaxDelta::UNLIMITED).limit(), None);
         assert_eq!(MaxDelta::new(25).limit(), Some(25.0));
         assert_eq!(MaxDelta::new(u16::MAX).value(), MaxDelta::MAX);
     }

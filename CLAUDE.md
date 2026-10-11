@@ -12,7 +12,7 @@ Read a document only when its trigger applies. Do not read them all up front.
 | `ARCHITECTURE.md`          | System map, code map, and rules that must not break     | You change structure, add a module, or cross a thread boundary |
 | `docs/requirements.md`     | How the product behaves                                 | A task changes or depends on user-visible behavior             |
 | `CONTEXT.md`               | Domain terms (glossary)                                 | You name something or write docs                               |
-| `docs/adr/`                | Hard-to-reverse decisions, with the reason (none yet)   | Your work may touch a recorded decision (search it)            |
+| `docs/adr/`                | Hard-to-reverse decisions, with the reason              | Your work may touch a recorded decision (search it)            |
 | `docs/coding-standards.md` | Rules for code and documentation that lint cannot check | You write or review code or docs                               |
 | `docs/git-workflow.md`     | Commit branch and commit message rules                  | You commit or prepare a commit                                 |
 
@@ -37,7 +37,7 @@ The project builds only on Windows with the MSVC toolchain. There is no CI and t
 
 The lint, the full test run, and the release build are slow. Run them in the background. While you iterate, use a focused check: `cargo check` or `cargo test <name>`.
 
-Capture, inference, and MAK output need hardware. Only the user can test them, with a release build.
+Capture, inference, and MAKCU output need hardware. Only the user can test them, with a release build.
 
 ## Workflow
 
