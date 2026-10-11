@@ -1,33 +1,36 @@
-//! Display catalog, capture selection, and building a whole capture + inference pipeline.
+//! Display catalog, capture selection, and building the Pipeline of the selected display.
 
-use super::{Tuning, Worker, log_pipeline_state};
+use super::{CaptureState, Worker};
 use crate::{
     engine::{CapturePhase, EngineEvent, ModelPhase, RunMode},
-    graphics::{DisplayInfo, DxgiCapture, shared_frame::CaptureFrame},
-    inference::{
-        EpAssignmentState, TensorPrecision,
-        pipeline::{InferencePipeline, prepare_directml_pipeline},
-    },
+    graphics::{DisplayInfo, DxgiCapture},
+    pipeline::{Pipeline, PipelineConfig},
 };
 use anyhow::Result;
-use std::sync::Arc;
 
-/// GPU resources precede the capture owner in the engine's drop order.
-pub(super) struct PreparedModel {
-    pub pipeline: InferencePipeline,
-    pub capture_frame: CaptureFrame,
-    pub input_size: (usize, usize),
-    pub pipeline_id: u64,
-    pub prepare_id: String,
-    pub precision: TensorPrecision,
-    pub ep_assignment: Arc<EpAssignmentState>,
-    pub last_completion: u64,
-}
-
-struct PreparedPipeline {
-    model: Option<PreparedModel>,
-    capture: DxgiCapture,
-    display: DisplayInfo,
+impl CaptureState {
+    /// Loads a model on this state. A bare capture gets a Pipeline; a Pipeline gets its model replaced.
+    /// On failure the state keeps the capture, or the Pipeline with the model it had.
+    pub(super) fn load_model(&mut self, config: PipelineConfig<'_>) -> Result<()> {
+        match std::mem::replace(self, CaptureState::None) {
+            CaptureState::None => Err(anyhow::anyhow!("capture is not configured")),
+            CaptureState::CaptureOnly(capture) => match Pipeline::build(*capture, config) {
+                Ok(pipeline) => {
+                    *self = CaptureState::Ready(Box::new(pipeline));
+                    Ok(())
+                }
+                Err((capture, error)) => {
+                    *self = CaptureState::CaptureOnly(Box::new(capture));
+                    Err(error)
+                }
+            },
+            CaptureState::Ready(mut pipeline) => {
+                let result = pipeline.replace_model(config);
+                *self = CaptureState::Ready(pipeline);
+                result
+            }
+        }
+    }
 }
 
 impl Worker {
@@ -85,8 +88,7 @@ impl Worker {
         match self.create_capture(self.capture_adapter, self.capture_output) {
             Ok(capture) => {
                 let selected = capture.info().clone();
-                self.capture = Some(capture);
-                self.capture_ready = true;
+                self.capture = CaptureState::CaptureOnly(Box::new(capture));
                 self.selected_adapter_luid = selected.adapter_luid;
                 self.status.edit(|status| {
                     status.capture.phase = CapturePhase::Ready;
@@ -108,7 +110,7 @@ impl Worker {
 
     pub(super) fn set_capture_selection(&mut self, adapter: u32, output: u32) {
         tracing::info!(adapter, output, "changing capture selection");
-        let current = self.capture.as_ref().map(|capture| capture.info().clone());
+        let current = self.capture.display().cloned();
         if let Some(selected) = &current
             && selected.adapter_index == adapter
             && selected.output_index == output
@@ -123,11 +125,14 @@ impl Worker {
         }
         let resume_continuous = self.run.is_continuous();
         self.stop_run();
-        let prepared = match self.prepare_pipeline(adapter, output) {
-            Ok(prepared) => prepared,
+        let pipeline_id = self.next_pipeline_id();
+        // Build the candidate before the state is replaced, so that a failure keeps the state.
+        let candidate = self.build_candidate(adapter, output, pipeline_id);
+        let state = match candidate {
+            Ok(state) => state,
             Err(error) => {
                 let message = format!("Display change failed: {error:#}");
-                let phase = if self.capture_ready {
+                let phase = if self.capture.is_capture_ready() {
                     CapturePhase::Ready
                 } else {
                     CapturePhase::Failed
@@ -140,33 +145,31 @@ impl Worker {
                     adapter,
                     output,
                     adapter_luid: current
+                        .as_ref()
                         .map(|display| display.adapter_luid)
                         .unwrap_or(self.selected_adapter_luid),
                     result: Err(message.clone()),
                 });
                 tracing::error!(adapter, output, %message, "display prepare failed; active pipeline retained");
-                if resume_continuous && self.model_ready {
-                    self.start_run(RunMode::Continuous);
+                // The Run was active, so its readiness held. This change left the state as it was.
+                if resume_continuous {
+                    self.begin_run(RunMode::Continuous);
                 }
                 return;
             }
         };
 
-        // Replace only after all candidate resources have been prepared.
-        let PreparedPipeline {
-            capture,
-            display: selected,
-            model,
-        } = prepared;
+        let selected = state
+            .display()
+            .cloned()
+            .expect("a built capture state has a display");
         self.capture_adapter = adapter;
         self.capture_output = output;
         self.selected_adapter_luid = selected.adapter_luid;
         self.telemetry.pipeline_changed();
-        self.model_ready = model.is_some();
-        self.active_pipeline_id = None;
-        if let Some(model) = &model {
-            self.commit_model_status(model);
-        }
+        // The old state is dropped after the new one is in place.
+        self.capture = state;
+        self.commit_model_status();
         self.status.edit(|status| {
             status.capture.phase = CapturePhase::Ready;
             status.capture.selected = Some(selected.clone());
@@ -174,16 +177,13 @@ impl Worker {
             status.capture.error = None;
             status.run.error = None;
         });
-        self.model = model;
-        self.capture = Some(capture);
-        self.capture_ready = true;
         self.emit_event(EngineEvent::Capture {
             adapter,
             output,
             adapter_luid: selected.adapter_luid,
             result: Ok(()),
         });
-        if resume_continuous && self.model_ready {
+        if resume_continuous && self.capture.has_model() {
             self.start_run(RunMode::Continuous);
         }
         tracing::info!(
@@ -202,75 +202,49 @@ impl Worker {
             .create_capture(adapter, output)
     }
 
-    /// Prepare synchronously, retaining the old resources until full success.
-    fn prepare_pipeline(&mut self, adapter: u32, output: u32) -> Result<PreparedPipeline> {
-        let pipeline_id = self.next_pipeline_id();
-        log_pipeline_state("Preparing", Some(pipeline_id), None, None, None);
+    /// The state for a new display: a Pipeline when a model is active, otherwise a bare capture.
+    fn build_candidate(&self, adapter: u32, output: u32, pipeline_id: u64) -> Result<CaptureState> {
         let capture = self.create_capture(adapter, output)?;
-        let display = capture.info().clone();
-        let model = self
-            .active_model
-            .as_ref()
-            .map(|(_, path)| prepare_model(&capture, path, pipeline_id, self.tuning))
-            .transpose()?;
-        Ok(PreparedPipeline {
-            model,
-            capture,
-            display,
-        })
+        let Some((_, path)) = self.active_model.as_ref() else {
+            return Ok(CaptureState::CaptureOnly(Box::new(capture)));
+        };
+        let config = PipelineConfig {
+            model: path.as_path(),
+            pipeline_id,
+            confidence_threshold: self.tuning.confidence_threshold,
+            low_latency: self.tuning.low_latency,
+            qpc: self.qpc,
+        };
+        match Pipeline::build(capture, config) {
+            Ok(pipeline) => Ok(CaptureState::Ready(Box::new(pipeline))),
+            Err((_, error)) => Err(error),
+        }
     }
 
-    /// Records a freshly loaded model as the running pipeline.
-    pub(super) fn commit_model_status(&mut self, model: &PreparedModel) {
-        self.active_pipeline_id = Some(model.pipeline_id);
-        self.output_stage.set_input_size(model.input_size);
-        log_pipeline_state(
+    /// Records the running Pipeline's model in the status. Does nothing without a Pipeline.
+    pub(super) fn commit_model_status(&mut self) {
+        let Some(pipeline) = self.capture.pipeline() else {
+            return;
+        };
+        self.output_stage.set_input_size(pipeline.input_size());
+        super::log_pipeline_state(
             "Running",
-            Some(model.pipeline_id),
-            Some(&model.prepare_id),
+            Some(pipeline.id()),
+            Some(pipeline.prepare_id()),
             None,
             None,
         );
-        let summary = crate::engine::ep_assignment_summary(&model.ep_assignment);
+        let input_size = pipeline.input_size();
+        let precision = pipeline.precision();
+        let ep_assignment = std::sync::Arc::clone(pipeline.ep_assignment());
+        let summary = crate::engine::ep_assignment_summary(&ep_assignment);
         self.status.edit(|status| {
             status.model.phase = ModelPhase::Ready;
-            status.model.input_size = Some(model.input_size);
-            status.model.precision = Some(model.precision);
+            status.model.input_size = Some(input_size);
+            status.model.precision = Some(precision);
             status.model.error = None;
-            status.model.ep_assignment = Some(std::sync::Arc::clone(&model.ep_assignment));
+            status.model.ep_assignment = Some(ep_assignment);
             status.model.ep_assignment_summary = summary;
         });
     }
-}
-
-/// Build a replacement model without altering the currently committed resources.
-pub(super) fn prepare_model(
-    capture: &DxgiCapture,
-    path: &std::path::Path,
-    pipeline_id: u64,
-    tuning: Tuning,
-) -> Result<PreparedModel> {
-    let prepared = prepare_directml_pipeline(
-        path,
-        capture.info().adapter_luid,
-        &capture.transport_device(),
-        pipeline_id,
-        tuning.confidence_threshold,
-        tuning.low_latency,
-    )?;
-    let input_size = (prepared.input_spec.width, prepared.input_spec.height);
-    if input_size.0 > capture.info().width as usize || input_size.1 > capture.info().height as usize
-    {
-        anyhow::bail!("model input exceeds the selected display dimensions");
-    }
-    Ok(PreparedModel {
-        pipeline: prepared.pipeline,
-        capture_frame: prepared.capture_frames,
-        input_size,
-        pipeline_id,
-        prepare_id: prepared.prepare_id,
-        precision: prepared.input_spec.precision,
-        ep_assignment: Arc::new(prepared.ep_assignment),
-        last_completion: 0,
-    })
 }

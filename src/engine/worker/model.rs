@@ -2,12 +2,14 @@
 
 use std::path::PathBuf;
 
-use super::{Worker, capture::prepare_model, log_pipeline_state};
-use crate::engine::{EngineEvent, ModelPhase};
+use super::{Worker, log_pipeline_state};
+use crate::{
+    engine::{EngineEvent, ModelPhase},
+    pipeline::PipelineConfig,
+};
 
 impl Worker {
-    /// Loads `path` on a candidate GPU pipeline and commits it only on success,
-    /// so a failed load keeps the previous model running.
+    /// Loads `path` on the Pipeline and keeps the previous model when the load fails.
     pub(super) fn load_model(&mut self, notify: bool, name: String, path: PathBuf) {
         self.auto_reprepare_attempted = false;
         let pipeline_id = self.next_pipeline_id();
@@ -23,18 +25,18 @@ impl Worker {
         // Loading blocks this thread; show the state before it starts.
         self.status.flush();
 
-        let candidate = self
-            .capture
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("capture is not configured"))
-            .and_then(|capture| prepare_model(capture, &path, pipeline_id, self.tuning));
-        match candidate {
-            Ok(loaded) => {
-                self.model_ready = true;
+        let config = PipelineConfig {
+            model: path.as_path(),
+            pipeline_id,
+            confidence_threshold: self.tuning.confidence_threshold,
+            low_latency: self.tuning.low_latency,
+            qpc: self.qpc,
+        };
+        match self.capture.load_model(config) {
+            Ok(()) => {
                 self.active_model = Some((name.clone(), path));
                 self.telemetry.pipeline_changed();
-                self.commit_model_status(&loaded);
-                self.model = Some(loaded);
+                self.commit_model_status();
                 self.status.edit(|status| {
                     status.model.active_name = Some(name.clone());
                     status.model.loading_name = None;
@@ -50,7 +52,7 @@ impl Worker {
             Err(error) => {
                 let message = format!("{error:#}");
                 tracing::error!(model = %name, %message, "model load failed");
-                let has_active_model = self.model_ready;
+                let has_active_model = self.capture.has_model();
                 self.status.edit(|status| {
                     status.model.phase = if has_active_model {
                         ModelPhase::Ready

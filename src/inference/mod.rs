@@ -1,6 +1,5 @@
 pub(crate) mod directml;
 pub(crate) mod ep_assignment;
-pub(crate) mod pipeline;
 pub mod postprocess;
 
 use ort::value::TensorElementType;

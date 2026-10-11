@@ -47,7 +47,7 @@ The template of this document. Text in `<>` is a placeholder: replace it, and ke
 One Windows process, written in Rust. Each thread owns its resources, and the threads talk through channels. The terms are defined in [CONTEXT.md](./CONTEXT.md).
 
 - **UI thread** (`src/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
-- **Engine thread** (`src/engine`): it owns the Pipeline and the MAKCU client. The Pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
+- **Engine thread** (`src/engine`): it owns the Pipeline (`src/pipeline`) and the MAKCU client. The Pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
 - **Input thread** (`src/hotkeys`): global keyboard hotkeys and XInput polling. It turns a Shortcut into an engine command. It holds no run state of the engine.
 - **Telemetry thread** (`src/telemetry`): it takes the Frame records. It makes the statistics and the Loop metrics, writes the Frame trace, and publishes the live values for the UI.
 
@@ -57,7 +57,7 @@ Data flow:
 - **Engine thread → UI thread:** events (the result of a model load or of a capture selection) on a channel, and the engine state, published when it changes.
 - **Engine thread → Telemetry thread:** one Frame record for each processed frame, and the counters of a Run.
 - **Telemetry thread → UI thread:** the live values, at a limited rate (see [docs/requirements.md](./docs/requirements.md)).
-- **Inside the engine thread, for each frame:** acquire → GPU copy and preprocess → inference and postprocess → output → next acquire. The engine handles pending commands before the acquire, and again after the inference and before the output.
+- **Inside the engine thread, for each frame:** the Pipeline processes the next frame (acquire → GPU copy and preprocess → inference and postprocess) → the engine handles pending commands → output → next frame.
 - **On the GPU:** Direct3D 11 copies the captured image into one shared texture. Direct3D 12 opens the same texture for the preprocess. Fences order the two devices.
 
 ## Code map
@@ -67,9 +67,10 @@ Data flow:
 | `src/app`           | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
 | `src/engine`        | The engine thread: commands, the engine state, output, and the Target track.              |
 | `src/engine/worker` | The frame transaction, the Run, model loading, Pipeline replacement, and the MAKCU lifecycle. |
+| `src/pipeline`      | The Pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. |
 | `src/telemetry`     | The Telemetry thread: the Frame records, the statistics, the Loop metrics, the Frame trace, and the live values. |
 | `src/graphics`      | The capture, the shared frame texture and its fences, the GPU preprocess, and GPU faults.   |
-| `src/inference`     | The inference Pipeline, the postprocess, and the selection of the target.                   |
+| `src/inference`     | The inference session, the postprocess, and the selection of the target.                    |
 | `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new Shortcut, and XInput.                  |
 | `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
 | `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing, and the deadline wait). |
@@ -79,12 +80,12 @@ Data flow:
 - The image of a frame never goes to the CPU. Only the frame metadata moves inside the engine, by value.
 - The engine processes one frame at a time. No acquire starts before the output of the frame before it returns. There is no capture thread, no inference thread, and no frame queue.
 - A stop, a shutdown, or a Pipeline replacement that arrives during a frame suppresses the output of that frame.
-- The engine checks that the GPU completed its work on the shared texture before the capture can write to it again. A Pipeline waits for its GPU work before it releases its resources.
+- A Pipeline checks that the GPU completed its work on the shared texture before the capture can write to it again. A Pipeline waits for its GPU work before it releases its resources.
 - The Capture adapter is the single GPU identity. Inference runs on the same adapter as the capture.
 - A Pipeline is replaced as a unit. The engine commits a Candidate pipeline only when every part of it is ready. If one part fails, the engine keeps the Pipeline that it had.
 - After a display change, a Continuous run resumes under a new Run generation. After a model change, the engine stays stopped, on success and on failure.
 - A failed model load keeps the model that was active. Only a successful load is written to the settings file.
-- A model is validated one time, when it loads. The frame path does not check tensor shapes, so the load-time validation must stay complete.
+- A model and a display are validated one time: the model when it loads, the captured image when the duplication is created. The frame path checks no shape, size, or format.
 - A model is a file name in `models/`. The settings hold no path.
 - The engine never reuses a frame. A capture attempt without a new desktop update does no inference and sends no Movement.
 - The engine thread waits only for a command or for its capture deadline. It does not sleep on the frame path. It sets the next capture time from the start of the capture that got the New frame, and it gives no credit for lost time.

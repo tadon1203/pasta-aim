@@ -1,4 +1,4 @@
-//! The engine owns and executes the complete serial frame pipeline.
+//! The engine thread: it owns the Pipeline and the MAKCU client, and runs one frame at a time.
 
 mod capture;
 mod frame;
@@ -27,7 +27,9 @@ use crate::{
     graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
     makcu::{MakcuClient, RawStats},
-    models, repaint,
+    models,
+    pipeline::Pipeline,
+    repaint,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     telemetry::{RunCounters, TelemetrySink},
     timing::QpcClock,
@@ -61,6 +63,53 @@ pub(super) struct WorkerLinks {
     pub telemetry: TelemetrySink,
 }
 
+/// What the engine holds for the selected display.
+enum CaptureState {
+    None,
+    /// A capture with no model. No Run can start.
+    CaptureOnly(Box<DxgiCapture>),
+    Ready(Box<Pipeline>),
+}
+
+impl CaptureState {
+    /// The display that the state captures, if any.
+    fn display(&self) -> Option<&DisplayInfo> {
+        match self {
+            Self::None => None,
+            Self::CaptureOnly(capture) => Some(capture.info()),
+            Self::Ready(pipeline) => Some(pipeline.display()),
+        }
+    }
+
+    /// Whether the state holds a working capture.
+    fn is_capture_ready(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Whether a model is loaded, so that a Run can start.
+    fn has_model(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
+    fn pipeline(&self) -> Option<&Pipeline> {
+        match self {
+            Self::Ready(pipeline) => Some(pipeline),
+            _ => None,
+        }
+    }
+
+    fn pipeline_mut(&mut self) -> Option<&mut Pipeline> {
+        match self {
+            Self::Ready(pipeline) => Some(pipeline),
+            _ => None,
+        }
+    }
+
+    fn pipeline_id(&self) -> Option<u64> {
+        self.pipeline().map(Pipeline::id)
+    }
+}
+
 struct Worker {
     event_tx: Sender<EngineEvent>,
     ui_ctx: egui::Context,
@@ -71,25 +120,19 @@ struct Worker {
     /// The display catalog that the engine uses to find the remembered display.
     displays: Vec<DisplayInfo>,
 
-    // Pipeline (replaced as a unit when the display or GPU changes).
-    model: Option<capture::PreparedModel>,
-    capture: Option<DxgiCapture>,
-    /// Whether `capture` holds a working capture. It is the readiness that a Run needs.
-    capture_ready: bool,
+    /// The capture of the selected display, and the Pipeline when a model is loaded.
+    capture: CaptureState,
     output_stage: OutputStage,
     /// Wakes the engine for a command, the housekeeping, or the capture deadline.
     wait: DeadlineWait,
     capture_deadline: frame::CaptureDeadline,
-    frame_seq: u64,
     /// The counters of the current Run, and the last values sent to the Telemetry thread.
     run_counters: RunCounters,
     sent_counters: RunCounters,
     sent_raw: RawStats,
     active_model: Option<(String, PathBuf)>,
-    model_ready: bool,
     auto_reprepare_attempted: bool,
     next_pipeline_id: u64,
-    active_pipeline_id: Option<u64>,
     capture_adapter: u32,
     capture_output: u32,
     selected_adapter_luid: AdapterLuid,
@@ -172,21 +215,16 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         telemetry,
         tuning,
         displays: Vec::new(),
-        model: None,
-        capture: None,
-        capture_ready: false,
+        capture: CaptureState::None,
         output_stage: OutputStage::new(tuning.output),
         wait,
         capture_deadline: frame::CaptureDeadline::new(),
-        frame_seq: 0,
         run_counters: RunCounters::default(),
         sent_counters: RunCounters::default(),
         sent_raw: RawStats::default(),
         active_model: None,
-        model_ready: false,
         auto_reprepare_attempted: false,
         next_pipeline_id: 1,
-        active_pipeline_id: None,
         capture_adapter: 0,
         capture_output: config.capture_output,
         selected_adapter_luid: config.selected_adapter,
@@ -307,8 +345,8 @@ impl Worker {
             }
             Command::SetConfidenceThreshold(value) => {
                 self.tuning.confidence_threshold = value;
-                if let Some(model) = self.model.as_mut() {
-                    model.pipeline.set_confidence_threshold(value);
+                if let Some(pipeline) = self.capture.pipeline_mut() {
+                    pipeline.set_confidence_threshold(value);
                 }
             }
             Command::SetMoveMethod(method) => self.makcu.set_move_method(method),

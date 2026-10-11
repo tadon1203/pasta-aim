@@ -5,8 +5,8 @@ use windows::Win32::Graphics::{
         D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BOX, D3D11_QUERY,
         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
         D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11CreateDevice,
-        ID3D11Device, ID3D11Device4, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence,
-        ID3D11Query, ID3D11Resource, ID3D11Texture2D,
+        ID3D11Device, ID3D11Device4, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Query,
+        ID3D11Resource, ID3D11Texture2D,
     },
     Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
     Dxgi::{
@@ -19,7 +19,7 @@ use windows::Win32::Graphics::{
 use windows::core::Interface;
 
 use super::gpu_diagnostics::GpuFaultStage;
-use super::profile_sampler::ProfileSampler;
+use super::shared_frame::CaptureFrame;
 use super::{DisplayInfo, select_output};
 use crate::timing::QpcClock;
 
@@ -30,11 +30,11 @@ pub(crate) enum CapturePoll {
     NoDesktopUpdate(NoDesktopUpdateReason),
 }
 
+/// A desktop image that the capture acquired, with the source region that the copy reads.
 #[derive(Clone)]
 pub(crate) struct AcquiredDesktopFrame {
     texture: ID3D11Texture2D,
-    attempt_start_qpc: i64,
-    acquired_qpc: i64,
+    source_box: D3D11_BOX,
     desktop_size: (usize, usize),
     present_qpc: i64,
     accumulated_frames: u32,
@@ -47,20 +47,42 @@ pub(crate) enum NoDesktopUpdateReason {
     AccessLost,
 }
 
-/// The stage boundaries of a submitted copy, as QPC ticks.
-pub(crate) struct CaptureSubmit {
-    pub present_qpc: i64,
-    pub attempt_start_qpc: i64,
-    pub acquired_qpc: i64,
+/// The QPC ticks that the capture reports for one copy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CopyTimes {
+    /// After the copy was recorded.
     pub copy_submitted_qpc: i64,
+    /// After the capture-ready fence was signalled and flushed.
     pub ready_qpc: i64,
-    pub desktop_size: (usize, usize),
 }
 
 impl AcquiredDesktopFrame {
     pub(crate) fn accumulated_frames(&self) -> u32 {
         self.accumulated_frames
     }
+
+    pub(crate) fn desktop_size(&self) -> (usize, usize) {
+        self.desktop_size
+    }
+
+    pub(crate) fn present_qpc(&self) -> i64 {
+        self.present_qpc
+    }
+}
+
+/// The shared texture and its ready fence, as the interface types that the copy needs.
+struct CopyTarget {
+    resource: ID3D11Resource,
+    ready_fence: windows::Win32::Graphics::Direct3D11::ID3D11Fence,
+    input_size: (usize, usize),
+    qpc: QpcClock,
+}
+
+/// The validated layout of the desktop for the bound copy target.
+#[derive(Clone, Copy)]
+struct FrameLayout {
+    desktop_size: (usize, usize),
+    source_box: D3D11_BOX,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +100,6 @@ struct GpuQuerySlot {
 struct D3d11GpuProfiler {
     slots: Vec<GpuQuerySlot>,
     next_slot: usize,
-    sampler: ProfileSampler,
 }
 
 impl D3d11GpuProfiler {
@@ -95,7 +116,6 @@ impl D3d11GpuProfiler {
         Ok(Self {
             slots,
             next_slot: 0,
-            sampler: ProfileSampler::default(),
         })
     }
 
@@ -104,7 +124,6 @@ impl D3d11GpuProfiler {
             slot.in_flight = false;
         }
         self.next_slot = 0;
-        self.sampler.reset();
     }
 
     fn begin(&mut self, context: &ID3D11DeviceContext4) -> Option<usize> {
@@ -204,9 +223,12 @@ pub struct DxgiCapture {
     context: ID3D11DeviceContext4,
     info: DisplayInfo,
     gpu_profiler: D3d11GpuProfiler,
+    /// Set by the first copy that the Pipeline binds. Empty until then.
+    copy_target: Option<CopyTarget>,
+    /// Validated for the current duplication and copy target. Cleared when either is replaced.
+    layout: Option<FrameLayout>,
     first_signal_logged: bool,
     last_fault_stage: GpuFaultStage,
-    last_ready_completed: Option<u64>,
 }
 
 impl DxgiCapture {
@@ -242,9 +264,10 @@ impl DxgiCapture {
             context,
             info,
             gpu_profiler,
+            copy_target: None,
+            layout: None,
             first_signal_logged: false,
             last_fault_stage: GpuFaultStage::CaptureCopy,
-            last_ready_completed: None,
         })
     }
 
@@ -268,11 +291,38 @@ impl DxgiCapture {
         self.last_fault_stage
     }
 
-    pub(crate) fn last_ready_completed(&self) -> Option<u64> {
-        self.last_ready_completed
+    /// Sets the texture and the fence that every later copy writes to and signals, and the size of
+    /// the Model input region. The next acquired image is validated again.
+    pub(crate) fn bind_copy_target(
+        &mut self,
+        target: &CaptureFrame,
+        input_size: (usize, usize),
+        qpc: QpcClock,
+    ) -> Result<()> {
+        if input_size.0 == 0 || input_size.1 == 0 {
+            bail!("model input size must be non-zero");
+        }
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: desc points to writable storage for the texture descriptor.
+        unsafe { target.texture.GetDesc(&mut desc) };
+        if desc.Width as usize != input_size.0 || desc.Height as usize != input_size.1 {
+            bail!("shared frame texture dimensions do not match model input");
+        }
+        let resource = target
+            .texture
+            .cast::<ID3D11Resource>()
+            .context("failed to cast shared destination texture")?;
+        self.copy_target = Some(CopyTarget {
+            resource,
+            ready_fence: target.capture_ready_fence.clone(),
+            input_size,
+            qpc,
+        });
+        self.layout = None;
+        Ok(())
     }
 
-    pub(crate) fn acquire(&mut self, timeout_ms: u32, qpc: QpcClock) -> Result<CapturePoll> {
+    pub(crate) fn acquire(&mut self, timeout_ms: u32) -> Result<CapturePoll> {
         if self.frame_held {
             // SAFETY: this instance tracks that the previous successful acquire is held.
             let release_result = unsafe { self.duplication.ReleaseFrame() };
@@ -290,7 +340,6 @@ impl DxgiCapture {
 
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
-        let attempt_start_qpc = qpc.now();
         // SAFETY: output parameters point to writable storage and timeout is caller supplied.
         match unsafe {
             self.duplication
@@ -308,7 +357,6 @@ impl DxgiCapture {
             }
             Err(error) => return Err(error).context("failed to acquire DXGI desktop frame"),
         }
-        let acquired_qpc = qpc.now();
         if frame_info.LastPresentTime == 0 {
             return Ok(CapturePoll::NoDesktopUpdate(
                 NoDesktopUpdateReason::PointerOnly,
@@ -318,51 +366,47 @@ impl DxgiCapture {
         let texture = resource
             .cast::<ID3D11Texture2D>()
             .context("DXGI desktop resource is not a D3D11 texture")?;
+        let layout = match self.layout {
+            Some(layout) => layout,
+            None => {
+                let layout = self.validate_frame(&texture)?;
+                self.layout = Some(layout);
+                layout
+            }
+        };
+        Ok(CapturePoll::Fresh(AcquiredDesktopFrame {
+            texture,
+            source_box: layout.source_box,
+            desktop_size: layout.desktop_size,
+            present_qpc: frame_info.LastPresentTime,
+            accumulated_frames: frame_info.AccumulatedFrames,
+        }))
+    }
+
+    /// Checks the first image after a duplication is created: its format, and that the Model input fits.
+    fn validate_frame(&self, texture: &ID3D11Texture2D) -> Result<FrameLayout> {
+        let target = self
+            .copy_target
+            .as_ref()
+            .context("no copy target is bound for the captured image")?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: desc points to writable storage for the texture descriptor.
         unsafe { texture.GetDesc(&mut desc) };
         if desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
             bail!("unsupported DXGI pixel format; disable HDR/10-bit output for this build");
         }
-        Ok(CapturePoll::Fresh(AcquiredDesktopFrame {
-            texture,
-            attempt_start_qpc,
-            acquired_qpc,
-            desktop_size: (desc.Width as usize, desc.Height as usize),
-            present_qpc: frame_info.LastPresentTime,
-            accumulated_frames: frame_info.AccumulatedFrames,
-        }))
-    }
-
-    fn copy_center_image(
-        &self,
-        frame: &AcquiredDesktopFrame,
-        destination: &ID3D11Texture2D,
-        (width, height): (usize, usize),
-    ) -> Result<()> {
-        if width == 0 || height == 0 {
-            bail!("model input size must be non-zero");
-        }
-        let mut source_desc = D3D11_TEXTURE2D_DESC::default();
-        // SAFETY: the source texture is live.
-        unsafe { frame.texture.GetDesc(&mut source_desc) };
-        let (frame_width, frame_height) = (source_desc.Width as usize, source_desc.Height as usize);
-        if width > frame_width || height > frame_height {
+        let desktop_size = (desc.Width as usize, desc.Height as usize);
+        let (width, height) = target.input_size;
+        if width > desktop_size.0 || height > desktop_size.1 {
             bail!(
                 "model input {}x{} is larger than captured desktop {}x{}",
                 width,
                 height,
-                frame_width,
-                frame_height
+                desktop_size.0,
+                desktop_size.1
             );
         }
-        let mut destination_desc =
-            windows::Win32::Graphics::Direct3D11::D3D11_TEXTURE2D_DESC::default();
-        unsafe { destination.GetDesc(&mut destination_desc) };
-        if destination_desc.Width as usize != width || destination_desc.Height as usize != height {
-            bail!("shared frame texture dimensions do not match model input");
-        }
-        let (left, top) = super::center_crop_origin((frame_width, frame_height), (width, height));
+        let (left, top) = super::center_crop_origin(desktop_size, (width, height));
         let (left, top) = (left as u32, top as u32);
         let source_box = D3D11_BOX {
             left,
@@ -372,99 +416,79 @@ impl DxgiCapture {
             bottom: top + height as u32,
             back: 1,
         };
-        let destination = destination
-            .cast::<ID3D11Resource>()
-            .context("failed to cast shared destination texture")?;
-        let source = frame
-            .texture
-            .cast::<ID3D11Resource>()
-            .context("failed to cast desktop texture to D3D11 resource")?;
-        // SAFETY: resources share a device; source_box stays in bounds.
-        unsafe {
-            self.context.CopySubresourceRegion(
-                &destination,
-                0,
-                0,
-                0,
-                0,
-                &source,
-                0,
-                Some(&source_box as *const D3D11_BOX),
-            );
-        }
-        Ok(())
+        Ok(FrameLayout {
+            desktop_size,
+            source_box,
+        })
     }
 
-    pub(crate) fn copy_center_to(
+    /// Copies the Model input region of `frame` to the bound target and signals `ready_value`.
+    /// `measure` adds the GPU timestamp queries to this copy.
+    pub(crate) fn copy_to_target(
         &mut self,
         frame: &AcquiredDesktopFrame,
-        destination: &ID3D11Texture2D,
-        ready_fence: &ID3D11Fence,
         ready_value: u64,
-        (width, height): (usize, usize),
-        qpc: QpcClock,
-    ) -> Result<CaptureSubmit> {
+        measure: bool,
+    ) -> Result<CopyTimes> {
+        let target = self
+            .copy_target
+            .as_ref()
+            .context("no copy target is bound")?;
         self.last_fault_stage = GpuFaultStage::CaptureCopy;
-        let query_slot = if self.gpu_profiler.sampler.should_measure() {
+        let query_slot = if measure {
             self.gpu_profiler.begin(&self.context)
         } else {
             None
         };
-        self.copy_center_image(frame, destination, (width, height))?;
-        let copy_submitted_qpc = qpc.now();
-        tracing::debug!(width, height, "copy_subresource_submitted");
+        // SAFETY: both resources share this device, and the source box lies inside the desktop image.
+        unsafe {
+            self.context.CopySubresourceRegion(
+                &target.resource,
+                0,
+                0,
+                0,
+                0,
+                &*frame.texture,
+                0,
+                Some(&frame.source_box as *const D3D11_BOX),
+            );
+        }
+        let copy_submitted_qpc = target.qpc.now();
+        tracing::debug!(
+            width = target.input_size.0,
+            height = target.input_size.1,
+            "copy_subresource_submitted"
+        );
         if let Some(index) = query_slot {
             self.gpu_profiler.end(&self.context, index);
         }
         self.last_fault_stage = GpuFaultStage::CaptureReadySignal;
-        let completed_before = unsafe { ready_fence.GetCompletedValue() };
-        self.last_ready_completed = Some(completed_before);
-        if completed_before == u64::MAX {
-            self.last_fault_stage = GpuFaultStage::DeviceRemoved;
-            bail!("D3D11 capture-ready fence reports device removed");
-        }
         if !self.first_signal_logged {
-            tracing::info!(
-                value = ready_value,
-                completed_before,
-                "capture_fence_first_signal"
-            );
+            tracing::info!(value = ready_value, "capture_fence_first_signal");
         }
-        if let Err(error) = unsafe { self.context.Signal(ready_fence, ready_value) } {
+        if let Err(error) = unsafe { self.context.Signal(&target.ready_fence, ready_value) } {
             let hr = format!("0x{:08X}", error.code().0 as u32);
-            tracing::error!(
-                value = ready_value,
-                completed_before,
-                hr,
-                "capture_ready_signal_failed"
-            );
+            tracing::error!(value = ready_value, hr, "capture_ready_signal_failed");
             return Err(error).context("failed to signal capture-ready fence");
         }
         // The immediate context buffers commands; without a flush the copy and
         // Signal may not reach the GPU while the D3D12 queue already waits on it.
         unsafe { self.context.Flush() };
-        tracing::debug!(
-            value = ready_value,
-            completed_before,
-            "capture_ready_signal"
-        );
+        tracing::debug!(value = ready_value, "capture_ready_signal");
         if !self.first_signal_logged {
             tracing::info!(value = ready_value, "capture_fence_first_signal_ok");
             self.first_signal_logged = true;
         }
-        Ok(CaptureSubmit {
-            present_qpc: frame.present_qpc,
-            attempt_start_qpc: frame.attempt_start_qpc,
-            acquired_qpc: frame.acquired_qpc,
+        Ok(CopyTimes {
             copy_submitted_qpc,
-            ready_qpc: qpc.now(),
-            desktop_size: frame.desktop_size,
+            ready_qpc: target.qpc.now(),
         })
     }
 
     pub(crate) fn try_take_gpu_copy_sample(&mut self) -> Option<GpuCopySample> {
         self.gpu_profiler.try_take(&self.context)
     }
+
     pub(crate) fn reset_gpu_profiler(&mut self) {
         self.gpu_profiler.reset();
     }
@@ -472,7 +496,42 @@ impl DxgiCapture {
     fn recreate_duplication(&mut self) -> Result<()> {
         self.duplication = create_duplication(&self.output, &self.device)?;
         self.frame_held = false;
+        self.layout = None;
         tracing::debug!("DXGI desktop duplication recreated after access loss");
+        Ok(())
+    }
+
+    /// Writes a known BGRA image into the bound shared texture and signals `ready_value`, for the GPU tests.
+    #[cfg(test)]
+    pub(crate) fn write_test_image(
+        &self,
+        target: &CaptureFrame,
+        bgra: &[u8],
+        (width, height): (usize, usize),
+        ready_value: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            bgra.len() == width * height * 4,
+            "test image does not match its size"
+        );
+        let resource = target.texture.cast::<ID3D11Resource>()?;
+        // SAFETY: the source holds one BGRA row of `width` pixels for each of `height` rows.
+        unsafe {
+            self.context.UpdateSubresource(
+                &resource,
+                0,
+                None,
+                bgra.as_ptr().cast(),
+                (width * 4) as u32,
+                0,
+            )
+        };
+        unsafe {
+            self.context
+                .Signal(&target.capture_ready_fence, ready_value)
+        }
+        .context("failed to signal the test image")?;
+        unsafe { self.context.Flush() };
         Ok(())
     }
 }

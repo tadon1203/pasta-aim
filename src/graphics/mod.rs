@@ -1,15 +1,15 @@
 pub mod bootstrap;
 mod capture;
 pub mod device;
-pub mod frame;
 pub mod gpu_diagnostics;
 pub mod preprocess;
-mod profile_sampler;
+pub(crate) mod profile_sampler;
 pub mod shared_frame;
 
+#[cfg(test)]
+pub(crate) use capture::AcquiredDesktopFrame;
 pub use capture::DxgiCapture;
 pub(crate) use capture::{CapturePoll, NoDesktopUpdateReason};
-pub use frame::GpuFrameMetadata;
 pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport};
 
 use std::{marker::PhantomData, rc::Rc};

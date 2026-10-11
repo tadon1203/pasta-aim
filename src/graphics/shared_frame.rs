@@ -36,6 +36,20 @@ pub struct InferenceFrame {
     pub reuse_fence: ID3D12Fence,
 }
 
+impl InferenceFrame {
+    /// The completed value of the reuse fence. `u64::MAX` means the device was removed.
+    pub fn reuse_completed(&self) -> u64 {
+        // SAFETY: the fence is a live COM object owned by this frame.
+        unsafe { self.reuse_fence.GetCompletedValue() }
+    }
+
+    /// The completed value of the capture-ready fence. `u64::MAX` means the device was removed.
+    pub fn capture_ready_completed(&self) -> u64 {
+        // SAFETY: the fence is a live COM object owned by this frame.
+        unsafe { self.capture_ready_fence.GetCompletedValue() }
+    }
+}
+
 /// Creates the shared frame transport with the **D3D11 capture device as owner**.
 ///
 /// The texture and capture-ready fence are created on the D3D11 device (`SHARED | SHARED_NTHANDLE`,

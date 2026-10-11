@@ -21,6 +21,8 @@ mod models;
 #[cfg(windows)]
 mod paths;
 #[cfg(windows)]
+mod pipeline;
+#[cfg(windows)]
 mod platform;
 #[cfg(windows)]
 mod repaint;

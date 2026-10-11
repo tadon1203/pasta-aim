@@ -76,20 +76,20 @@ pub fn select_nearest<T: Copy + Into<f32>>(
     let mut candidates = Candidates::EMPTY;
 
     for row in data.as_chunks::<6>().0.iter().take(rows) {
-        let [x1, y1, x2, y2, confidence, class_id] = [
-            row[0].into(),
-            row[1].into(),
-            row[2].into(),
-            row[3].into(),
-            row[4].into(),
-            row[5].into(),
-        ];
+        // The confidence decides the row first, so a rejected row converts no box values.
+        let confidence: f32 = row[4].into();
+        if !confidence.is_finite() || confidence < confidence_threshold {
+            continue;
+        }
+        let x1: f32 = row[0].into();
+        let y1: f32 = row[1].into();
+        let x2: f32 = row[2].into();
+        let y2: f32 = row[3].into();
+        let class_id: f32 = row[5].into();
         if !x1.is_finite()
             || !y1.is_finite()
             || !x2.is_finite()
             || !y2.is_finite()
-            || !confidence.is_finite()
-            || confidence < confidence_threshold
             || x2 <= x1
             || y2 <= y1
         {
@@ -148,6 +148,48 @@ mod tests {
             .expect("detection");
         assert_eq!(detection.class_id, 2);
         assert_eq!((detection.center_x, detection.center_y), (50.0, 50.0));
+    }
+
+    #[test]
+    fn rows_below_the_threshold_or_with_a_non_finite_confidence_are_skipped() {
+        let data: [f32; 12] = [
+            0.0,
+            0.0,
+            20.0,
+            20.0,
+            0.10,
+            1.0,
+            45.0,
+            45.0,
+            55.0,
+            55.0,
+            f32::NAN,
+            2.0,
+        ];
+        let selection = select_nearest(&data, 2, 100, 100, 0.25);
+        assert!(selection.nearest.is_none());
+        assert_eq!(selection.candidates.total(), 0);
+    }
+
+    #[test]
+    fn a_row_with_non_finite_box_values_is_skipped_even_when_confident() {
+        let data: [f32; 12] = [
+            f32::INFINITY,
+            0.0,
+            20.0,
+            20.0,
+            0.95,
+            1.0,
+            45.0,
+            45.0,
+            55.0,
+            55.0,
+            0.80,
+            2.0,
+        ];
+        let selection = select_nearest(&data, 2, 100, 100, 0.25);
+        assert_eq!(selection.candidates.total(), 1);
+        assert_eq!(selection.nearest.unwrap().class_id, 2);
     }
 
     #[test]

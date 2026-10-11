@@ -61,13 +61,18 @@ impl Worker {
             self.set_run_error(reason);
             return;
         }
+        self.begin_run(mode);
+    }
+
+    /// Starts a Run with no readiness check. `start_run` checks the readiness first.
+    pub(super) fn begin_run(&mut self, mode: RunMode) {
         let generation = self.run.next_generation();
         self.output_stage.reset();
         self.capture_deadline.clear();
         self.run_counters = RunCounters::default();
         self.sent_counters = RunCounters::default();
-        if let Some(capture) = self.capture.as_mut() {
-            capture.reset_gpu_profiler();
+        if let Some(pipeline) = self.capture.pipeline_mut() {
+            pipeline.reset_profiling();
         }
         self.run.active = Some(ActiveRun { generation, mode });
         let phase = match mode {
@@ -99,7 +104,10 @@ impl Worker {
         let output = self.tuning.output;
         Some(TraceHeader {
             qpc_hz: self.qpc.frequency_hz(),
-            input_size: self.model.as_ref().map(|model| model.input_size),
+            input_size: self
+                .capture
+                .pipeline()
+                .map(|pipeline| pipeline.input_size()),
             sensitivity_percent: output.sensitivity.value(),
             target_y_offset_percent: output.target_y_offset.value(),
             max_delta: output.max_delta.value(),
@@ -127,8 +135,8 @@ impl Worker {
     pub(super) fn run_block_reason(&self) -> Option<String> {
         let makcu = &self.makcu;
         run_block_reason(RunReadiness {
-            model_ready: self.model_ready,
-            capture_ready: self.capture_ready,
+            model_ready: self.capture.has_model(),
+            capture_ready: self.capture.is_capture_ready(),
             makcu_connected: makcu.is_connected(),
             mouse_route: makcu.mouse_available(),
         })

@@ -1,4 +1,4 @@
-//! One synchronous frame transaction; no acquisition starts until output returns.
+//! One frame of the engine: the Pipeline's attempt, the pending commands, and the output.
 
 use std::time::{Duration, Instant};
 
@@ -6,13 +6,11 @@ use crossbeam_channel::Receiver;
 
 use super::{Worker, run::ActiveRun};
 use crate::{
-    engine::{Command, RunMode},
-    graphics::{
-        CapturePoll, GpuDropReason, GpuFaultReport, GpuFrameMetadata, NoDesktopUpdateReason,
-    },
-    inference::pipeline::InferenceResult,
+    engine::{Command, RunGeneration, RunMode},
+    graphics::{GpuDropReason, GpuFaultReport, NoDesktopUpdateReason},
+    pipeline::{FaultKind, FrameOutcome, PipelineFault, ProcessedFrame},
     settings::FpsLimit,
-    telemetry::{FrameRecord, FrameTimes},
+    telemetry::FrameRecord,
 };
 
 /// The earliest time of the next capture in a Continuous run.
@@ -54,47 +52,13 @@ impl CaptureDeadline {
 /// The result of one frame step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StepOutcome {
-    /// The attempt got a New frame, also when a stop suppresses its output or a fault ends the Run.
+    /// The attempt got a New frame, also when a stop suppresses its output.
     NewFrame {
         attempt_start: Instant,
     },
-    /// A timeout, a pointer-only update, an access loss, or no active Run after the drain.
+    /// A timeout, a pointer-only update, an access loss, a fault, or no active Run after the drain.
     NoDesktopUpdate,
     Shutdown,
-}
-
-/// This ordering is shared with the hardware-free pipeline tests below.
-trait SerialStages {
-    type Frame;
-    type Inferred;
-    fn acquire(&mut self) -> Option<Self::Frame>;
-    fn infer(&mut self, frame: Self::Frame) -> Option<Self::Inferred>;
-    /// False means shutdown, including a command received during inference.
-    fn output(&mut self, inferred: Self::Inferred) -> bool;
-}
-
-fn serial_frame(stages: &mut impl SerialStages) -> bool {
-    let Some(frame) = stages.acquire() else {
-        return true;
-    };
-    let Some(inferred) = stages.infer(frame) else {
-        return true;
-    };
-    stages.output(inferred)
-}
-
-struct FrameStep<'a> {
-    worker: &'a mut Worker,
-    commands: &'a Receiver<Command>,
-    run: ActiveRun,
-    attempt_start: Instant,
-    new_frame: bool,
-}
-
-struct InferredFrame {
-    /// The stage boundaries are complete: the inference and the postprocess are filled in.
-    metadata: GpuFrameMetadata,
-    result: InferenceResult,
 }
 
 impl Worker {
@@ -105,140 +69,101 @@ impl Worker {
         let Some(run) = self.run.active else {
             return StepOutcome::NoDesktopUpdate;
         };
-        let mut step = FrameStep {
-            worker: self,
-            commands,
-            run,
-            attempt_start: Instant::now(),
-            new_frame: false,
-        };
-        if !serial_frame(&mut step) {
-            return StepOutcome::Shutdown;
-        }
-        if step.new_frame {
-            StepOutcome::NewFrame {
-                attempt_start: step.attempt_start,
+        let attempt_start = Instant::now();
+        let wait_ms = self.tuning.capture.wait_ms;
+        let result = match self.capture.pipeline_mut() {
+            Some(pipeline) => pipeline.process_next(wait_ms),
+            None => {
+                self.fail_run("inference pipeline is not prepared".to_owned());
+                return StepOutcome::NoDesktopUpdate;
             }
-        } else {
-            StepOutcome::NoDesktopUpdate
-        }
-    }
-
-    /// `new_frame` is set when the capture got a New frame, even if a later step of this attempt fails.
-    fn acquire_frame(&mut self, run: ActiveRun, new_frame: &mut bool) -> Option<GpuFrameMetadata> {
-        let Some(model) = self.model.as_ref() else {
-            self.fail_run("inference pipeline is not prepared".to_owned());
-            return None;
         };
-        if let Err(error) = model.pipeline.ensure_frame_reusable(model.last_completion) {
-            let device_lost = model.pipeline.device_lost();
-            self.recover_poisoned_pipeline(
-                format!("GPU frame reuse failed: {error:#}"),
-                device_lost,
-                None,
-            );
-            return None;
-        }
-        let size = model.input_size;
-        let settings = self.tuning.capture;
-        let qpc = self.qpc;
-        let Some(capture) = self.capture.as_mut() else {
-            self.fail_run("capture is not configured".to_owned());
-            return None;
-        };
-        let frame = match capture.acquire(settings.wait_ms, qpc) {
-            Ok(CapturePoll::Fresh(frame)) => {
-                *new_frame = true;
-                self.run_counters.new_frames += 1;
-                self.run_counters.accumulated_frames += u64::from(frame.accumulated_frames());
-                frame
-            }
-            Ok(CapturePoll::NoDesktopUpdate(reason)) => {
+        match result {
+            Ok(FrameOutcome::NoDesktopUpdate(reason)) => {
                 if matches!(reason, NoDesktopUpdateReason::Timeout) {
                     self.run_counters.timeouts += 1;
                 }
-                return None;
+                StepOutcome::NoDesktopUpdate
             }
-            Err(error) => {
-                let device_lost = capture.device_lost();
-                if device_lost {
-                    self.recover_poisoned_pipeline(
-                        format!("DXGI capture failed: {error:#}"),
-                        true,
-                        None,
-                    );
+            Ok(FrameOutcome::NewFrame(frame)) => {
+                self.run_counters.new_frames += 1;
+                self.run_counters.accumulated_frames += u64::from(frame.accumulated_frames);
+                if self.finish_frame(commands, run, frame) {
+                    StepOutcome::NewFrame { attempt_start }
                 } else {
-                    self.suspend_invalid_pipeline(format!("DXGI capture failed: {error:#}"));
+                    StepOutcome::Shutdown
                 }
-                return None;
             }
-        };
-        self.frame_seq = self
-            .frame_seq
-            .checked_add(1)
-            .expect("frame sequence exhausted");
-        let model = self.model.as_mut().expect("model checked above");
-        let ready_value = self.frame_seq;
-        let submit = capture.copy_center_to(
-            &frame,
-            &model.capture_frame.texture,
-            &model.capture_frame.capture_ready_fence,
-            ready_value,
-            size,
-            qpc,
-        );
-        let submit = match submit {
-            Ok(submit) => submit,
+            Err(fault) => {
+                self.handle_fault(fault, run.generation);
+                StepOutcome::NoDesktopUpdate
+            }
+        }
+    }
+
+    /// The part of a frame after the Pipeline: the pending commands, the stop check, the output, and the
+    /// Frame record. Returns false on shutdown.
+    fn finish_frame(
+        &mut self,
+        commands: &Receiver<Command>,
+        run: ActiveRun,
+        frame: ProcessedFrame,
+    ) -> bool {
+        if !self.drain_commands(commands) {
+            return false;
+        }
+        if !self.run.is_active(run.generation) {
+            self.telemetry.frame_dropped(GpuDropReason::StaleGeneration);
+            return true;
+        }
+        let output_start_qpc = self.qpc.now();
+        let outcome = match self.output_stage.emit(&mut self.makcu, frame.selected) {
+            Ok(outcome) => outcome,
             Err(error) => {
-                let device_lost = capture.device_lost() || model.pipeline.device_lost();
-                let report = GpuFaultReport {
-                    pipeline_id: model.pipeline_id,
-                    prepare_id: model.prepare_id.clone(),
-                    generation: Some(run.generation),
-                    stage: capture.last_fault_stage(),
-                    frame_seq: Some(self.frame_seq),
-                    ready_value: Some(ready_value),
-                    ready_completed: capture.last_ready_completed(),
-                    reuse_value: Some(model.last_completion),
-                    reuse_completed: None,
-                    hr: error
-                        .downcast_ref::<windows::core::Error>()
-                        .map(|e| e.code().0),
-                    d3d11_removed_reason: capture.device_removed_reason(),
-                    d3d12_removed_reason: None,
-                    error: format!("{error:#}"),
-                    dred: None,
-                };
-                self.recover_poisoned_pipeline(
-                    format!("GPU capture copy failed: {error:#}"),
-                    device_lost,
-                    Some(report),
-                );
-                return None;
+                self.fail_run(format!("Inference output failed: {error:#}"));
+                return true;
             }
         };
-        // One GPU copy time per New frame. A sample that is not ready yet waits for the next frame.
-        let gpu_copy_ms = capture
-            .try_take_gpu_copy_sample()
-            .map(|sample| sample.gpu_copy_ms);
-        Some(GpuFrameMetadata {
-            pipeline_id: model.pipeline_id,
+        let output_complete_qpc = self.qpc.now();
+        self.telemetry.frame(FrameRecord {
             generation: run.generation,
-            frame_seq: self.frame_seq,
-            times: FrameTimes {
-                present: submit.present_qpc,
-                attempt_start: submit.attempt_start_qpc,
-                acquired: submit.acquired_qpc,
-                copy_submitted: submit.copy_submitted_qpc,
-                ready: submit.ready_qpc,
-                inference_start: 0,
-                inference_done: 0,
-                postprocess_done: 0,
-            },
-            capture_ready_value: ready_value,
-            desktop_size: submit.desktop_size,
-            gpu_copy_ms,
-        })
+            frame_seq: frame.frame_seq,
+            times: frame.times,
+            output_start_qpc,
+            output_complete_qpc,
+            gpu_preprocess_ms: frame.gpu_preprocess_ms,
+            gpu_copy_ms: frame.gpu_copy_ms,
+            candidates: frame.candidates,
+            selected: frame.selected,
+            track: outcome.track,
+            aim_error: outcome.target.map(|(dx, dy, _, _)| (dx, dy)),
+            planned: outcome.planned,
+            sent: outcome.command,
+        });
+        self.note_output(frame.desktop_size);
+        if run.mode == RunMode::OneShot {
+            self.stop_run();
+        }
+        true
+    }
+
+    /// Recovers from a Pipeline fault. The engine adds the Run generation to the report.
+    fn handle_fault(&mut self, fault: PipelineFault, generation: RunGeneration) {
+        let PipelineFault {
+            kind,
+            message,
+            report,
+        } = fault;
+        let report = report.map(|report| GpuFaultReport {
+            generation: Some(generation),
+            ..*report
+        });
+        match kind {
+            FaultKind::Poisoned { device_lost } => {
+                self.recover_poisoned_pipeline(message, device_lost, report);
+            }
+            FaultKind::Invalid => self.suspend_invalid_pipeline(message),
+        }
     }
 
     /// Edits the state for a frame that reached the output. Each edit is made only when its value changes.
@@ -253,99 +178,9 @@ impl Worker {
     }
 }
 
-impl SerialStages for FrameStep<'_> {
-    type Frame = GpuFrameMetadata;
-    type Inferred = InferredFrame;
-
-    fn acquire(&mut self) -> Option<Self::Frame> {
-        self.worker.acquire_frame(self.run, &mut self.new_frame)
-    }
-
-    fn infer(&mut self, mut metadata: Self::Frame) -> Option<Self::Inferred> {
-        let worker = &mut self.worker;
-        let qpc = worker.qpc;
-        let model = worker
-            .model
-            .as_mut()
-            .expect("acquisition requires a prepared model");
-        metadata.times.inference_start = qpc.now();
-        match model.pipeline.infer(metadata, qpc) {
-            Ok(result) => {
-                model.last_completion = metadata.capture_ready_value;
-                metadata.times.inference_done = result.inference_done_qpc;
-                metadata.times.postprocess_done = result.postprocess_done_qpc;
-                Some(InferredFrame { metadata, result })
-            }
-            Err(error) => {
-                let report = model.pipeline.take_fault_report();
-                let device_lost = model.pipeline.device_lost();
-                if report.is_some() || device_lost {
-                    worker.recover_poisoned_pipeline(
-                        format!("GPU pipeline failed: {error:#}"),
-                        device_lost,
-                        report,
-                    );
-                } else {
-                    worker.suspend_invalid_pipeline(format!("inference failed: {error:#}"));
-                }
-                None
-            }
-        }
-    }
-
-    fn output(&mut self, frame: Self::Inferred) -> bool {
-        let worker = &mut self.worker;
-        if !worker.drain_commands(self.commands) {
-            return false;
-        }
-        let InferredFrame { metadata, result } = frame;
-        if !worker.run.is_active(metadata.generation)
-            || worker.active_pipeline_id != Some(metadata.pipeline_id)
-        {
-            worker
-                .telemetry
-                .frame_dropped(GpuDropReason::StaleGeneration);
-            return true;
-        }
-        let qpc = worker.qpc;
-        let output_start_qpc = qpc.now();
-        let outcome = match worker
-            .output_stage
-            .emit(&mut worker.makcu, result.detection)
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                worker.fail_run(format!("Inference output failed: {error:#}"));
-                return true;
-            }
-        };
-        let output_complete_qpc = qpc.now();
-        worker.telemetry.frame(FrameRecord {
-            generation: metadata.generation,
-            frame_seq: metadata.frame_seq,
-            times: metadata.times,
-            output_start_qpc,
-            output_complete_qpc,
-            gpu_preprocess_ms: result.gpu_preprocess_ms,
-            gpu_copy_ms: metadata.gpu_copy_ms,
-            candidates: result.candidates,
-            selected: result.detection,
-            track: outcome.track,
-            aim_error: outcome.target.map(|(dx, dy, _, _)| (dx, dy)),
-            planned: outcome.planned,
-            sent: outcome.command,
-        });
-        worker.note_output(metadata.desktop_size);
-        if self.run.mode == RunMode::OneShot {
-            worker.stop_run();
-        }
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::{Tuning, run::RunControl};
+    use super::super::{CaptureState, Tuning, run::RunControl};
     use super::*;
     use crate::{
         config::Config,
@@ -356,7 +191,7 @@ mod tests {
         },
         inference::{AdapterLuid, Candidates, Detection},
         makcu::{FakeMakcu, MakcuClient, RawStats},
-        telemetry::{RunCounters, TelemetryMessage, TelemetrySink},
+        telemetry::{FrameTimes, RunCounters, TelemetryMessage, TelemetrySink},
         timing::QpcClock,
         wait::{DeadlineWait, Waker},
     };
@@ -391,6 +226,7 @@ mod tests {
     }
 
     /// The fixture, with the waker of its wait, which the test raises to wake the loop, and the telemetry queue.
+    /// It has no GPU, so it begins the Run without the readiness check.
     fn worker_with_waker() -> (Worker, FakeMakcu, Waker, TestReceiver<TelemetryMessage>) {
         let config = Config::default();
         let tuning = Tuning {
@@ -421,22 +257,17 @@ mod tests {
             telemetry,
             tuning,
             displays: Vec::new(),
-            model: None,
-            capture: None,
-            // The fixture has no GPU capture, so it stands in for a ready one.
-            capture_ready: true,
+            // The fixture has no GPU capture and no Pipeline.
+            capture: CaptureState::None,
             output_stage: OutputStage::new(tuning.output),
             wait,
             capture_deadline: CaptureDeadline::new(),
-            frame_seq: 0,
             run_counters: RunCounters::default(),
             sent_counters: RunCounters::default(),
             sent_raw: RawStats::default(),
             active_model: Some(("previous.onnx".into(), "previous.onnx".into())),
-            model_ready: true,
             auto_reprepare_attempted: false,
             next_pipeline_id: 2,
-            active_pipeline_id: Some(1),
             capture_adapter: 0,
             capture_output: 0,
             selected_adapter_luid: AdapterLuid { low: 0, high: 0 },
@@ -458,57 +289,43 @@ mod tests {
             });
         });
         worker.output_stage.set_input_size((100, 100));
-        worker.start_run(RunMode::Continuous);
+        worker.begin_run(RunMode::Continuous);
         (worker, fake, waker, telemetry_rx)
     }
 
-    fn inferred(worker: &Worker, present_qpc: i64) -> InferredFrame {
-        InferredFrame {
-            metadata: GpuFrameMetadata {
-                pipeline_id: 1,
-                generation: worker.run.active.unwrap().generation,
-                frame_seq: 1,
-                times: FrameTimes {
-                    present: present_qpc,
-                    attempt_start: present_qpc,
-                    acquired: present_qpc,
-                    copy_submitted: present_qpc,
-                    ready: present_qpc,
-                    inference_start: present_qpc,
-                    inference_done: present_qpc,
-                    postprocess_done: present_qpc,
-                },
-                capture_ready_value: 1,
-                desktop_size: (100, 100),
-                gpu_copy_ms: None,
+    /// A New frame with a valid detection, as the Pipeline would hand it to the engine.
+    fn processed(present_qpc: i64) -> ProcessedFrame {
+        ProcessedFrame {
+            frame_seq: 1,
+            accumulated_frames: 1,
+            desktop_size: (100, 100),
+            times: FrameTimes {
+                present: present_qpc,
+                attempt_start: present_qpc,
+                acquired: present_qpc,
+                copy_submitted: present_qpc,
+                ready: present_qpc,
+                inference_start: present_qpc,
+                inference_done: present_qpc,
+                postprocess_done: present_qpc,
             },
-            result: InferenceResult {
-                detection: Some(Detection {
-                    center_x: 70.0,
-                    center_y: 50.0,
-                    box_width: 10.0,
-                    box_height: 10.0,
-                    confidence: 0.9,
-                    class_id: 0,
-                }),
-                candidates: Candidates::EMPTY,
-                inference_done_qpc: present_qpc,
-                postprocess_done_qpc: present_qpc,
-                gpu_preprocess_ms: None,
-            },
+            gpu_preprocess_ms: None,
+            gpu_copy_ms: None,
+            selected: Some(Detection {
+                center_x: 70.0,
+                center_y: 50.0,
+                box_width: 10.0,
+                box_height: 10.0,
+                confidence: 0.9,
+                class_id: 0,
+            }),
+            candidates: Candidates::EMPTY,
         }
     }
 
-    fn finish(worker: &mut Worker, commands: &Receiver<Command>, frame: InferredFrame) -> bool {
+    fn finish(worker: &mut Worker, commands: &Receiver<Command>, frame: ProcessedFrame) -> bool {
         let run = worker.run.active.unwrap();
-        FrameStep {
-            worker,
-            commands,
-            run,
-            attempt_start: Instant::now(),
-            new_frame: true,
-        }
-        .output(frame)
+        worker.finish_frame(commands, run, frame)
     }
 
     #[test]
@@ -529,7 +346,7 @@ mod tests {
         ] {
             let shutdown = matches!(command, Command::Shutdown);
             let (mut worker, fake, telemetry) = worker();
-            let frame = inferred(&worker, worker.qpc.now());
+            let frame = processed(worker.qpc.now());
             let (tx, rx) = crossbeam_channel::unbounded();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, frame), !shutdown);
@@ -545,7 +362,7 @@ mod tests {
     fn valid_result_outputs() {
         let (mut worker, fake, telemetry) = worker();
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let frame = inferred(&worker, worker.qpc.now());
+        let frame = processed(worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
         assert!(!moves(&fake).is_empty());
         let (records, dropped) = output_messages(&telemetry);
@@ -561,14 +378,11 @@ mod tests {
         let (mut worker, _fake, _telemetry) = worker();
         let old_generation = worker.run.active.unwrap().generation;
         worker.set_capture_selection(99, 99);
-        assert_eq!(worker.active_pipeline_id, Some(1));
         assert_eq!(worker.capture_output, 0);
         assert!(worker.run.is_continuous());
         assert_ne!(worker.run.active.unwrap().generation, old_generation);
         worker.load_model(false, "missing.onnx".into(), "missing.onnx".into());
         assert_eq!(worker.active_model.as_ref().unwrap().0, "previous.onnx");
-        assert_eq!(worker.active_pipeline_id, Some(1));
-        assert!(worker.model_ready);
         assert!(worker.run.active.is_none());
     }
 
@@ -576,7 +390,7 @@ mod tests {
     fn one_shot_ignores_fps_wait_and_finishes_after_one_output() {
         let (mut worker, fake, telemetry) = worker();
         worker.stop_run();
-        worker.start_run(RunMode::OneShot);
+        worker.begin_run(RunMode::OneShot);
         let now = Instant::now();
         let deadline = CaptureDeadline {
             next: now + Duration::from_secs(1),
@@ -587,7 +401,7 @@ mod tests {
             Some(now + Duration::from_secs(1))
         );
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let frame = inferred(&worker, worker.qpc.now());
+        let frame = processed(worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
         assert!(!moves(&fake).is_empty());
         assert!(worker.run.active.is_none());
@@ -604,7 +418,7 @@ mod tests {
         assert_eq!(worker.step_frame(&rx), StepOutcome::NoDesktopUpdate);
         // There is no GPU pipeline in this fixture: acquisition would fail the run.
         assert!(worker.status.get().run.error.is_none());
-        worker.start_run(RunMode::Continuous);
+        worker.begin_run(RunMode::Continuous);
         worker.capture_deadline.next = Instant::now() + Duration::from_secs(10);
         let sender = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
@@ -616,67 +430,6 @@ mod tests {
         sender.join().unwrap();
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(worker.status.get().run.error.is_none());
-    }
-
-    #[derive(Default)]
-    struct FakeStages {
-        events: Vec<&'static str>,
-        no_image: bool,
-        infer_fails: bool,
-    }
-
-    impl SerialStages for FakeStages {
-        type Frame = ();
-        type Inferred = ();
-        fn acquire(&mut self) -> Option<()> {
-            self.events.push("acquire");
-            (!self.no_image).then_some(())
-        }
-        fn infer(&mut self, (): ()) -> Option<()> {
-            self.events.extend(["preprocess", "infer"]);
-            (!self.infer_fails).then_some(())
-        }
-        fn output(&mut self, (): ()) -> bool {
-            self.events.extend(["output", "output complete"]);
-            true
-        }
-    }
-
-    #[test]
-    fn next_acquisition_follows_completed_output() {
-        let mut stages = FakeStages::default();
-        assert!(serial_frame(&mut stages));
-        assert!(serial_frame(&mut stages));
-        assert_eq!(
-            stages.events,
-            [
-                "acquire",
-                "preprocess",
-                "infer",
-                "output",
-                "output complete",
-                "acquire",
-                "preprocess",
-                "infer",
-                "output",
-                "output complete"
-            ]
-        );
-    }
-
-    #[test]
-    fn absent_image_and_inference_failure_do_not_output() {
-        let mut stages = FakeStages {
-            no_image: true,
-            ..Default::default()
-        };
-        serial_frame(&mut stages);
-        assert_eq!(stages.events, ["acquire"]);
-        stages.events.clear();
-        stages.no_image = false;
-        stages.infer_fails = true;
-        serial_frame(&mut stages);
-        assert_eq!(stages.events, ["acquire", "preprocess", "infer"]);
     }
 
     #[test]

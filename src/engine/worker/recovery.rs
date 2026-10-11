@@ -1,6 +1,6 @@
 //! Capture/inference faults: suspending a broken pipeline and rebuilding it.
 
-use super::{Worker, log_pipeline_state};
+use super::{CaptureState, Worker, log_pipeline_state};
 use crate::{
     engine::CapturePhase,
     graphics::{GpuDropReason, GpuFaultReport},
@@ -18,7 +18,7 @@ impl Worker {
         self.telemetry
             .frame_dropped(GpuDropReason::PipelinePoisoned);
         let (reported_pipeline_id, prepare_id) = log_fault_report(report);
-        let pipeline_id = reported_pipeline_id.or(self.active_pipeline_id);
+        let pipeline_id = reported_pipeline_id.or(self.capture.pipeline_id());
         let prepare_id = prepare_id.as_deref();
         log_pipeline_state("Poisoned", pipeline_id, prepare_id, None, None);
         let can_attempt_reprepare = should_auto_reprepare(&mut self.auto_reprepare_attempted);
@@ -46,10 +46,10 @@ impl Worker {
         log_pipeline_state("Preparing", pipeline_id, prepare_id, Some(1), None);
         tracing::warn!(%error, "repreparing complete GPU pipeline once after transport poison");
         self.retry_suspended_pipeline();
-        if resume_continuous && self.model_ready {
+        if resume_continuous && self.capture.has_model() {
             self.set_continuous(true);
         }
-        if !self.model_ready {
+        if !self.capture.has_model() {
             log_pipeline_state(
                 "GpuPipelineInvalid",
                 pipeline_id,
@@ -64,7 +64,6 @@ impl Worker {
     /// until [`Self::retry_suspended_pipeline`] rebuilds the pipeline.
     pub(super) fn suspend_invalid_pipeline(&mut self, error: String) {
         self.fail_run(error.clone());
-        self.model_ready = false;
         self.status.edit(|status| {
             status.capture.phase = CapturePhase::Failed;
             status.capture.selected = None;
@@ -72,11 +71,8 @@ impl Worker {
             status.capture.error = Some(error.clone());
         });
 
-        // The model waits for its GPU queue before capture and COM are released.
-        self.model = None;
-        self.capture = None;
-        self.capture_ready = false;
-        self.active_pipeline_id = None;
+        // The Pipeline waits for its GPU queue before its capture and COM objects are released.
+        self.capture = CaptureState::None;
         tracing::error!(%error, "invalid GPU pipeline dropped; capture remains suspended");
     }
 

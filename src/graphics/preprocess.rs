@@ -1,61 +1,49 @@
-use std::mem::ManuallyDrop;
+use std::mem::{ManuallyDrop, size_of};
 
+use super::device::GpuDeviceContext;
 use super::gpu_diagnostics::{GpuFaultStage, OWN_OBJECT_PREFIX, name_d3d12};
-use super::profile_sampler::ProfileSampler;
-use super::{device::GpuDeviceContext, frame::GpuFrameMetadata};
 use crate::inference::TensorPrecision;
 use anyhow::{Context, Result, bail};
 use windows::{
     Win32::Graphics::{
         Direct3D::Fxc::D3DCompile,
-        Direct3D::{D3D_SHADER_MACRO, ID3DBlob},
+        Direct3D::ID3DBlob,
         Direct3D12::*,
-        Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R32_TYPELESS},
+        Dxgi::Common::{
+            DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32_FLOAT,
+        },
     },
     core::{Interface, PCSTR},
 };
 
-/// BGRA texture -> planar RGB (NCHW) buffer. Each thread writes one 32-bit
-/// word: one FP32 element, or two packed FP16 elements (`FP16` defined).
-/// Working on the flat element index keeps odd-sized planes correct.
+/// BGRA texture -> planar RGB (NCHW) buffer. One thread writes the three channels of one pixel.
+/// The destination is a typed buffer, so the GPU converts each store to the format of the view.
 const SHADER: &str = r#"
 Texture2D<float4> source_image : register(t0);
-RWByteAddressBuffer destination : register(u0);
-cbuffer Params : register(b0) { uint width; uint pixels; uint elements; };
-float element(uint index) {
-    float value = 0.0;
-    if (index < elements) {
-        uint channel = index / pixels;
-        uint pixel = index - channel * pixels;
-        float4 color = source_image.Load(int3(pixel % width, pixel / width, 0));
-        value = channel == 0 ? color.r : (channel == 1 ? color.g : color.b);
-    }
-    return value;
-}
-[numthreads(256, 1, 1)]
+RWBuffer<float> destination : register(u0);
+cbuffer Params : register(b0) { uint width; uint height; uint pixels; };
+[numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-#ifdef FP16
-    uint first = id.x * 2;
-    if (first >= elements) return;
-    destination.Store(id.x * 4, f32tof16(element(first)) | (f32tof16(element(first + 1)) << 16));
-#else
-    if (id.x >= elements) return;
-    destination.Store(id.x * 4, asuint(element(id.x)));
-#endif
+    if (id.x >= width || id.y >= height) return;
+    uint pixel = id.y * width + id.x;
+    float4 color = source_image.Load(int3(id.x, id.y, 0));
+    destination[pixel] = color.r;
+    destination[pixels + pixel] = color.g;
+    destination[2 * pixels + pixel] = color.b;
 }
 "#;
 const COLOR_CHANNELS: usize = 3;
 const PREPROCESS_PARAMETER_COUNT: u32 = 3;
-const THREADS_PER_GROUP: usize = 256;
+const THREADS_PER_GROUP: usize = 8;
 const MAX_DISPATCH_GROUPS: usize = 65_535;
 
 /// Field order is drop order: the recorded lists go before everything they refer to.
 pub struct GpuPreprocessor {
     /// Recorded once: shapes and descriptors are static,
     /// so a frame only needs to be submitted.
-    command_list: ID3D12GraphicsCommandList,
+    timed_list: ID3D12CommandList,
     /// Same dispatch without timestamp queries, for frames that are not measured.
-    untimed_list: ID3D12GraphicsCommandList,
+    untimed_list: ID3D12CommandList,
     // Objects the recorded lists refer to.
     _allocator: ID3D12CommandAllocator,
     _descriptor_heap: ID3D12DescriptorHeap,
@@ -67,7 +55,6 @@ pub struct GpuPreprocessor {
     /// Completion value after which the lists may be executed again.
     list_in_flight: Option<u64>,
     timestamps: PreprocessTimestamps,
-    sampler: ProfileSampler,
     fault_stage: GpuFaultStage,
 }
 
@@ -104,15 +91,18 @@ impl GpuPreprocessor {
         let elements = pixels
             .checked_mul(COLOR_CHANNELS)
             .context("input tensor size overflowed")?;
-        let words = precision
-            .packed_words(elements)
-            .context("input tensor size overflowed")?;
-        let dispatch_groups = words.div_ceil(THREADS_PER_GROUP);
-        if words > u32::MAX as usize || dispatch_groups > MAX_DISPATCH_GROUPS {
+        let dispatch_x = width.div_ceil(THREADS_PER_GROUP);
+        let dispatch_y = height.div_ceil(THREADS_PER_GROUP);
+        if elements > u32::MAX as usize
+            || dispatch_x > MAX_DISPATCH_GROUPS
+            || dispatch_y > MAX_DISPATCH_GROUPS
+        {
             bail!("input {width}x{height} is too large for the GPU preprocess dispatch");
         }
+        let format = tensor_format(precision);
+        ensure_typed_uav_store(device, format, precision)?;
 
-        let (root_signature, pipeline) = create_pipeline(device, precision)?;
+        let (root_signature, pipeline) = create_pipeline(device)?;
         let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             NumDescriptors: 2,
@@ -128,7 +118,9 @@ impl GpuPreprocessor {
         let allocator: ID3D12CommandAllocator =
             unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE) }
                 .context("failed to create preprocess command allocator")?;
-        let timestamps = PreprocessTimestamps::new(device)?;
+        let frequency = unsafe { gpu.queue().GetTimestampFrequency() }
+            .context("failed to query compute timestamp frequency")?;
+        let timestamps = PreprocessTimestamps::new(device, frequency)?;
         name_d3d12(&pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
         name_d3d12(
             &root_signature,
@@ -163,15 +155,15 @@ impl GpuPreprocessor {
         }
         let output_cpu = offset_cpu(cpu_base, descriptor_stride);
         let uav = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-            Format: DXGI_FORMAT_R32_TYPELESS,
+            Format: format,
             ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
             Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
                 Buffer: D3D12_BUFFER_UAV {
                     FirstElement: 0,
-                    NumElements: words as u32,
+                    NumElements: elements as u32,
                     StructureByteStride: 0,
                     CounterOffsetInBytes: 0,
-                    Flags: D3D12_BUFFER_UAV_FLAG_RAW,
+                    Flags: D3D12_BUFFER_UAV_FLAG_NONE,
                 },
             },
         };
@@ -186,8 +178,8 @@ impl GpuPreprocessor {
 
         let gpu_base = unsafe { descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
         let output_gpu = offset_gpu(gpu_base, descriptor_stride);
-        let constants = [width as u32, pixels as u32, elements as u32];
-        let record = |timed: bool| -> Result<ID3D12GraphicsCommandList> {
+        let constants = [width as u32, height as u32, pixels as u32];
+        let record = |timed: bool| -> Result<ID3D12CommandList> {
             let list = PreprocessRecording {
                 device,
                 allocator: &allocator,
@@ -200,19 +192,20 @@ impl GpuPreprocessor {
                 output_gpu,
                 timestamps: &timestamps,
                 constants,
-                dispatch_groups: dispatch_groups as u32,
+                dispatch: (dispatch_x as u32, dispatch_y as u32),
                 timed,
             }
             .record()?;
             let kind = if timed { "timed" } else { "untimed" };
             name_d3d12(&list, &format!("{OWN_OBJECT_PREFIX}preprocess-list-{kind}"));
-            Ok(list)
+            list.cast()
+                .context("failed to cast the preprocess command list")
         };
-        let command_list = record(true)?;
+        let timed_list = record(true)?;
         let untimed_list = record(false)?;
 
         Ok(Self {
-            command_list,
+            timed_list,
             untimed_list,
             _allocator: allocator,
             _descriptor_heap: descriptor_heap,
@@ -223,71 +216,67 @@ impl GpuPreprocessor {
             queue: gpu.queue().clone(),
             list_in_flight: None,
             timestamps,
-            sampler: ProfileSampler::default(),
             fault_stage: GpuFaultStage::PreprocessSubmit,
         })
     }
 
+    /// `reuse_completed` is the completed value of the reuse fence that the caller read for this frame.
+    /// `measure` submits the list with the timestamp queries.
     pub fn submit(
         &mut self,
-        metadata: GpuFrameMetadata,
+        frame_seq: u64,
         ready_fence: &ID3D12Fence,
         reuse_fence: &ID3D12Fence,
+        reuse_completed: u64,
+        measure: bool,
     ) -> Result<PreprocessTicket> {
         self.fault_stage = GpuFaultStage::PreprocessSubmit;
-        let reuse_value = metadata.capture_ready_value;
-        if self.timestamps.frequency == 0 {
-            self.timestamps.frequency = unsafe { self.queue.GetTimestampFrequency() }
-                .context("failed to query compute timestamp frequency")?;
-        }
-        let completed = unsafe { reuse_fence.GetCompletedValue() };
-        if completed == u64::MAX {
+        if reuse_completed == u64::MAX {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
             bail!("D3D12 reuse fence reports device removed");
         }
-        if self.list_in_flight.is_some_and(|value| completed < value) {
-            self.fault_stage = GpuFaultStage::PreprocessSubmit;
+        if self
+            .list_in_flight
+            .is_some_and(|value| reuse_completed < value)
+        {
             bail!("preprocess command list reused before its reuse fence completed");
         }
         self.fault_stage = GpuFaultStage::D3D12ReadyWait;
-        if let Err(error) = unsafe { self.queue.Wait(ready_fence, metadata.capture_ready_value) } {
+        if let Err(error) = unsafe { self.queue.Wait(ready_fence, frame_seq) } {
             return Err(error).context("D3D12 queue wait on capture fence failed");
         }
         self.fault_stage = GpuFaultStage::PreprocessSubmit;
-        let timed = self.sampler.should_measure();
-        if timed {
-            self.timestamps.pending = Some(reuse_value);
+        if measure {
+            self.timestamps.pending = Some(frame_seq);
         }
-        let list = if timed {
-            &self.command_list
+        let list = if measure {
+            &self.timed_list
         } else {
             &self.untimed_list
         };
-        let command_list = match list.cast() {
-            Ok(command_list) => command_list,
-            Err(error) => {
-                return Err(error).context("failed to cast compute command list");
-            }
-        };
-        unsafe { self.queue.ExecuteCommandLists(&[Some(command_list)]) };
+        unsafe { self.queue.ExecuteCommandLists(&[Some(list.clone())]) };
         self.fault_stage = GpuFaultStage::ReuseSignal;
-        if let Err(error) = unsafe { self.queue.Signal(reuse_fence, reuse_value) } {
+        if let Err(error) = unsafe { self.queue.Signal(reuse_fence, frame_seq) } {
             return Err(error).context("D3D12 queue signal on reuse fence failed");
         }
-        self.list_in_flight = Some(reuse_value);
+        self.list_in_flight = Some(frame_seq);
         Ok(PreprocessTicket {
-            completion_value: reuse_value,
-            frame_seq: metadata.frame_seq,
-            timed,
+            completion_value: frame_seq,
+            frame_seq,
+            timed: measure,
         })
     }
 
     /// Returns the GPU time of a measured frame, `None` for an unmeasured one.
+    /// Only a measured frame reads the reuse fence here.
     pub fn collect(
         &mut self,
         ticket: PreprocessTicket,
         reuse_fence: &ID3D12Fence,
     ) -> Result<Option<f64>> {
+        if !ticket.timed {
+            return Ok(None);
+        }
         let completed = unsafe { reuse_fence.GetCompletedValue() };
         if completed == u64::MAX {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
@@ -300,15 +289,46 @@ impl GpuPreprocessor {
                 ticket.completion_value
             );
         }
-        if !ticket.timed {
-            return Ok(None);
-        }
         self.timestamps.collect(ticket.completion_value).map(Some)
     }
 
     pub fn fault_stage(&self) -> GpuFaultStage {
         self.fault_stage
     }
+}
+
+fn tensor_format(precision: TensorPrecision) -> DXGI_FORMAT {
+    match precision {
+        TensorPrecision::Fp32 => DXGI_FORMAT_R32_FLOAT,
+        TensorPrecision::Fp16 => DXGI_FORMAT_R16_FLOAT,
+    }
+}
+
+/// Typed unordered access stores are optional in Direct3D 12. The device is asked before the view is made.
+fn ensure_typed_uav_store(
+    device: &ID3D12Device,
+    format: DXGI_FORMAT,
+    precision: TensorPrecision,
+) -> Result<()> {
+    let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+        Format: format,
+        ..Default::default()
+    };
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT,
+            (&mut support as *mut D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
+            size_of::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>() as u32,
+        )
+    }
+    .context("failed to query the format support of the GPU")?;
+    if support.Support2.0 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE.0 == 0 {
+        bail!(
+            "this display's GPU cannot store {} model input through typed unordered access; the Pipeline cannot be built",
+            precision.label()
+        );
+    }
+    Ok(())
 }
 
 /// Everything needed to record the preprocess dispatch.
@@ -324,7 +344,7 @@ struct PreprocessRecording<'a> {
     output_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
     timestamps: &'a PreprocessTimestamps,
     constants: [u32; PREPROCESS_PARAMETER_COUNT as usize],
-    dispatch_groups: u32,
+    dispatch: (u32, u32),
     /// Bracket the dispatch with timestamp queries and resolve them.
     timed: bool,
 }
@@ -365,7 +385,7 @@ impl PreprocessRecording<'_> {
                     first_query,
                 );
             }
-            list.Dispatch(self.dispatch_groups, 1, 1);
+            list.Dispatch(self.dispatch.0, self.dispatch.1, 1);
             if self.timed {
                 list.EndQuery(
                     &self.timestamps.heap,
@@ -402,7 +422,7 @@ impl PreprocessRecording<'_> {
 }
 
 impl PreprocessTimestamps {
-    fn new(device: &ID3D12Device) -> Result<Self> {
+    fn new(device: &ID3D12Device, frequency: u64) -> Result<Self> {
         let desc = D3D12_QUERY_HEAP_DESC {
             Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
             Count: 2,
@@ -459,7 +479,7 @@ impl PreprocessTimestamps {
             heap,
             readback,
             mapped: mapped.cast(),
-            frequency: 0,
+            frequency,
             pending: None,
         })
     }
@@ -486,10 +506,7 @@ impl Drop for PreprocessTimestamps {
     }
 }
 
-fn create_pipeline(
-    device: &ID3D12Device,
-    precision: TensorPrecision,
-) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
     let ranges = [
         D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -572,20 +589,12 @@ fn create_pipeline(
     let target = PCSTR(c"cs_5_1".as_ptr().cast());
     let mut bytecode: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
-    let fp16_define = [
-        D3D_SHADER_MACRO {
-            Name: PCSTR(c"FP16".as_ptr().cast()),
-            Definition: PCSTR(c"1".as_ptr().cast()),
-        },
-        D3D_SHADER_MACRO::default(),
-    ];
-    let defines = (precision == TensorPrecision::Fp16).then_some(fp16_define.as_ptr());
     unsafe {
         D3DCompile(
             source.as_ptr().cast(),
             source.len(),
             PCSTR::null(),
-            defines,
+            None,
             None::<&windows::Win32::Graphics::Direct3D::ID3DInclude>,
             entry,
             target,
@@ -666,12 +675,141 @@ pub(crate) fn preprocess_bgra_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graphics::{
+        AcquiredDesktopFrame, CapturePoll, DxgiCapture, GraphicsThread,
+        shared_frame::create_shared_frame,
+    };
+    use crate::{sync::MutexExt, timing::QpcClock};
+
+    /// The GPU tests open the same desktop output, so they run one at a time.
+    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A GPU buffer that holds the tensor of `elements` values in `precision`, in the UAV state.
+    fn create_tensor_buffer(
+        gpu: &GpuDeviceContext,
+        precision: TensorPrecision,
+        elements: usize,
+    ) -> Result<ID3D12Resource> {
+        let properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+            ..Default::default()
+        };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: (precision.packed_words(elements).unwrap() * 4) as u64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            ..Default::default()
+        };
+        let mut destination = None;
+        unsafe {
+            gpu.device().CreateCommittedResource(
+                &properties,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                None,
+                &mut destination,
+            )
+        }
+        .context("failed to create test input buffer")?;
+        destination.context("no test input buffer")
+    }
+
+    /// Copies the first `byte_len` bytes of `buffer` to the CPU. Waits for the queue to finish.
+    fn read_back(
+        gpu: &mut GpuDeviceContext,
+        buffer: &ID3D12Resource,
+        byte_len: usize,
+    ) -> Result<Vec<u8>> {
+        let device = gpu.device().clone();
+        let properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_READBACK,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+            ..Default::default()
+        };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: byte_len as u64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
+        let mut readback_resource = None;
+        unsafe {
+            device.CreateCommittedResource(
+                &properties,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut readback_resource,
+            )
+        }
+        .context("failed to create test readback buffer")?;
+        let readback: ID3D12Resource = readback_resource.context("no test readback buffer")?;
+        let allocator: ID3D12CommandAllocator =
+            unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE) }
+                .context("failed to create test copy allocator")?;
+        let list: ID3D12GraphicsCommandList = unsafe {
+            device.CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                &allocator,
+                None::<&ID3D12PipelineState>,
+            )
+        }
+        .context("failed to create test copy list")?;
+        unsafe {
+            list.ResourceBarrier(&[transition(
+                buffer,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            )]);
+            list.CopyBufferRegion(&readback, 0, buffer, 0, byte_len as u64);
+            list.Close().context("failed to close test copy list")?;
+        }
+        let list: ID3D12CommandList = list.cast()?;
+        unsafe { gpu.queue().ExecuteCommandLists(&[Some(list)]) };
+        gpu.wait_idle()?;
+        let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+        unsafe { readback.Map(0, None, Some(&mut mapped)) }
+            .context("failed to map test readback")?;
+        let bytes = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), byte_len) }.to_vec();
+        unsafe { readback.Unmap(0, None) };
+        Ok(bytes)
+    }
+
+    /// The first desktop image that the capture acquires. The copy target must be bound first.
+    fn acquire_fresh_image(capture: &mut DxgiCapture) -> Result<AcquiredDesktopFrame> {
+        for _ in 0..50 {
+            if let CapturePoll::Fresh(frame) = capture.acquire(20)? {
+                return Ok(frame);
+            }
+        }
+        bail!("no desktop image acquired within 50 polls")
+    }
 
     #[test]
     #[ignore = "needs an interactive desktop session and a GPU"]
     fn single_frame_gpu_transport_can_be_reused() -> Result<()> {
-        use crate::graphics::{CapturePoll, GraphicsThread, shared_frame::create_shared_frame};
-
+        let _serial = GPU_TESTS.lock_recover();
         let graphics = GraphicsThread::initialize()?;
         let display = graphics
             .enumerate_displays()?
@@ -680,56 +818,16 @@ mod tests {
             .context("no desktop display available")?;
         let mut capture = graphics.create_capture(display.adapter_index, display.output_index)?;
         let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
-        let qpc = crate::timing::QpcClock::new()?;
+        let qpc = QpcClock::new()?;
         let size = (32, 32);
-        let mut image = None;
-        for _ in 0..50 {
-            if let CapturePoll::Fresh(frame) = capture.acquire(20, qpc)? {
-                image = Some(frame);
-                break;
-            }
-        }
-        let image = image.context("no desktop image acquired within 50 polls")?;
 
         for precision in [TensorPrecision::Fp32, TensorPrecision::Fp16] {
             let (capture_frame, inference_frame) =
                 create_shared_frame(&gpu, &capture.transport_device(), size.0, size.1)?;
-            let properties = D3D12_HEAP_PROPERTIES {
-                Type: D3D12_HEAP_TYPE_DEFAULT,
-                CreationNodeMask: 1,
-                VisibleNodeMask: 1,
-                ..Default::default()
-            };
-            let desc = D3D12_RESOURCE_DESC {
-                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: (precision
-                    .packed_words(size.0 * size.1 * COLOR_CHANNELS)
-                    .unwrap()
-                    * 4) as u64,
-                Height: 1,
-                DepthOrArraySize: 1,
-                MipLevels: 1,
-                SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-                Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                ..Default::default()
-            };
-            let mut destination = None;
-            unsafe {
-                gpu.device().CreateCommittedResource(
-                    &properties,
-                    D3D12_HEAP_FLAG_NONE,
-                    &desc,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    None,
-                    &mut destination,
-                )
-            }
-            .context("failed to create test input buffer")?;
-            let destination: ID3D12Resource = destination.context("no test input buffer")?;
+            capture.bind_copy_target(&capture_frame, size, qpc)?;
+            let image = acquire_fresh_image(&mut capture)?;
+            let destination =
+                create_tensor_buffer(&gpu, precision, size.0 * size.1 * COLOR_CHANNELS)?;
             let mut preprocess = GpuPreprocessor::new(
                 &gpu,
                 &inference_frame.resource,
@@ -741,41 +839,19 @@ mod tests {
             // Wait before resources are released even when a submission/assertion fails.
             let result = (|| -> Result<()> {
                 for seq in 1..=32 {
-                    let completed = unsafe { inference_frame.reuse_fence.GetCompletedValue() };
+                    let completed = inference_frame.reuse_completed();
                     anyhow::ensure!(
                         completed != u64::MAX && completed >= seq - 1,
                         "shared texture reused before preprocess completion"
                     );
-                    let submit = capture.copy_center_to(
-                        &image,
-                        &capture_frame.texture,
-                        &capture_frame.capture_ready_fence,
-                        seq,
-                        size,
-                        qpc,
-                    )?;
-                    let metadata = GpuFrameMetadata {
-                        pipeline_id: 1,
-                        generation: 1,
-                        frame_seq: seq,
-                        times: crate::telemetry::FrameTimes {
-                            present: submit.present_qpc,
-                            attempt_start: submit.attempt_start_qpc,
-                            acquired: submit.acquired_qpc,
-                            copy_submitted: submit.copy_submitted_qpc,
-                            ready: submit.ready_qpc,
-                            inference_start: 0,
-                            inference_done: 0,
-                            postprocess_done: 0,
-                        },
-                        capture_ready_value: seq,
-                        desktop_size: submit.desktop_size,
-                        gpu_copy_ms: None,
-                    };
+                    let measure = seq % 2 == 0;
+                    capture.copy_to_target(&image, seq, measure)?;
                     let ticket = preprocess.submit(
-                        metadata,
+                        seq,
                         &inference_frame.capture_ready_fence,
                         &inference_frame.reuse_fence,
+                        completed,
+                        measure,
                     )?;
                     gpu.wait_idle()?;
                     let timing = preprocess.collect(ticket, &inference_frame.reuse_fence)?;
@@ -793,6 +869,93 @@ mod tests {
             let drained = gpu.wait_idle();
             result?;
             drained?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "needs an interactive desktop session and a GPU"]
+    fn gpu_preprocess_matches_the_reference_for_fp32_and_fp16_with_an_odd_width() -> Result<()> {
+        let _serial = GPU_TESTS.lock_recover();
+        let graphics = GraphicsThread::initialize()?;
+        let display = graphics
+            .enumerate_displays()?
+            .into_iter()
+            .next()
+            .context("no desktop display available")?;
+        let capture = graphics.create_capture(display.adapter_index, display.output_index)?;
+        let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
+        let (width, height) = (33, 9);
+        let pixels = width * height;
+        let elements = pixels * COLOR_CHANNELS;
+        let bgra: Vec<u8> = (0..pixels)
+            .flat_map(|index| {
+                [
+                    (index * 7 % 256) as u8,
+                    (index * 13 % 256) as u8,
+                    (index * 31 % 256) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let mut expected = vec![0.0; elements];
+        preprocess_bgra_into(&bgra, width, height, &mut expected)?;
+
+        for precision in [TensorPrecision::Fp32, TensorPrecision::Fp16] {
+            let (capture_frame, inference_frame) =
+                create_shared_frame(&gpu, &capture.transport_device(), width, height)?;
+            capture.write_test_image(&capture_frame, &bgra, (width, height), 1)?;
+            let destination = create_tensor_buffer(&gpu, precision, elements)?;
+            let mut preprocess = GpuPreprocessor::new(
+                &gpu,
+                &inference_frame.resource,
+                &destination,
+                width,
+                height,
+                precision,
+            )?;
+            let result = (|| -> Result<Vec<f32>> {
+                let ticket = preprocess.submit(
+                    1,
+                    &inference_frame.capture_ready_fence,
+                    &inference_frame.reuse_fence,
+                    inference_frame.reuse_completed(),
+                    false,
+                )?;
+                gpu.wait_idle()?;
+                preprocess.collect(ticket, &inference_frame.reuse_fence)?;
+                let bytes =
+                    read_back(&mut gpu, &destination, elements * precision.element_bytes())?;
+                Ok(match precision {
+                    TensorPrecision::Fp32 => bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|chunk| f32::from_le_bytes(*chunk))
+                        .collect(),
+                    TensorPrecision::Fp16 => bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|chunk| half::f16::from_le_bytes(*chunk).to_f32())
+                        .collect(),
+                })
+            })();
+            let drained = gpu.wait_idle();
+            let actual = result?;
+            drained?;
+            let tolerance = match precision {
+                TensorPrecision::Fp32 => 1e-6,
+                // Half precision rounds each value to 11 significant bits.
+                TensorPrecision::Fp16 => 1e-3,
+            };
+            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                anyhow::ensure!(
+                    (actual - expected).abs() <= tolerance,
+                    "{} tensor element {index}: got {actual}, expected {expected}",
+                    precision.label()
+                );
+            }
         }
         Ok(())
     }

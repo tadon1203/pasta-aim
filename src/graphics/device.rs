@@ -93,6 +93,11 @@ impl GpuDeviceContext {
         &self.queue
     }
 
+    /// Whether the D3D12 device was removed or reset.
+    pub fn device_lost(&self) -> bool {
+        super::gpu_diagnostics::d3d12_device_lost(&self.device)
+    }
+
     /// Waits for all work submitted to the compute queue. Teardown/rebuild only.
     pub fn wait_idle(&mut self) -> Result<()> {
         let value = self.next_idle_value;

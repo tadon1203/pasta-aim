@@ -14,7 +14,7 @@ use windows::{
     core::Interface,
 };
 
-use super::{device::GpuDeviceContext, frame::GpuFrameMetadata};
+use super::device::GpuDeviceContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFaultStage {
@@ -158,11 +158,18 @@ pub struct FenceProgress {
     pub reuse_completed: Option<u64>,
 }
 
+/// The pipeline and the frame in which a fault happened. The engine adds the Run generation.
+pub struct FaultSite<'a> {
+    pub pipeline_id: u64,
+    pub prepare_id: &'a str,
+    pub frame_seq: Option<u64>,
+    pub ready_value: Option<u64>,
+    pub stage: GpuFaultStage,
+}
+
 pub fn collect_gpu_fault_report(
     gpu: &GpuDeviceContext,
-    prepare_id: &str,
-    metadata: GpuFrameMetadata,
-    stage: GpuFaultStage,
+    site: FaultSite<'_>,
     fences: FenceProgress,
     error: &Error,
 ) -> GpuFaultReport {
@@ -174,12 +181,12 @@ pub fn collect_gpu_fault_report(
     log_d3d12_messages(gpu.device(), true);
     let removed = d3d12_device_removed_reason(gpu.device());
     GpuFaultReport {
-        pipeline_id: metadata.pipeline_id,
-        prepare_id: prepare_id.to_owned(),
-        generation: Some(metadata.generation),
-        stage,
-        frame_seq: Some(metadata.frame_seq),
-        ready_value: Some(metadata.capture_ready_value),
+        pipeline_id: site.pipeline_id,
+        prepare_id: site.prepare_id.to_owned(),
+        generation: None,
+        stage: site.stage,
+        frame_seq: site.frame_seq,
+        ready_value: site.ready_value,
         ready_completed,
         reuse_value,
         reuse_completed,
