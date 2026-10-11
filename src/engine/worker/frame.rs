@@ -294,7 +294,10 @@ impl SerialStages for FrameStep<'_> {
         }
         let qpc = worker.qpc;
         let output_start_qpc = qpc.now();
-        let outcome = match worker.output_stage.emit(&mut worker.mak, result.detection) {
+        let outcome = match worker
+            .output_stage
+            .emit(&mut worker.makcu, result.detection)
+        {
             Ok(outcome) => outcome,
             Err(error) => {
                 worker.fail_run(format!("Inference output failed: {error:#}"));
@@ -312,7 +315,7 @@ impl SerialStages for FrameStep<'_> {
             gpu_preprocess_ms: result.gpu_preprocess_ms,
             ort_run_wall_ms: result.ort_run_wall_ms,
             postprocess_ms: result.postprocess_ms,
-            mak_write_ms: qpc.elapsed_ms(output_start_qpc, output_complete_qpc),
+            makcu_write_ms: qpc.elapsed_ms(output_start_qpc, output_complete_qpc),
             total_ms: qpc.elapsed_ms(metadata.present_qpc, output_complete_qpc),
         };
         if let Some(trace) = &worker.trace {
@@ -340,7 +343,7 @@ impl SerialStages for FrameStep<'_> {
                 gpu_preprocess_ms = ?timings.gpu_preprocess_ms,
                 ort_run_wall_ms = timings.ort_run_wall_ms,
                 inference_span_ms = qpc.elapsed_ms(started_qpc, ended_qpc),
-                mak_write_ms = timings.mak_write_ms, total_ms = timings.total_ms,
+                makcu_write_ms = timings.makcu_write_ms, total_ms = timings.total_ms,
                 target = ?outcome.target, command = ?outcome.command,
                 "frame pipeline completed"
             );
@@ -374,7 +377,7 @@ mod tests {
             telemetry::{RunSummary, StatusHub},
         },
         inference::{AdapterLuid, Candidates, Detection},
-        mak::MakClient,
+        makcu::MakcuClient,
         metrics::Metrics,
         timing::QpcClock,
     };
@@ -394,7 +397,7 @@ mod tests {
             low_latency: config.low_latency,
             frame_trace: false,
         };
-        let (mak, transport) = MakClient::mock();
+        let (makcu, transport) = MakcuClient::mock();
         let ui_ctx = eframe::egui::Context::default();
         let (event_tx, _) = mpsc::channel();
         let mut worker = Worker {
@@ -423,7 +426,7 @@ mod tests {
             capture_adapter: 0,
             capture_output: 0,
             selected_adapter_luid: AdapterLuid { low: 0, high: 0 },
-            mak,
+            makcu,
             run: RunControl::default(),
             summary: RunSummary::new(),
             metrics: Metrics::new(),

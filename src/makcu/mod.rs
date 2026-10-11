@@ -13,11 +13,11 @@ const RECONNECT_RETRY_WINDOW: Duration = Duration::from_millis(500);
 const DISCONNECT_WAIT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Default)]
-pub struct MakRoutes {
+pub struct MakcuRoutes {
     pub mouse: bool,
 }
 
-impl MakRoutes {
+impl MakcuRoutes {
     fn from_kinds(kinds: DeviceKinds) -> Self {
         Self {
             mouse: kinds.mouse(),
@@ -26,41 +26,41 @@ impl MakRoutes {
 }
 
 #[derive(Debug, Clone)]
-pub struct MakMetadata {
+pub struct MakcuMetadata {
     pub port: String,
     pub firmware: u32,
-    pub routes: MakRoutes,
+    pub routes: MakcuRoutes,
 }
 
 #[derive(Debug)]
-pub enum MakConnectionEvent {
+pub enum MakcuConnectionEvent {
     Disconnected,
     Connecting,
-    Connected(Result<MakMetadata, String>),
+    Connected(Result<MakcuMetadata, String>),
 }
 
-pub struct MakClient {
+pub struct MakcuClient {
     device: Option<Device>,
     events: Option<Receiver<ConnectionState>>,
-    routes: MakRoutes,
+    routes: MakcuRoutes,
     port: Option<String>,
     firmware: Option<u32>,
     injection_api: InjectionApi,
 }
 
-impl Default for MakClient {
+impl Default for MakcuClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MakClient {
+impl MakcuClient {
     #[cfg(test)]
     pub(crate) fn mock() -> (Self, std::sync::Arc<makxd::MockTransport>) {
         let (device, transport) = Device::mock();
         let mut client = Self::new();
         client.device = Some(device);
-        client.routes = MakRoutes { mouse: true };
+        client.routes = MakcuRoutes { mouse: true };
         (client, transport)
     }
 
@@ -68,50 +68,50 @@ impl MakClient {
         Self {
             device: None,
             events: None,
-            routes: MakRoutes::default(),
+            routes: MakcuRoutes::default(),
             port: None,
             firmware: None,
             injection_api: InjectionApi::default(),
         }
     }
 
-    pub fn connect_initial(&mut self) -> Result<MakMetadata> {
-        tracing::info!("connecting to MAK device");
+    pub fn connect_initial(&mut self) -> Result<MakcuMetadata> {
+        tracing::info!("connecting to MAKCU device");
         self.connect_with_port(None, true)
     }
 
-    pub fn refresh_routes(&mut self) -> Result<MakMetadata> {
-        tracing::info!(preferred_port = ?self.port, "refreshing MAK routes");
+    pub fn refresh_routes(&mut self) -> Result<MakcuMetadata> {
+        tracing::info!(preferred_port = ?self.port, "refreshing MAKCU routes");
         let preferred_port = self.port.clone();
         self.disconnect_for_reconnect()?;
         self.connect_after_shutdown(preferred_port.as_deref(), true)
     }
 
-    pub fn rescan(&mut self) -> Result<MakMetadata> {
-        tracing::info!("rescanning MAK devices");
+    pub fn rescan(&mut self) -> Result<MakcuMetadata> {
+        tracing::info!("rescanning MAKCU devices");
         self.disconnect_for_reconnect()?;
         self.connect_after_shutdown(None, true)
     }
 
-    pub fn poll_connection_event(&mut self) -> Option<MakConnectionEvent> {
+    pub fn poll_connection_event(&mut self) -> Option<MakcuConnectionEvent> {
         let event = self.events.as_ref()?.try_recv().ok()?;
         match event {
             ConnectionState::Disconnected => {
-                tracing::warn!("MAK disconnected");
-                self.routes = MakRoutes::default();
-                Some(MakConnectionEvent::Disconnected)
+                tracing::warn!("MAKCU disconnected");
+                self.routes = MakcuRoutes::default();
+                Some(MakcuConnectionEvent::Disconnected)
             }
             ConnectionState::Connecting => {
-                tracing::info!("MAK reconnecting");
-                self.routes = MakRoutes::default();
-                Some(MakConnectionEvent::Connecting)
+                tracing::info!("MAKCU reconnecting");
+                self.routes = MakcuRoutes::default();
+                Some(MakcuConnectionEvent::Connecting)
             }
             ConnectionState::Connected => {
-                tracing::info!("MAK connected; refreshing metadata");
+                tracing::info!("MAKCU connected; refreshing metadata");
                 let metadata = self
                     .refresh_metadata()
                     .map_err(|error| format!("{error:#}"));
-                Some(MakConnectionEvent::Connected(metadata))
+                Some(MakcuConnectionEvent::Connected(metadata))
             }
         }
     }
@@ -130,7 +130,7 @@ impl MakClient {
             return Ok(());
         }
         self.injection_api = api;
-        tracing::info!(injection_api = ?self.injection_api, "MAK injection API changed");
+        tracing::info!(injection_api = ?self.injection_api, "MAKCU injection API changed");
         Ok(())
     }
 
@@ -140,30 +140,30 @@ impl MakClient {
 
     pub fn move_mouse(&mut self, x: i32, y: i32) -> Result<()> {
         if !self.mouse_available() {
-            bail!("MAK reports no mouse route");
+            bail!("MAKCU reports no mouse route");
         }
         let x = x.clamp(i16::MIN as i32, i16::MAX as i32);
         let y = y.clamp(i16::MIN as i32, i16::MAX as i32);
         let started = Instant::now();
         self.connected_device()?
             .move_xy_with_api(sdk_command_api(self.injection_api), x, y)
-            .context("MAK mouse move failed")?;
-        if crate::logging::mak_command_trace_enabled() {
+            .context("MAKCU mouse move failed")?;
+        if crate::logging::makcu_command_trace_enabled() {
             tracing::trace!(
                 x,
                 y,
                 injection_api = ?self.injection_api,
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-                "MAK mouse command completed"
+                "MAKCU mouse command completed"
             );
         }
         Ok(())
     }
 
     fn connected_device(&self) -> Result<&Device> {
-        let device = self.device.as_ref().context("MAK is not connected")?;
+        let device = self.device.as_ref().context("MAKCU is not connected")?;
         if !device.is_connected() {
-            bail!("MAK transport is not connected");
+            bail!("MAKCU transport is not connected");
         }
         Ok(device)
     }
@@ -172,7 +172,7 @@ impl MakClient {
         &mut self,
         preferred_port: Option<&str>,
         allow_scan: bool,
-    ) -> Result<MakMetadata> {
+    ) -> Result<MakcuMetadata> {
         if let Some(port) = preferred_port {
             let started = Instant::now();
             let mut last_error = None;
@@ -201,13 +201,13 @@ impl MakClient {
         &mut self,
         preferred_port: Option<&str>,
         allow_scan: bool,
-    ) -> Result<MakMetadata> {
+    ) -> Result<MakcuMetadata> {
         let device = if let Some(port) = preferred_port {
             match Device::connect_port(port) {
                 Ok(device) => device,
                 Err(port_error) if allow_scan => Device::connect().with_context(|| {
                     format!(
-                        "failed to reconnect on {port} ({port_error}); automatic MAK scan also failed"
+                        "failed to reconnect on {port} ({port_error}); automatic MAKCU scan also failed"
                     )
                 })?,
                 Err(error) => {
@@ -215,34 +215,34 @@ impl MakClient {
                 }
             }
         } else {
-            Device::connect().context("MAK device not found")?
+            Device::connect().context("MAKCU device not found")?
         };
         self.accept_connected_device(device)
     }
 
-    fn accept_connected_device(&mut self, device: Device) -> Result<MakMetadata> {
+    fn accept_connected_device(&mut self, device: Device) -> Result<MakcuMetadata> {
         self.events = Some(device.connection_events());
         self.device = Some(device);
         self.refresh_metadata()
     }
 
-    fn refresh_metadata(&mut self) -> Result<MakMetadata> {
+    fn refresh_metadata(&mut self) -> Result<MakcuMetadata> {
         let device = self.connected_device()?;
         let kinds = device
             .device()
-            .context("failed to read MAK routed device kinds")?;
+            .context("failed to read MAKCU routed device kinds")?;
         let firmware = device
             .firmware_version()
-            .context("failed to read MAK firmware version")?;
+            .context("failed to read MAKCU firmware version")?;
         let port = device.port_name();
-        let routes = MakRoutes::from_kinds(kinds);
+        let routes = MakcuRoutes::from_kinds(kinds);
 
         self.routes = routes.clone();
         self.firmware = Some(firmware);
         self.port = Some(port.clone());
-        tracing::info!(port = %port, firmware, mouse_route = routes.mouse, "MAK metadata refreshed");
+        tracing::info!(port = %port, firmware, mouse_route = routes.mouse, "MAKCU metadata refreshed");
 
-        Ok(MakMetadata {
+        Ok(MakcuMetadata {
             port,
             firmware,
             routes,
@@ -250,15 +250,15 @@ impl MakClient {
     }
 
     fn disconnect_for_reconnect(&mut self) -> Result<()> {
-        tracing::debug!("disconnecting MAK for reconnect");
+        tracing::debug!("disconnecting MAKCU for reconnect");
         if let Some(device) = &self.device {
             device
                 .disconnect_wait(DISCONNECT_WAIT)
-                .context("MAK transport did not finish teardown before reconnect")?;
+                .context("MAKCU transport did not finish teardown before reconnect")?;
         }
         self.events = None;
         self.device = None;
-        self.routes = MakRoutes::default();
+        self.routes = MakcuRoutes::default();
         self.firmware = None;
         Ok(())
     }
@@ -271,9 +271,9 @@ fn sdk_command_api(api: InjectionApi) -> CommandApi {
     }
 }
 
-impl Drop for MakClient {
+impl Drop for MakcuClient {
     fn drop(&mut self) {
-        tracing::debug!("shutting down MAK session");
+        tracing::debug!("shutting down MAKCU session");
         if let Some(device) = &self.device {
             device.disconnect();
         }
@@ -287,12 +287,12 @@ mod tests {
 
     #[test]
     fn only_the_mouse_route_is_reported() {
-        let routes = MakRoutes::from_kinds(DeviceKinds {
+        let routes = MakcuRoutes::from_kinds(DeviceKinds {
             kinds: DeviceKind::Mouse as u8 | DeviceKind::DualSenseDs5 as u8,
         });
         assert!(routes.mouse);
 
-        let routes = MakRoutes::from_kinds(DeviceKinds {
+        let routes = MakcuRoutes::from_kinds(DeviceKinds {
             kinds: DeviceKind::XboxGip as u8,
         });
         assert!(!routes.mouse);
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn injection_api_switch_takes_effect() {
-        let mut client = MakClient::new();
+        let mut client = MakcuClient::new();
         client.set_injection_api(InjectionApi::KmApi).unwrap();
         assert_eq!(client.injection_api(), InjectionApi::KmApi);
     }

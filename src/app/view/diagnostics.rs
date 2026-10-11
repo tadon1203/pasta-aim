@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::{
-    labels::{capture_phase_label, mak_phase_label, model_phase_label},
+    labels::{capture_phase_label, makcu_phase_label, model_phase_label},
     widgets::{error_label, warn_label},
 };
 use crate::{
@@ -172,17 +172,17 @@ impl App {
                             ui.end_row();
                         }
 
-                        ui.label("MAK state");
-                        ui.label(mak_phase_label(status.mak.phase));
+                        ui.label("MAKCU state");
+                        ui.label(makcu_phase_label(status.makcu.phase));
                         ui.end_row();
 
-                        if let Some(port) = &status.mak.port {
-                            ui.label("MAK port");
+                        if let Some(port) = &status.makcu.port {
+                            ui.label("MAKCU port");
                             ui.label(port);
                             ui.end_row();
                         }
-                        if let Some(firmware) = status.mak.firmware {
-                            ui.label("MAK firmware");
+                        if let Some(firmware) = status.makcu.firmware {
+                            ui.label("MAKCU firmware");
                             ui.label(firmware.to_string());
                             ui.end_row();
                         }
@@ -281,7 +281,7 @@ impl App {
                 None => format!("{w}x{h}"),
             })
             .unwrap_or_else(|| "Unknown".to_owned());
-        let mak_routes = format!("mouse={}", status.mak.routes.mouse);
+        let makcu_routes = format!("mouse={}", status.makcu.routes.mouse);
         let xinput = self
             .hotkeys
             .xinput_slot()
@@ -291,7 +291,7 @@ impl App {
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {} · port={} · firmware={}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             status
                 .capture
@@ -300,10 +300,10 @@ impl App {
                 .map(|display| display.adapter_name.as_str())
                 .unwrap_or("Unavailable"),
             ep_assignment_copy_text(status),
-            mak_phase_label(status.mak.phase),
-            status.mak.port.as_deref().unwrap_or("unknown"),
+            makcu_phase_label(status.makcu.phase),
+            status.makcu.port.as_deref().unwrap_or("unknown"),
             status
-                .mak
+                .makcu
                 .firmware
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_owned()),
@@ -545,14 +545,14 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
             metric_row(ui, "GPU preprocess", performance.preprocess);
             metric_row(ui, "Inference", performance.inference);
             metric_row(ui, "Postprocess", performance.postprocess);
-            metric_row(ui, "MAK write", performance.mak_write);
+            metric_row(ui, "MAKCU write", performance.makcu_write);
             metric_row(ui, "Cadence", performance.cadence);
         });
 
     if let Some(cold) = performance.cold_run {
         ui.small(format!("Cold run total: {:.2} ms", cold.total_ms));
     }
-    ui.small("Pipeline: DXGI LastPresentTime → MAK write completion");
+    ui.small("Pipeline: DXGI LastPresentTime → MAKCU write completion");
 }
 
 fn metric_row(ui: &mut egui::Ui, name: &str, metric: MetricSummary) {

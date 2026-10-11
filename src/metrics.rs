@@ -20,7 +20,7 @@ pub struct StageTimings {
     pub gpu_preprocess_ms: Option<f64>,
     pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
-    pub mak_write_ms: f64,
+    pub makcu_write_ms: f64,
     pub total_ms: f64,
 }
 
@@ -53,7 +53,7 @@ pub struct PerformanceSnapshot {
     pub preprocess: MetricSummary,
     pub inference: MetricSummary,
     pub postprocess: MetricSummary,
-    pub mak_write: MetricSummary,
+    pub makcu_write: MetricSummary,
     pub total: MetricSummary,
     pub capture_source: CaptureSourceMetrics,
     pub gpu_drop_counts: GpuDropCounts,
@@ -190,8 +190,8 @@ impl Metrics {
             postprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.postprocess_ms)
             }),
-            mak_write: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.mak_write_ms)
+            makcu_write: summarize_samples(&self.samples, &mut scratch, |sample| {
+                Some(sample.timings.makcu_write_ms)
             }),
             total: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.total_ms)

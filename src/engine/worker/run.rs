@@ -134,12 +134,12 @@ impl Worker {
     }
 
     pub(super) fn run_block_reason(&self) -> Option<String> {
-        let mak = &self.mak;
+        let makcu = &self.makcu;
         run_block_reason(RunReadiness {
             model_ready: self.model_ready,
             capture_ready: self.status.get().capture.phase == CapturePhase::Ready,
-            mak_connected: mak.is_connected(),
-            mouse_route: mak.mouse_available(),
+            makcu_connected: makcu.is_connected(),
+            mouse_route: makcu.mouse_available(),
         })
         .map(str::to_owned)
     }

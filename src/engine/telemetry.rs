@@ -118,7 +118,7 @@ impl RunSummary {
             fps = performance.fps,
             capture_p50_ms = performance.capture.p50_ms,
             inference_p50_ms = performance.inference.p50_ms,
-            mak_write_p50_ms = performance.mak_write.p50_ms,
+            makcu_write_p50_ms = performance.makcu_write.p50_ms,
             pipeline_p50_ms = performance.total.p50_ms,
             stale_generation = drops.get(GpuDropReason::StaleGeneration),
             pipeline_poisoned = drops.get(GpuDropReason::PipelinePoisoned),

@@ -4,7 +4,7 @@ use super::loop_metrics::LoopSnapshot;
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
-    mak::MakRoutes,
+    makcu::MakcuRoutes,
     metrics::PerformanceSnapshot,
 };
 
@@ -128,7 +128,7 @@ impl Default for CaptureStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MakPhase {
+pub enum MakcuPhase {
     Connecting,
     Connected,
     Reconnecting,
@@ -136,21 +136,21 @@ pub enum MakPhase {
 }
 
 #[derive(Debug, Clone)]
-pub struct MakStatus {
-    pub phase: MakPhase,
+pub struct MakcuStatus {
+    pub phase: MakcuPhase,
     pub port: Option<String>,
     pub firmware: Option<u32>,
-    pub routes: MakRoutes,
+    pub routes: MakcuRoutes,
     pub error: Option<String>,
 }
 
-impl Default for MakStatus {
+impl Default for MakcuStatus {
     fn default() -> Self {
         Self {
-            phase: MakPhase::Connecting,
+            phase: MakcuPhase::Connecting,
             port: None,
             firmware: None,
-            routes: MakRoutes::default(),
+            routes: MakcuRoutes::default(),
             error: None,
         }
     }
@@ -188,7 +188,7 @@ impl Default for RunStatus {
 pub(super) struct RunReadiness {
     pub model_ready: bool,
     pub capture_ready: bool,
-    pub mak_connected: bool,
+    pub makcu_connected: bool,
     pub mouse_route: bool,
 }
 
@@ -199,8 +199,8 @@ pub(super) fn run_block_reason(readiness: RunReadiness) -> Option<&'static str> 
     if !readiness.capture_ready {
         return Some("DXGI capture is not ready");
     }
-    if !readiness.mak_connected {
-        return Some("MAK is not connected");
+    if !readiness.makcu_connected {
+        return Some("MAKCU is not connected");
     }
     if !readiness.mouse_route {
         return Some("Mouse route is unavailable");
@@ -213,7 +213,7 @@ pub struct EngineStatus {
     pub graphics: GraphicsStatus,
     pub model: ModelStatus,
     pub capture: CaptureStatus,
-    pub mak: MakStatus,
+    pub makcu: MakcuStatus,
     pub run: RunStatus,
     pub performance: PerformanceSnapshot,
     pub tracking: LoopSnapshot,
@@ -224,8 +224,9 @@ impl EngineStatus {
         RunReadiness {
             model_ready: self.model.phase == ModelPhase::Ready,
             capture_ready: self.capture.phase == CapturePhase::Ready,
-            mak_connected: self.mak.phase == MakPhase::Connected && self.mak.error.is_none(),
-            mouse_route: self.mak.routes.mouse,
+            makcu_connected: self.makcu.phase == MakcuPhase::Connected
+                && self.makcu.error.is_none(),
+            mouse_route: self.makcu.routes.mouse,
         }
     }
 
@@ -249,8 +250,8 @@ mod tests {
         let mut status = EngineStatus::default();
         status.model.phase = ModelPhase::Ready;
         status.capture.phase = CapturePhase::Ready;
-        status.mak.phase = MakPhase::Connected;
-        status.mak.routes.mouse = true;
+        status.makcu.phase = MakcuPhase::Connected;
+        status.makcu.routes.mouse = true;
         status
     }
 
@@ -262,15 +263,15 @@ mod tests {
     #[test]
     fn missing_mouse_route_blocks_output() {
         let mut status = ready_status();
-        status.mak.routes.mouse = false;
+        status.makcu.routes.mouse = false;
         assert_eq!(status.block_reason(), Some("Mouse route is unavailable"));
     }
 
     #[test]
-    fn disconnected_mak_blocks_output() {
+    fn disconnected_makcu_blocks_output() {
         let mut status = ready_status();
-        status.mak.phase = MakPhase::Reconnecting;
-        assert_eq!(status.block_reason(), Some("MAK is not connected"));
+        status.makcu.phase = MakcuPhase::Reconnecting;
+        assert_eq!(status.block_reason(), Some("MAKCU is not connected"));
     }
 
     #[test]

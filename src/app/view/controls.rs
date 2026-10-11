@@ -46,7 +46,7 @@ impl App {
                 }
             });
 
-            if !status.mak.routes.mouse {
+            if !status.makcu.routes.mouse {
                 warn_label(ui, "Waiting for a mouse route.");
             }
         });

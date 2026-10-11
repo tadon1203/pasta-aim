@@ -1,4 +1,4 @@
-use crate::engine::{CapturePhase, MakPhase, ModelPhase};
+use crate::engine::{CapturePhase, MakcuPhase, ModelPhase};
 
 pub(super) fn model_phase_label(phase: ModelPhase) -> &'static str {
     match phase {
@@ -16,20 +16,20 @@ pub(super) fn capture_phase_label(phase: CapturePhase) -> &'static str {
     }
 }
 
-pub(super) fn mak_phase_label(phase: MakPhase) -> &'static str {
+pub(super) fn makcu_phase_label(phase: MakcuPhase) -> &'static str {
     match phase {
-        MakPhase::Connecting => "Connecting",
-        MakPhase::Connected => "Connected",
-        MakPhase::Reconnecting => "Reconnecting",
-        MakPhase::Failed => "Disconnected",
+        MakcuPhase::Connecting => "Connecting",
+        MakcuPhase::Connected => "Connected",
+        MakcuPhase::Reconnecting => "Reconnecting",
+        MakcuPhase::Failed => "Disconnected",
     }
 }
 
-pub(super) fn mak_phase_mark(phase: MakPhase) -> &'static str {
+pub(super) fn makcu_phase_mark(phase: MakcuPhase) -> &'static str {
     match phase {
-        MakPhase::Connected => "●",
-        MakPhase::Connecting | MakPhase::Reconnecting => "◌",
-        MakPhase::Failed => "○",
+        MakcuPhase::Connected => "●",
+        MakcuPhase::Connecting | MakcuPhase::Reconnecting => "◌",
+        MakcuPhase::Failed => "○",
     }
 }
 

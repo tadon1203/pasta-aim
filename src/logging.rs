@@ -14,7 +14,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, registry::Registry, reload};
 use crate::{config::LogLevel, paths};
 
 static FRAME_TRACE: AtomicBool = AtomicBool::new(false);
-static MAK_COMMAND_TRACE: AtomicBool = AtomicBool::new(false);
+static MAKCU_COMMAND_TRACE: AtomicBool = AtomicBool::new(false);
 static LEVEL_HANDLE: OnceLock<reload::Handle<tracing_subscriber::filter::LevelFilter, Registry>> =
     OnceLock::new();
 
@@ -22,14 +22,14 @@ pub fn frame_trace_enabled() -> bool {
     FRAME_TRACE.load(Ordering::Acquire)
 }
 
-pub fn mak_command_trace_enabled() -> bool {
-    MAK_COMMAND_TRACE.load(Ordering::Acquire)
+pub fn makcu_command_trace_enabled() -> bool {
+    MAKCU_COMMAND_TRACE.load(Ordering::Acquire)
 }
 
 pub fn set_level(level: LogLevel) {
     let trace = level == LogLevel::Trace;
     FRAME_TRACE.store(trace, Ordering::Release);
-    MAK_COMMAND_TRACE.store(trace, Ordering::Release);
+    MAKCU_COMMAND_TRACE.store(trace, Ordering::Release);
     makxd::set_command_trace(trace);
 
     if let Some(handle) = LEVEL_HANDLE.get()

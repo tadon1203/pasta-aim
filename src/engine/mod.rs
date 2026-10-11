@@ -18,7 +18,7 @@ pub(super) enum RunMode {
 
 pub use loop_metrics::LoopSnapshot;
 pub use status::{
-    CapturePhase, EngineStatus, MakPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
+    CapturePhase, EngineStatus, MakcuPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
     ep_assignment_summary, provider_display_name,
 };
 
@@ -84,8 +84,8 @@ pub enum Command {
     },
     SetContinuous(bool),
     RunOnce,
-    RefreshMakRoutes,
-    RescanMak,
+    RefreshMakcuRoutes,
+    RescanMakcu,
     RetryCapture,
     RescanDisplays,
     Shutdown,

@@ -15,7 +15,7 @@ mod inference;
 #[cfg(windows)]
 mod logging;
 #[cfg(windows)]
-mod mak;
+mod makcu;
 #[cfg(windows)]
 mod metrics;
 #[cfg(windows)]

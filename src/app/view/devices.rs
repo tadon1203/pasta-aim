@@ -1,12 +1,12 @@
 use eframe::egui;
 
 use super::{
-    labels::{mak_phase_label, mak_phase_mark, route_label},
+    labels::{makcu_phase_label, makcu_phase_mark, route_label},
     widgets::error_label,
 };
 use crate::{
     app::App,
-    engine::{Command, EngineStatus, MakPhase, RunPhase},
+    engine::{Command, EngineStatus, MakcuPhase, RunPhase},
     graphics::DisplayInfo,
 };
 
@@ -54,19 +54,19 @@ impl App {
                 .num_columns(2)
                 .spacing([18.0, 6.0])
                 .show(ui, |ui| {
-                    ui.label("MAK");
+                    ui.label("MAKCU");
                     ui.horizontal(|ui| {
-                        ui.label(mak_phase_mark(status.mak.phase));
-                        ui.label(mak_phase_label(status.mak.phase));
-                        if let Some(port) = &status.mak.port {
+                        ui.label(makcu_phase_mark(status.makcu.phase));
+                        ui.label(makcu_phase_label(status.makcu.phase));
+                        if let Some(port) = &status.makcu.port {
                             ui.weak(format!("· {port}"));
                         }
-                        if let Some(firmware) = status.mak.firmware {
+                        if let Some(firmware) = status.makcu.firmware {
                             ui.weak(format!("· FW {firmware}"));
                         }
                         if matches!(
-                            status.mak.phase,
-                            MakPhase::Connecting | MakPhase::Reconnecting
+                            status.makcu.phase,
+                            MakcuPhase::Connecting | MakcuPhase::Reconnecting
                         ) {
                             ui.spinner();
                         }
@@ -74,7 +74,7 @@ impl App {
                     ui.end_row();
 
                     ui.label("Mouse route");
-                    ui.label(route_label(status.mak.routes.mouse));
+                    ui.label(route_label(status.makcu.routes.mouse));
                     ui.end_row();
 
                     ui.label("XInput hotkey pad");
@@ -87,27 +87,27 @@ impl App {
                     ui.end_row();
                 });
 
-            ui.horizontal(|ui| match status.mak.phase {
-                MakPhase::Connected => {
+            ui.horizontal(|ui| match status.makcu.phase {
+                MakcuPhase::Connected => {
                     if ui.button("Refresh routes").clicked() {
-                        self.engine.send(Command::RefreshMakRoutes);
+                        self.engine.send(Command::RefreshMakcuRoutes);
                     }
                     if ui.button("Rescan device").clicked() {
-                        self.engine.send(Command::RescanMak);
+                        self.engine.send(Command::RescanMakcu);
                     }
                 }
-                MakPhase::Connecting | MakPhase::Reconnecting => {
+                MakcuPhase::Connecting | MakcuPhase::Reconnecting => {
                     ui.add_enabled(false, egui::Button::new("Connecting…"));
                 }
-                MakPhase::Failed => {
-                    if ui.button("Connect MAK").clicked() {
-                        self.engine.send(Command::RescanMak);
+                MakcuPhase::Failed => {
+                    if ui.button("Connect MAKCU").clicked() {
+                        self.engine.send(Command::RescanMakcu);
                     }
                 }
             });
 
-            if let Some(error) = &status.mak.error {
-                error_label(ui, format!("MAK: {error}"));
+            if let Some(error) = &status.makcu.error {
+                error_label(ui, format!("MAKCU: {error}"));
             }
         });
     }

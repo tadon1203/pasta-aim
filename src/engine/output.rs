@@ -5,7 +5,7 @@ use anyhow::Result;
 use super::target_track::{TargetTracker, Track};
 use crate::{
     inference::Detection,
-    mak::MakClient,
+    makcu::MakcuClient,
     settings::{MaxDelta, Sensitivity, TargetYOffset},
 };
 
@@ -19,7 +19,7 @@ pub(super) struct OutputSettings {
 
 /// `(dx, dy, confidence, class_id)` relative to the model input center.
 pub(super) type TargetInfo = (f32, f32, f32, i32);
-/// `(x, y)` actually submitted to MAK.
+/// `(x, y)` actually submitted to MAKCU.
 pub(super) type CommandInfo = (i32, i32);
 
 pub(super) struct OutputOutcome {
@@ -115,7 +115,7 @@ impl OutputStage {
     /// Submits the mouse movement for one frame, if there is a target to move to.
     pub(super) fn emit(
         &mut self,
-        mak: &mut MakClient,
+        makcu: &mut MakcuClient,
         detection: Option<Detection>,
     ) -> Result<OutputOutcome> {
         let track = self.tracker.update(detection.as_ref());
@@ -141,7 +141,7 @@ impl OutputStage {
                 planned: Some(movement),
             });
         };
-        mak.move_mouse(x, y)?;
+        makcu.move_mouse(x, y)?;
         Ok(OutputOutcome {
             target: Some(target),
             command: Some((x, y)),

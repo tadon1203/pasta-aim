@@ -2,7 +2,7 @@
 
 mod capture;
 mod frame;
-mod mak;
+mod makcu;
 mod model;
 mod recovery;
 mod run;
@@ -27,14 +27,14 @@ use crate::{
     config::Config,
     graphics::{DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
-    mak::MakClient,
+    makcu::MakcuClient,
     metrics::Metrics,
     models,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     timing::QpcClock,
 };
 
-/// How often the engine polls MAK connection state when no other event wakes it.
+/// How often the engine polls MAKCU connection state when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Settings applied directly to the serial pipeline.
@@ -74,7 +74,7 @@ struct Worker {
     capture_output: u32,
     selected_adapter_luid: AdapterLuid,
 
-    mak: MakClient,
+    makcu: MakcuClient,
     run: RunControl,
     summary: RunSummary,
     metrics: Metrics,
@@ -144,7 +144,7 @@ pub(super) fn run_worker(
         low_latency: config.low_latency,
         frame_trace: config.diagnostics.frame_trace,
     };
-    let mak = MakClient::new();
+    let makcu = MakcuClient::new();
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
         event_tx,
@@ -169,7 +169,7 @@ pub(super) fn run_worker(
         capture_adapter: 0,
         capture_output: config.capture_output,
         selected_adapter_luid: config.selected_adapter,
-        mak,
+        makcu,
         run: RunControl::default(),
         summary: RunSummary::new(),
         metrics: Metrics::new(),
@@ -179,10 +179,10 @@ pub(super) fn run_worker(
 
     worker.refresh_capture_catalog();
     worker.initialize_capture();
-    if let Err(error) = worker.mak.set_injection_api(config.injection_api) {
+    if let Err(error) = worker.makcu.set_injection_api(config.injection_api) {
         tracing::error!(error = %format!("{error:#}"), "initial injection API setup failed");
     }
-    worker.connect_mak_initial();
+    worker.connect_makcu_initial();
     if let Some(name) = config.model {
         match models::resolve_model(&name) {
             Ok(path) => worker.load_model(false, name, path),
@@ -199,10 +199,10 @@ pub(super) fn run_worker(
 }
 
 impl Worker {
-    /// Periodic work that no event triggers: MAK connection changes and
+    /// Periodic work that no event triggers: MAKCU connection changes and
     /// folding capture-side counters into metrics.
     fn housekeeping(&mut self) {
-        self.poll_mak_events();
+        self.poll_makcu_events();
     }
 
     fn event_loop(&mut self, rx: &Receiver<Command>) {
@@ -303,7 +303,7 @@ impl Worker {
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetInjectionApi(api) => {
-                let result = self.mak.set_injection_api(api);
+                let result = self.makcu.set_injection_api(api);
                 match result {
                     Ok(()) => {}
                     Err(error) => {
@@ -322,10 +322,10 @@ impl Worker {
             }
             Command::SetContinuous(active) => self.set_continuous(active),
             Command::RunOnce => self.run_once(),
-            Command::RefreshMakRoutes => {
-                self.reconnect_mak("refreshing", MakClient::refresh_routes)
+            Command::RefreshMakcuRoutes => {
+                self.reconnect_makcu("refreshing", MakcuClient::refresh_routes)
             }
-            Command::RescanMak => self.reconnect_mak("rescanning", MakClient::rescan),
+            Command::RescanMakcu => self.reconnect_makcu("rescanning", MakcuClient::rescan),
             Command::RetryCapture => {
                 self.auto_reprepare_attempted = false;
                 self.retry_suspended_pipeline();
