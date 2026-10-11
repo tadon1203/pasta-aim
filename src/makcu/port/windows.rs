@@ -22,9 +22,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{HKEY, KEY_READ, REG_SZ, RegCloseKey, RegQueryValueExW};
-use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, ResetEvent, WaitForSingleObject,
-};
+use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, WaitForSingleObject};
 
 use super::{Connector, Port, makcu_ports};
 
@@ -192,7 +190,7 @@ impl WindowsPort {
         let mut overlapped: OVERLAPPED = unsafe { mem::zeroed() };
         overlapped.hEvent = self.event;
         let mut transferred = 0u32;
-        check(unsafe { ResetEvent(self.event) })?;
+        // `ReadFile` and `WriteFile` reset the event of the `OVERLAPPED` when they start.
         let started = unsafe {
             if write {
                 WriteFile(self.handle, buffer, len, ptr::null_mut(), &mut overlapped)

@@ -8,8 +8,10 @@ use std::{
 
 use eframe::egui;
 
-use super::{EngineStatus, output::CommandInfo};
-use crate::{graphics::GpuDropReason, metrics::PerformanceSnapshot, sync::MutexExt};
+use super::EngineStatus;
+use crate::{
+    graphics::GpuDropReason, makcu::Movement, metrics::PerformanceSnapshot, sync::MutexExt,
+};
 
 /// Upper bound on how often the UI sees status changes (and is asked to repaint).
 /// The inference loop can run at several hundred Hz; the UI must not follow it.
@@ -77,7 +79,7 @@ pub(super) struct RunSummary {
     started: Instant,
     frames: usize,
     detections: usize,
-    last_command: Option<CommandInfo>,
+    last_command: Option<Movement>,
 }
 
 impl RunSummary {
@@ -94,7 +96,7 @@ impl RunSummary {
         *self = Self::new();
     }
 
-    pub(super) fn record(&mut self, detected: bool, command: Option<CommandInfo>) {
+    pub(super) fn record(&mut self, detected: bool, command: Option<Movement>) {
         self.frames += 1;
         self.detections += usize::from(detected);
         if command.is_some() {

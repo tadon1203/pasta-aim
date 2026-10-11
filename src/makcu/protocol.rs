@@ -119,22 +119,41 @@ impl Request {
 }
 
 /// One packet from MAKCU. See "Packet" in `docs/makcu-protocol.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The payload is kept in the packet, so a packet is `Copy` and needs no heap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Packet {
     pub cmd: u8,
-    pub payload: Vec<u8>,
+    len: u8,
+    bytes: [u8; MAX_PAYLOAD],
+}
+
+impl Packet {
+    /// `payload` is at most `MAX_PAYLOAD` bytes long. The decoder checks that before it makes a packet.
+    fn new(cmd: u8, payload: &[u8]) -> Self {
+        let mut bytes = [0; MAX_PAYLOAD];
+        bytes[..payload.len()].copy_from_slice(payload);
+        Self {
+            cmd,
+            len: payload.len() as u8,
+            bytes,
+        }
+    }
+
+    pub(super) fn payload(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
 }
 
 /// A reject has the command of the request and the payload `FF`. See "Reject form" in `docs/makcu-protocol.md`.
 /// `INTERPOLATE 255` is the exception: its accepted echo has the same bytes, so it is never a reject.
 pub(super) fn is_reject(request: &Request, packet: &Packet) -> bool {
-    packet.payload == [0xFF] && *request != Request::Interpolate(255)
+    packet.payload() == [0xFF] && *request != Request::Interpolate(255)
 }
 
 /// Whether the reply to `INTERPOLATE value` confirms the value. Auto (255) is never checked,
 /// because a reject of Auto has the same bytes as its echo.
 pub(super) fn is_interpolate_echo(value: u8, packet: &Packet) -> bool {
-    value == 255 || packet.payload == [value]
+    value == 255 || packet.payload() == [value]
 }
 
 /// The replies of the Raw moves go to the ledger, not to a request. See "Reply payload" in `docs/makcu-protocol.md`.
@@ -149,9 +168,9 @@ pub(super) struct PacketDecoder {
 }
 
 impl PacketDecoder {
-    pub(super) fn feed(&mut self, bytes: &[u8]) -> Vec<Packet> {
+    /// Calls `on_packet` for each packet that is complete.
+    pub(super) fn feed(&mut self, bytes: &[u8], mut on_packet: impl FnMut(Packet)) {
         self.buffer.extend_from_slice(bytes);
-        let mut packets = Vec::new();
         let mut start = 0;
         loop {
             let rest = &self.buffer[start..];
@@ -175,14 +194,10 @@ impl PacketDecoder {
             if rest.len() < total {
                 break;
             }
-            packets.push(Packet {
-                cmd: rest[4],
-                payload: rest[5..total].to_vec(),
-            });
+            on_packet(Packet::new(rest[4], &rest[5..total]));
             start += total;
         }
         self.buffer.drain(..start);
-        packets
     }
 }
 
@@ -273,7 +288,7 @@ pub(super) enum RawReply {
 
 /// Reads the reply of an id. The metadata reply is not one, and gives `None`.
 pub(super) fn parse_raw_reply(packet: &Packet) -> Option<RawReply> {
-    let [state, reason, a, b, c, d] = *packet.payload.as_slice() else {
+    let [state, reason, a, b, c, d] = *packet.payload() else {
         return None;
     };
     let state = RawState::from_wire(state)?;
@@ -352,28 +367,26 @@ impl RawLedger {
         }
     }
 
-    /// The `RAW_STATUS` requests that are due now. Empty most of the time.
+    /// Appends the `RAW_STATUS` requests that are due now to `out`. Adds nothing most of the time.
     ///
     /// A final result gets its consume. Every `RAW_COLLECT_EVERY` submits, each older
     /// id that is not final gets a peek.
-    pub(super) fn due_requests(&mut self) -> Vec<Request> {
-        let mut due = Vec::new();
+    pub(super) fn due_requests(&mut self, out: &mut Vec<Request>) {
         self.pending.retain(|&id, &mut is_final| {
             if is_final {
-                due.push(Request::RawStatus { id, consume: true });
+                out.push(Request::RawStatus { id, consume: true });
             }
             !is_final
         });
         if self.submits_since_collect >= RAW_COLLECT_EVERY {
             self.submits_since_collect = 0;
-            due.extend(
+            out.extend(
                 self.pending
                     .keys()
                     .filter(|&&id| id < self.newest_id)
                     .map(|&id| Request::RawStatus { id, consume: false }),
             );
         }
-        due
     }
 
     pub(super) fn stats(&self) -> RawStats {
@@ -420,6 +433,19 @@ mod tests {
         let mut bytes = vec![0xDE, 0xAD, payload.len() as u8, 0, cmd];
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    /// The packets of `bytes`, fed in one call.
+    fn decode(bytes: &[u8]) -> Vec<Packet> {
+        let mut packets = Vec::new();
+        PacketDecoder::default().feed(bytes, |packet| packets.push(packet));
+        packets
+    }
+
+    fn collect_due(ledger: &mut RawLedger) -> Vec<Request> {
+        let mut out = Vec::new();
+        ledger.due_requests(&mut out);
+        out
     }
 
     #[test]
@@ -501,18 +527,11 @@ mod tests {
     fn decoder_returns_joined_packets() {
         let mut bytes = packet(0x04, &[0xEE, 0x0F, 0, 0]);
         bytes.extend(packet(0x1F, &[0xFF]));
-        let packets = PacketDecoder::default().feed(&bytes);
         assert_eq!(
-            packets,
+            decode(&bytes),
             [
-                Packet {
-                    cmd: 0x04,
-                    payload: vec![0xEE, 0x0F, 0, 0]
-                },
-                Packet {
-                    cmd: 0x1F,
-                    payload: vec![0xFF]
-                },
+                Packet::new(0x04, &[0xEE, 0x0F, 0, 0]),
+                Packet::new(0x1F, &[0xFF]),
             ]
         );
     }
@@ -523,63 +542,43 @@ mod tests {
         let mut decoder = PacketDecoder::default();
         let mut packets = Vec::new();
         for byte in &bytes {
-            packets.extend(decoder.feed(&[*byte]));
+            decoder.feed(&[*byte], |packet| packets.push(packet));
         }
-        assert_eq!(
-            packets,
-            [Packet {
-                cmd: 0x04,
-                payload: vec![0xEE, 0x0F, 0, 0]
-            }]
-        );
+        assert_eq!(packets, [Packet::new(0x04, &[0xEE, 0x0F, 0, 0])]);
     }
 
     #[test]
     fn decoder_skips_garbage_before_the_header() {
         let mut bytes = vec![0x00, 0xDE, 0x13, 0xAD];
         bytes.extend(packet(0x02, &[1]));
-        let packets = PacketDecoder::default().feed(&bytes);
-        assert_eq!(
-            packets,
-            [Packet {
-                cmd: 0x02,
-                payload: vec![1]
-            }]
-        );
+        assert_eq!(decode(&bytes), [Packet::new(0x02, &[1])]);
     }
 
     #[test]
     fn decoder_keeps_a_partial_packet_between_calls() {
         let bytes = packet(0x02, &[1]);
         let mut decoder = PacketDecoder::default();
-        assert!(decoder.feed(&bytes[..3]).is_empty());
-        assert_eq!(decoder.feed(&bytes[3..]).len(), 1);
-        assert!(decoder.feed(&[]).is_empty());
+        let mut count = 0;
+        decoder.feed(&bytes[..3], |_| count += 1);
+        assert_eq!(count, 0);
+        decoder.feed(&bytes[3..], |_| count += 1);
+        assert_eq!(count, 1);
+        decoder.feed(&[], |_| count += 1);
+        assert_eq!(count, 1);
     }
 
     #[test]
     fn decoder_drops_a_packet_with_an_impossible_length() {
         let mut bytes = vec![0xDE, 0xAD, 0xFF, 0xFF, 0x02];
         bytes.extend(packet(0x04, &[1, 2, 3, 4]));
-        let packets = PacketDecoder::default().feed(&bytes);
-        assert_eq!(
-            packets,
-            [Packet {
-                cmd: 0x04,
-                payload: vec![1, 2, 3, 4]
-            }]
-        );
+        assert_eq!(decode(&bytes), [Packet::new(0x04, &[1, 2, 3, 4])]);
     }
 
     #[test]
     fn decoder_reads_a_reject_packet() {
-        let packets = PacketDecoder::default().feed(&[0xDE, 0xAD, 1, 0, 0x04, 0xFF]);
         assert_eq!(
-            packets,
-            [Packet {
-                cmd: 0x04,
-                payload: vec![0xFF]
-            }]
+            decode(&[0xDE, 0xAD, 1, 0, 0x04, 0xFF]),
+            [Packet::new(0x04, &[0xFF])]
         );
     }
 
@@ -621,12 +620,7 @@ mod tests {
 
     #[test]
     fn raw_replies_are_parsed_by_command() {
-        let reply = |cmd, payload: &[u8]| {
-            parse_raw_reply(&Packet {
-                cmd,
-                payload: payload.to_vec(),
-            })
-        };
+        let reply = |cmd, payload: &[u8]| parse_raw_reply(&Packet::new(cmd, payload));
         assert_eq!(
             reply(0x69, &[1, 0, 1, 0, 0, 0]),
             Some(RawReply::Submit {
@@ -686,25 +680,25 @@ mod tests {
     fn ledger_collects_only_after_eight_submits() {
         let mut ledger = RawLedger::new(1);
         submit(&mut ledger, 7);
-        assert!(ledger.due_requests().is_empty());
+        assert!(collect_due(&mut ledger).is_empty());
         submit(&mut ledger, 1);
-        let due = ledger.due_requests();
+        let due = collect_due(&mut ledger);
         let expected: Vec<Request> = (1..=7)
             .map(|id| Request::RawStatus { id, consume: false })
             .collect();
         assert_eq!(due, expected);
-        assert!(ledger.due_requests().is_empty());
+        assert!(collect_due(&mut ledger).is_empty());
     }
 
     #[test]
     fn ledger_consumes_a_final_id_after_the_peek() {
         let mut ledger = RawLedger::new(1);
         submit(&mut ledger, 8);
-        ledger.due_requests();
+        collect_due(&mut ledger);
         ledger.on_reply(status(1, RawState::Submitted, 0));
         ledger.on_reply(status(2, RawState::Rejected, 17));
         assert_eq!(
-            ledger.due_requests(),
+            collect_due(&mut ledger),
             [
                 Request::RawStatus {
                     id: 1,
@@ -716,17 +710,17 @@ mod tests {
                 },
             ]
         );
-        assert!(ledger.due_requests().is_empty());
+        assert!(collect_due(&mut ledger).is_empty());
     }
 
     #[test]
     fn ledger_peeks_a_queued_id_again_in_the_next_round() {
         let mut ledger = RawLedger::new(1);
         submit(&mut ledger, 8);
-        ledger.due_requests();
+        collect_due(&mut ledger);
         ledger.on_reply(status(1, RawState::Queued, 0));
         submit(&mut ledger, 8);
-        let due = ledger.due_requests();
+        let due = collect_due(&mut ledger);
         assert!(due.contains(&Request::RawStatus {
             id: 1,
             consume: false
@@ -780,7 +774,7 @@ mod tests {
             state: RawState::ImmediateError,
             reason: 3,
         });
-        let due = ledger.due_requests();
+        let due = collect_due(&mut ledger);
         assert!(
             !due.iter()
                 .any(|request| matches!(request, Request::RawStatus { id: 1, .. }))
@@ -818,7 +812,7 @@ mod tests {
         });
         let second = raw_move_id(ledger.next_submit(2, 2).unwrap());
         assert_eq!((first, second), (1, 2));
-        assert!(ledger.due_requests().is_empty());
+        assert!(collect_due(&mut ledger).is_empty());
     }
 
     #[test]
@@ -837,7 +831,7 @@ mod tests {
             for id in (round * 8 + 1)..=(round * 8 + 8) {
                 ledger.on_reply(status(id, RawState::Submitted, 0));
             }
-            ledger.due_requests();
+            collect_due(&mut ledger);
         }
         assert!(ledger.pending.is_empty());
     }

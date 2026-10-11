@@ -5,7 +5,7 @@ use anyhow::Result;
 use super::target_track::{TargetTracker, Track};
 use crate::{
     inference::Detection,
-    makcu::MakcuClient,
+    makcu::{MakcuClient, Movement},
     settings::{MaxDelta, Sensitivity, TargetYOffset},
 };
 
@@ -19,12 +19,11 @@ pub(super) struct OutputSettings {
 
 /// `(dx, dy, confidence, class_id)` relative to the model input center.
 pub(super) type TargetInfo = (f32, f32, f32, i32);
-/// `(x, y)` actually submitted to MAKCU.
-pub(super) type CommandInfo = (i32, i32);
 
 pub(super) struct OutputOutcome {
     pub target: Option<TargetInfo>,
-    pub command: Option<CommandInfo>,
+    /// The movement actually submitted to MAKCU.
+    pub command: Option<Movement>,
     pub track: Option<Track>,
     /// Movement before rounding (after sensitivity and the max delta cap).
     pub planned: Option<(f32, f32)>,
@@ -39,22 +38,20 @@ struct Plan {
 
 /// Rounds `movement + carry` to whole counts and returns the new remainder.
 /// `None` when the result is zero (the remainder is still kept by the caller).
-fn quantize_with_carry(
-    movement: (f32, f32),
-    carry: (f32, f32),
-) -> (Option<(i32, i32)>, (f32, f32)) {
+fn quantize_with_carry(movement: (f32, f32), carry: (f32, f32)) -> (Option<Movement>, (f32, f32)) {
     let (wx, wy) = (movement.0 + carry.0, movement.1 + carry.1);
     let (x, y) = (quantize(wx), quantize(wy));
     // A clamped (saturated) axis must not leave a huge remainder behind.
     let remainder = (
-        (wx - x as f32).clamp(-0.5, 0.5),
-        (wy - y as f32).clamp(-0.5, 0.5),
+        (wx - f32::from(x)).clamp(-0.5, 0.5),
+        (wy - f32::from(y)).clamp(-0.5, 0.5),
     );
-    ((x != 0 || y != 0).then_some((x, y)), remainder)
+    ((x != 0 || y != 0).then_some(Movement { x, y }), remainder)
 }
 
-fn quantize(value: f32) -> i32 {
-    value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i32
+/// Whole counts, clamped to the `i16` range of the wire.
+fn quantize(value: f32) -> i16 {
+    value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 fn plan(detection: Detection, input_size: (usize, usize), settings: OutputSettings) -> Plan {
@@ -133,7 +130,7 @@ impl OutputStage {
         let Plan { target, movement } = plan(detection, self.input_size, self.settings);
         let (step, carry) = quantize_with_carry(movement, self.carry);
         self.carry = carry;
-        let Some((x, y)) = step else {
+        let Some(step) = step else {
             return Ok(OutputOutcome {
                 target: Some(target),
                 command: None,
@@ -141,10 +138,10 @@ impl OutputStage {
                 planned: Some(movement),
             });
         };
-        makcu.move_mouse(x, y)?;
+        makcu.move_mouse(step)?;
         Ok(OutputOutcome {
             target: Some(target),
-            command: Some((x, y)),
+            command: Some(step),
             track,
             planned: Some(movement),
         })
@@ -175,16 +172,20 @@ mod tests {
     }
 
     /// Movement without carry-over: `None` when it rounds to zero.
-    fn step_of(plan: &Plan) -> Option<(i32, i32)> {
+    fn step_of(plan: &Plan) -> Option<Movement> {
         quantize_with_carry(plan.movement, (0.0, 0.0)).0
+    }
+
+    fn movement(x: i16, y: i16) -> Option<Movement> {
+        Some(Movement { x, y })
     }
 
     #[test]
     fn quantize_uses_i16_bounds() {
         assert_eq!(quantize(1.4), 1);
         assert_eq!(quantize(-1.6), -2);
-        assert_eq!(quantize(1.0e9), i16::MAX as i32);
-        assert_eq!(quantize(-1.0e9), i16::MIN as i32);
+        assert_eq!(quantize(1.0e9), i16::MAX);
+        assert_eq!(quantize(-1.0e9), i16::MIN);
     }
 
     #[test]
@@ -192,12 +193,12 @@ mod tests {
         // Center is (50, 50); the box center is 10 px right and 20 px down and
         // the box is 40 px tall, so 75% aims 10 px below its center.
         let plan = plan(detection(70.0, 40.0), (100, 100), settings(50, 75));
-        assert_eq!(step_of(&plan), Some((5, 15)));
+        assert_eq!(step_of(&plan), movement(5, 15));
         // 0% and 100% aim at the top and bottom edges.
         let top = super::plan(detection(70.0, 40.0), (100, 100), settings(100, 0));
-        assert_eq!(step_of(&top), Some((10, 0)));
+        assert_eq!(step_of(&top), movement(10, 0));
         let bottom = super::plan(detection(70.0, 40.0), (100, 100), settings(100, 100));
-        assert_eq!(step_of(&bottom), Some((10, 40)));
+        assert_eq!(step_of(&bottom), movement(10, 40));
     }
 
     #[test]
@@ -209,20 +210,20 @@ mod tests {
         };
         // Scaled to length 10: (4.47, 8.94) -> (4, 9).
         let plan_capped = plan(detection(70.0, 40.0), (100, 100), capped);
-        assert_eq!(step_of(&plan_capped), Some((4, 9)));
+        assert_eq!(step_of(&plan_capped), movement(4, 9));
         // A cap above the movement length changes nothing.
         let loose = OutputSettings {
             max_delta: MaxDelta::new(100),
             ..capped
         };
         let plan_loose = plan(detection(70.0, 40.0), (100, 100), loose);
-        assert_eq!(step_of(&plan_loose), Some((10, 20)));
+        assert_eq!(step_of(&plan_loose), movement(10, 20));
     }
 
     #[test]
     fn zero_movement_produces_no_step() {
         let plan_off_center = plan(detection(50.0, 40.0), (100, 100), settings(100, 50));
-        assert_eq!(step_of(&plan_off_center), Some((10, 0)));
+        assert_eq!(step_of(&plan_off_center), movement(10, 0));
         let centered = Detection {
             center_x: 50.0,
             ..detection(50.0, 40.0)
@@ -241,14 +242,14 @@ mod tests {
             carry = next;
             sent.push(step);
         }
-        assert_eq!(sent, vec![None, Some((1, -1)), None, None]);
+        assert_eq!(sent, vec![None, movement(1, -1), None, None]);
         assert!((carry.0 - 0.2).abs() < 1e-5);
     }
 
     #[test]
     fn saturated_axis_does_not_keep_a_huge_remainder() {
         let (step, carry) = quantize_with_carry((1.0e9, 0.0), (0.0, 0.0));
-        assert_eq!(step, Some((i16::MAX as i32, 0)));
+        assert_eq!(step, movement(i16::MAX, 0));
         assert_eq!(carry, (0.5, 0.0));
     }
 }

@@ -13,10 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
+use crossbeam_channel::{Receiver, TryRecvError};
 use eframe::egui;
 
-use self::run::RunControl;
+use self::{frame::StepOutcome, run::RunControl};
 use super::{
     CapturePhase, Command, EngineEvent, EngineStatus,
     loop_metrics::LoopMetrics,
@@ -32,10 +32,13 @@ use crate::{
     models,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     timing::QpcClock,
+    wait::DeadlineWait,
 };
 
 /// How often the engine polls MAKCU connection state when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
+/// How long the engine spins before a capture deadline. Only the capture deadline spins.
+const CAPTURE_SPIN: Duration = Duration::from_millis(1);
 
 /// Settings applied directly to the serial pipeline.
 #[derive(Clone, Copy)]
@@ -60,7 +63,9 @@ struct Worker {
     capture: Option<DxgiCapture>,
     output_stage: OutputStage,
     trace: Option<super::frame_trace::FrameTraceWriter>,
-    next_capture: Instant,
+    /// Wakes the engine for a command, the housekeeping, the status flush, or the capture deadline.
+    wait: DeadlineWait,
+    capture_deadline: frame::CaptureDeadline,
     frame_seq: u64,
     source_seq: u64,
     capture_stats: frame::CaptureStats,
@@ -107,6 +112,7 @@ pub(super) fn run_worker(
     shared_status: Arc<Mutex<EngineStatus>>,
     config: Config,
     ui_ctx: egui::Context,
+    wait: DeadlineWait,
 ) {
     tracing::info!("engine worker started");
     let mut status = StatusHub::new(shared_status, ui_ctx.clone());
@@ -161,7 +167,8 @@ pub(super) fn run_worker(
         capture: None,
         output_stage: OutputStage::new(tuning.output),
         trace: None,
-        next_capture: Instant::now(),
+        wait,
+        capture_deadline: frame::CaptureDeadline::new(),
         frame_seq: 0,
         source_seq: 0,
         capture_stats: frame::CaptureStats::default(),
@@ -222,33 +229,36 @@ impl Worker {
             }
             self.publish_capture_stats(false);
             self.status.flush_if_due();
-            if let Some(run) = self.run.active
-                && frame::capture_due(run.mode, now, self.next_capture)
-            {
-                if !self.step_frame(rx) {
-                    return;
-                }
-                continue;
-            }
-            let mut timeout = next_housekeeping.saturating_duration_since(Instant::now());
-            if self.run.active.is_some() {
-                timeout = timeout.min(self.next_capture.saturating_duration_since(Instant::now()));
-            }
-            if let Some(until_flush) = self.status.time_until_flush() {
-                timeout = timeout.min(until_flush);
-            }
-            match rx.recv_timeout(timeout) {
-                Ok(command) => {
-                    if !self.handle_command(command) {
-                        return;
+            let mut capture_at = None;
+            if let Some(run) = self.run.active {
+                match self.capture_deadline.pending_until(run.mode, now) {
+                    Some(at) => capture_at = Some(at),
+                    None => {
+                        let outcome = self.step_frame(rx);
+                        if outcome == StepOutcome::Shutdown {
+                            return;
+                        }
+                        self.capture_deadline
+                            .after_step(outcome, self.tuning.fps_limit);
+                        continue;
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.stop_run();
-                    return;
-                }
-                Err(RecvTimeoutError::Timeout) => {}
             }
+            // The earliest of the housekeeping, the status flush, and the capture deadline wakes the loop.
+            let mut deadline = next_housekeeping;
+            let mut spin = Duration::ZERO;
+            if let Some(flush) = self.status.time_until_flush().map(|left| now + left)
+                && flush < deadline
+            {
+                deadline = flush;
+            }
+            if let Some(capture) = capture_at
+                && capture <= deadline
+            {
+                deadline = capture;
+                spin = CAPTURE_SPIN;
+            }
+            self.wait.wait_until(Some(deadline), spin);
         }
     }
 
@@ -301,7 +311,7 @@ impl Worker {
             }
             Command::SetFpsLimit(value) => {
                 self.tuning.fps_limit = value;
-                self.next_capture = Instant::now();
+                self.capture_deadline.clear();
             }
             Command::SetLowLatency(enabled) => {
                 self.tuning.low_latency = enabled;

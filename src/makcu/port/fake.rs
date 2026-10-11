@@ -31,8 +31,10 @@ struct State {
     firmware: u32,
     kinds: u8,
     connected: bool,
-    /// Every write of every port, in order.
+    /// Every request that the device received, in order. One port write can hold several.
     frames: Vec<Vec<u8>>,
+    /// Every port write, in order, as the bytes of that write.
+    writes: Vec<Vec<u8>>,
     /// The bytes that wait for the host.
     replies: VecDeque<u8>,
     /// The command whose next request gets no reply.
@@ -62,6 +64,7 @@ impl FakeMakcu {
                 kinds: 0x01,
                 connected: true,
                 frames: Vec::new(),
+                writes: Vec::new(),
                 replies: VecDeque::new(),
                 mute: None,
                 reject: None,
@@ -74,8 +77,14 @@ impl FakeMakcu {
         }
     }
 
+    /// Every request that the device received, in order. One port write can hold several.
     pub(crate) fn frames(&self) -> Vec<Vec<u8>> {
         lock(&self.state).frames.clone()
+    }
+
+    /// Every port write, in order, as the bytes of that write.
+    pub(crate) fn writes(&self) -> Vec<Vec<u8>> {
+        lock(&self.state).writes.clone()
     }
 
     /// The cable is pulled. Reads and writes fail until `reconnect`.
@@ -208,10 +217,13 @@ impl Port for FakePort {
                 "MAKCU is unplugged",
             ));
         }
-        state.frames.push(bytes.to_vec());
-        // A device does not hear a host at another rate.
-        if self.baud == state.baud {
-            state.answer(bytes[4], &bytes[5..]);
+        state.writes.push(bytes.to_vec());
+        for request in split_requests(bytes) {
+            state.frames.push(request.to_vec());
+            // A device does not hear a host at another rate.
+            if self.baud == state.baud {
+                state.answer(request[4], &request[5..]);
+            }
         }
         Ok(())
     }
@@ -301,6 +313,24 @@ impl State {
     fn reject_with(&mut self, cmd: u8) {
         self.replies.extend([0xDE, 0xAD, 1, 0, cmd, 0xFF]);
     }
+}
+
+/// The requests in one port write. A `SET_BAUD` packet is 9 bytes whatever its length byte says.
+/// See "Baud switch" in `docs/makcu-protocol.md`.
+fn split_requests(mut bytes: &[u8]) -> Vec<&[u8]> {
+    const CMD_SET_BAUD: u8 = 0xA5;
+    let mut requests = Vec::new();
+    while bytes.len() >= 5 {
+        let total = if bytes[4] == CMD_SET_BAUD {
+            9
+        } else {
+            5 + usize::from(u16::from_le_bytes([bytes[2], bytes[3]]))
+        };
+        let total = total.min(bytes.len());
+        requests.push(&bytes[..total]);
+        bytes = &bytes[total..];
+    }
+    requests
 }
 
 /// The id at the start of a Raw request payload.

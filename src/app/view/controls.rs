@@ -164,8 +164,8 @@ impl App {
                 } else {
                     ui.label("Target     no detection");
                 }
-                if let Some((x, y)) = status.run.last_command {
-                    ui.label(format!("Command    x={x:+}   y={y:+}"));
+                if let Some(sent) = status.run.last_command {
+                    ui.label(format!("Command    x={:+}   y={:+}", sent.x, sent.y));
                 }
                 if let Some(ms) = status.run.last_total_ms {
                     ui.label(format!("Pipeline   {ms:.2} ms"));

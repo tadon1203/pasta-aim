@@ -44,6 +44,8 @@ use crate::{
 };
 use crossbeam_channel as crossbeam;
 
+use crate::wait::{DeadlineWait, Waker};
+
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     Model {
@@ -96,11 +98,14 @@ pub enum Command {
 #[derive(Clone)]
 pub struct EngineControl {
     tx: crossbeam::Sender<Command>,
+    waker: Waker,
 }
 
 impl EngineControl {
+    /// Sends the command, then wakes the engine so that it reads it at once.
     pub fn send(&self, command: Command) {
         let _ = self.tx.send(command);
+        self.waker.wake();
     }
 }
 
@@ -115,17 +120,18 @@ impl Engine {
     pub fn new(config: &Config, ui_ctx: egui::Context) -> Self {
         tracing::info!("spawning engine worker");
         let (tx, rx) = crossbeam::unbounded();
+        let (wait, waker) = DeadlineWait::new().expect("failed to create the engine wait");
         let (event_tx, events) = mpsc::channel();
         let status = Arc::new(Mutex::new(EngineStatus::default()));
         let worker_status = Arc::clone(&status);
         let initial = config.clone();
         let join = thread::Builder::new()
             .name("nice-aimassist-engine".to_owned())
-            .spawn(move || run_worker(rx, event_tx, worker_status, initial, ui_ctx))
+            .spawn(move || run_worker(rx, event_tx, worker_status, initial, ui_ctx, wait))
             .expect("failed to spawn engine worker");
 
         Self {
-            control: EngineControl { tx },
+            control: EngineControl { tx, waker },
             events,
             status,
             join: Some(join),

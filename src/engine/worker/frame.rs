@@ -7,15 +7,13 @@ use crossbeam_channel::Receiver;
 use super::{Worker, run::ActiveRun};
 use crate::{
     engine::{
-        Command, RunMode,
-        frame_trace::FrameTraceRecord,
-        output::{CommandInfo, TargetInfo},
-        target_track::Track,
+        Command, RunMode, frame_trace::FrameTraceRecord, output::TargetInfo, target_track::Track,
     },
     graphics::{
         CapturePoll, GpuDropReason, GpuFaultReport, GpuFrameMetadata, NoDesktopUpdateReason,
     },
     inference::pipeline::InferenceResult,
+    makcu::Movement,
     metrics::{CaptureSourceMetrics, StageTimings},
     settings::FpsLimit,
 };
@@ -27,7 +25,7 @@ pub(super) struct FrameReport {
     pub timings: StageTimings,
     pub detected: bool,
     pub target: Option<TargetInfo>,
-    pub command: Option<CommandInfo>,
+    pub command: Option<Movement>,
     pub track: Option<Track>,
     pub output_complete_qpc: i64,
     pub one_shot_done: bool,
@@ -41,12 +39,52 @@ pub(super) struct CaptureStats {
     accumulated: u64,
 }
 
-pub(super) fn next_capture_deadline(start: Instant, fps: FpsLimit) -> Instant {
-    start + Duration::from_secs_f64(1.0 / f64::from(fps.value()))
+/// The earliest time of the next capture in a Continuous run.
+pub(super) struct CaptureDeadline {
+    next: Instant,
 }
 
-pub(super) fn capture_due(mode: RunMode, now: Instant, deadline: Instant) -> bool {
-    mode == RunMode::OneShot || now >= deadline
+impl CaptureDeadline {
+    /// Due now.
+    pub(super) fn new() -> Self {
+        Self {
+            next: Instant::now(),
+        }
+    }
+
+    /// Called for a capture that got a New frame. `start` is the start of that capture attempt.
+    pub(super) fn arm(&mut self, start: Instant, fps: FpsLimit) {
+        self.next = start + Duration::from_secs_f64(1.0 / f64::from(fps.value()));
+    }
+
+    /// Called at the start of a Run and when the FPS limit changes.
+    pub(super) fn clear(&mut self) {
+        self.next = Instant::now();
+    }
+
+    /// `None` when a capture is due now. Run once is always due.
+    pub(super) fn pending_until(&self, mode: RunMode, now: Instant) -> Option<Instant> {
+        (mode == RunMode::Continuous && now < self.next).then_some(self.next)
+    }
+
+    /// Only a step that got a New frame arms the deadline. Any other step leaves it as it is.
+    pub(super) fn after_step(&mut self, outcome: StepOutcome, fps: FpsLimit) {
+        if let StepOutcome::NewFrame { attempt_start } = outcome {
+            self.arm(attempt_start, fps);
+        }
+    }
+}
+
+/// The result of one frame step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StepOutcome {
+    /// The attempt got a New frame, also when a stop suppresses its output or a fault ends the Run.
+    NewFrame {
+        attempt_start: Instant,
+    },
+    /// A timeout, a pointer-only update, an access loss, or no active Run after the drain.
+    NoDesktopUpdate,
+    Shutdown,
 }
 
 /// This ordering is shared with the hardware-free pipeline tests below.
@@ -73,6 +111,8 @@ struct FrameStep<'a> {
     worker: &'a mut Worker,
     commands: &'a Receiver<Command>,
     run: ActiveRun,
+    attempt_start: Instant,
+    new_frame: bool,
 }
 
 struct InferredFrame {
@@ -83,19 +123,30 @@ struct InferredFrame {
 }
 
 impl Worker {
-    pub(super) fn step_frame(&mut self, commands: &Receiver<Command>) -> bool {
+    pub(super) fn step_frame(&mut self, commands: &Receiver<Command>) -> StepOutcome {
         if !self.drain_commands(commands) {
-            return false;
+            return StepOutcome::Shutdown;
         }
         let Some(run) = self.run.active else {
-            return true;
+            return StepOutcome::NoDesktopUpdate;
         };
-        self.next_capture = next_capture_deadline(Instant::now(), self.tuning.fps_limit);
-        serial_frame(&mut FrameStep {
+        let mut step = FrameStep {
             worker: self,
             commands,
             run,
-        })
+            attempt_start: Instant::now(),
+            new_frame: false,
+        };
+        if !serial_frame(&mut step) {
+            return StepOutcome::Shutdown;
+        }
+        if step.new_frame {
+            StepOutcome::NewFrame {
+                attempt_start: step.attempt_start,
+            }
+        } else {
+            StepOutcome::NoDesktopUpdate
+        }
     }
 
     pub(super) fn publish_capture_stats(&mut self, force: bool) {
@@ -121,7 +172,8 @@ impl Worker {
         }
     }
 
-    fn acquire_frame(&mut self, run: ActiveRun) -> Option<GpuFrameMetadata> {
+    /// `new_frame` is set when the capture got a New frame, even if a later step of this attempt fails.
+    fn acquire_frame(&mut self, run: ActiveRun, new_frame: &mut bool) -> Option<GpuFrameMetadata> {
         let Some(model) = self.model.as_ref() else {
             self.fail_run("inference pipeline is not prepared".to_owned());
             return None;
@@ -143,6 +195,7 @@ impl Worker {
         };
         let frame = match capture.acquire(settings.wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => {
+                *new_frame = true;
                 self.capture_stats.fresh += 1;
                 self.capture_stats.accumulated += u64::from(frame.accumulated_frames());
                 self.source_seq = self.source_seq.saturating_add(1);
@@ -236,7 +289,7 @@ impl SerialStages for FrameStep<'_> {
     type Inferred = InferredFrame;
 
     fn acquire(&mut self) -> Option<Self::Frame> {
-        self.worker.acquire_frame(self.run)
+        self.worker.acquire_frame(self.run, &mut self.new_frame)
     }
 
     fn infer(&mut self, metadata: Self::Frame) -> Option<Self::Inferred> {
@@ -380,6 +433,7 @@ mod tests {
         makcu::{FakeMakcu, MakcuClient},
         metrics::Metrics,
         timing::QpcClock,
+        wait::{DeadlineWait, Waker},
     };
     use std::sync::{Arc, Mutex, mpsc};
 
@@ -392,6 +446,12 @@ mod tests {
     }
 
     fn worker() -> (Worker, FakeMakcu) {
+        let (worker, fake, _waker) = worker_with_waker();
+        (worker, fake)
+    }
+
+    /// The fixture, with the waker of its wait, which the test raises to wake the loop.
+    fn worker_with_waker() -> (Worker, FakeMakcu, Waker) {
         let config = Config::default();
         let tuning = Tuning {
             output: OutputSettings {
@@ -408,6 +468,7 @@ mod tests {
         let (makcu, fake) = MakcuClient::fake();
         let ui_ctx = eframe::egui::Context::default();
         let (event_tx, _) = mpsc::channel();
+        let (wait, waker) = DeadlineWait::new().unwrap();
         let mut worker = Worker {
             event_tx,
             status: StatusHub::new(
@@ -421,7 +482,8 @@ mod tests {
             capture: None,
             output_stage: OutputStage::new(tuning.output),
             trace: None,
-            next_capture: Instant::now(),
+            wait,
+            capture_deadline: CaptureDeadline::new(),
             frame_seq: 0,
             source_seq: 0,
             capture_stats: CaptureStats::default(),
@@ -456,7 +518,7 @@ mod tests {
         });
         worker.output_stage.set_input_size((100, 100));
         worker.start_run(RunMode::Continuous);
-        (worker, fake)
+        (worker, fake, waker)
     }
 
     fn inferred(worker: &Worker, present_qpc: i64) -> InferredFrame {
@@ -500,6 +562,8 @@ mod tests {
             worker,
             commands,
             run,
+            attempt_start: Instant::now(),
+            new_frame: true,
         }
         .output(frame)
     }
@@ -562,16 +626,14 @@ mod tests {
         worker.stop_run();
         worker.start_run(RunMode::OneShot);
         let now = Instant::now();
-        assert!(capture_due(
-            RunMode::OneShot,
-            now,
-            now + Duration::from_secs(1)
-        ));
-        assert!(!capture_due(
-            RunMode::Continuous,
-            now,
-            now + Duration::from_secs(1)
-        ));
+        let deadline = CaptureDeadline {
+            next: now + Duration::from_secs(1),
+        };
+        assert_eq!(deadline.pending_until(RunMode::OneShot, now), None);
+        assert_eq!(
+            deadline.pending_until(RunMode::Continuous, now),
+            Some(now + Duration::from_secs(1))
+        );
         let (_tx, rx) = crossbeam_channel::unbounded();
         let frame = inferred(&worker, worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
@@ -582,17 +644,18 @@ mod tests {
 
     #[test]
     fn stop_before_acquisition_and_shutdown_during_fps_wait_are_handled() {
-        let (mut worker, _) = worker();
+        let (mut worker, _, waker) = worker_with_waker();
         let (tx, rx) = crossbeam_channel::unbounded();
         tx.send(Command::SetContinuous(false)).unwrap();
-        assert!(worker.step_frame(&rx));
+        assert_eq!(worker.step_frame(&rx), StepOutcome::NoDesktopUpdate);
         // There is no GPU pipeline in this fixture: acquisition would fail the run.
         assert!(worker.status.get().run.error.is_none());
         worker.start_run(RunMode::Continuous);
-        worker.next_capture = Instant::now() + Duration::from_secs(10);
+        worker.capture_deadline.next = Instant::now() + Duration::from_secs(10);
         let sender = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
             tx.send(Command::Shutdown).unwrap();
+            waker.wake();
         });
         let start = Instant::now();
         worker.event_loop(&rx);
@@ -666,14 +729,30 @@ mod tests {
     fn fps_deadline_does_not_accumulate_idle_credit() {
         let start = Instant::now();
         let fps = FpsLimit::new(100);
-        assert_eq!(
-            next_capture_deadline(start, fps),
-            start + Duration::from_millis(10)
-        );
+        let mut deadline = CaptureDeadline::new();
+        deadline.arm(start, fps);
+        assert_eq!(deadline.next, start + Duration::from_millis(10));
         let late = start + Duration::from_secs(1);
+        deadline.arm(late, fps);
+        assert_eq!(deadline.next, late + Duration::from_millis(10));
+    }
+
+    #[test]
+    fn a_step_without_a_new_frame_does_not_arm_the_deadline() {
+        let fps = FpsLimit::new(100);
+        let start = Instant::now();
+        let mut deadline = CaptureDeadline::new();
+        deadline.after_step(StepOutcome::NoDesktopUpdate, fps);
+        assert!(deadline.pending_until(RunMode::Continuous, start).is_none());
+        deadline.after_step(
+            StepOutcome::NewFrame {
+                attempt_start: start,
+            },
+            fps,
+        );
         assert_eq!(
-            next_capture_deadline(late, fps),
-            late + Duration::from_millis(10)
+            deadline.pending_until(RunMode::Continuous, start),
+            Some(start + Duration::from_millis(10))
         );
     }
 }

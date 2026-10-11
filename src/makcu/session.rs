@@ -85,11 +85,17 @@ struct Slot {
     reply: Sender<Result<Packet, SessionError>>,
 }
 
+/// The write side of the port, with the buffer that a write encodes into. One lock covers both.
+struct Writer {
+    port: Box<dyn Port>,
+    buffer: Vec<u8>,
+}
+
 /// The state that the caller and the I/O thread share.
 struct Shared {
     /// The write side of the port. `None` while the link is down: the port is closed then,
     /// because the reopen needs it closed.
-    writer: Mutex<Option<Box<dyn Port>>>,
+    writer: Mutex<Option<Writer>>,
     slot: Mutex<Option<Slot>>,
     connected: AtomicBool,
 }
@@ -141,7 +147,10 @@ impl Session {
         interpolation: Arc<AtomicU8>,
     ) -> Result<Self> {
         let shared = Arc::new(Shared {
-            writer: Mutex::new(Some(writer)),
+            writer: Mutex::new(Some(Writer {
+                port: writer,
+                buffer: Vec::new(),
+            })),
             slot: Mutex::new(None),
             connected: AtomicBool::new(true),
         });
@@ -182,7 +191,7 @@ impl Session {
             request: *request,
             reply,
         });
-        if let Err(error) = self.write(request) {
+        if let Err(error) = self.write(std::slice::from_ref(request)) {
             *lock(&self.shared.slot) = None;
             return Err(error);
         }
@@ -199,12 +208,12 @@ impl Session {
         }
     }
 
-    /// Writes a request that has no reply to wait for.
-    pub(super) fn send(&self, request: &Request) -> Result<(), SessionError> {
+    /// Writes the requests as one port write. None of them has a reply to wait for.
+    pub(super) fn send(&self, requests: &[Request]) -> Result<(), SessionError> {
         if !self.is_connected() {
             return Err(SessionError::NotConnected);
         }
-        self.write(request)
+        self.write(requests)
     }
 
     pub(super) fn raw_replies(&self) -> &Receiver<Packet> {
@@ -219,12 +228,12 @@ impl Session {
         self.shared.connected.load(Ordering::Acquire)
     }
 
-    fn write(&self, request: &Request) -> Result<(), SessionError> {
-        let mut writer = lock(&self.shared.writer);
-        let Some(port) = writer.as_mut() else {
+    fn write(&self, requests: &[Request]) -> Result<(), SessionError> {
+        let mut guard = lock(&self.shared.writer);
+        let Some(writer) = guard.as_mut() else {
             return Err(SessionError::NotConnected);
         };
-        port.write_all(&encoded(request))?;
+        write_requests(writer.port.as_mut(), &mut writer.buffer, requests)?;
         Ok(())
     }
 }
@@ -282,11 +291,7 @@ impl IoThread {
                 Err(TryRecvError::Empty) => {}
             }
             match reader.read(&mut buf) {
-                Ok(count) => {
-                    for packet in decoder.feed(&buf[..count]) {
-                        self.route(packet);
-                    }
-                }
+                Ok(count) => decoder.feed(&buf[..count], |packet| self.route(packet)),
                 Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(_) => return Ended::Lost,
             }
@@ -338,7 +343,10 @@ impl IoThread {
         )?;
         let reader = port.try_clone()?;
         self.preferred = info.port.clone();
-        *lock(&self.shared.writer) = Some(port);
+        *lock(&self.shared.writer) = Some(Writer {
+            port,
+            buffer: Vec::new(),
+        });
         self.shared.connected.store(true, Ordering::Release);
         // A fault that came during the reconnect is about the old connection.
         while self.faults.try_recv().is_ok() {}
@@ -414,7 +422,11 @@ fn connect_port(
     }
     if baud == LOW_BAUD {
         // A `SetBaud` that the device accepts has no reply. A refused one leaves the device at 115,200.
-        port.write_all(&encoded(&Request::SetBaud(HIGH_BAUD)))?;
+        write_requests(
+            port.as_mut(),
+            &mut Vec::new(),
+            &[Request::SetBaud(HIGH_BAUD)],
+        )?;
         // Close the port before the reopen: Windows does not open a COM port twice.
         drop(port);
         (port, baud) = match probe(connector, name, HIGH_BAUD) {
@@ -425,7 +437,7 @@ fn connect_port(
     let kinds = kinds_of(port.as_mut())?;
     let raw = exchange(port.as_mut(), &Request::RawMetadata)
         .ok()
-        .and_then(|packet| parse_raw_metadata(&packet.payload));
+        .and_then(|packet| parse_raw_metadata(packet.payload()));
     // The device can lose the value when it restarts, so it is sent on every connect. A failure
     // does not fail the connect: the caller reports it.
     let interpolation_error = send_interpolation(port.as_mut(), interpolation)
@@ -448,7 +460,7 @@ fn send_interpolation(port: &mut dyn Port, value: u8) -> Result<()> {
     if !is_interpolate_echo(value, &packet) {
         bail!(
             "MAKCU answered the move interpolation {value} with {:?}",
-            packet.payload
+            packet.payload()
         );
     }
     Ok(())
@@ -463,7 +475,7 @@ fn probe(connector: &dyn Connector, name: &str, baud: u32) -> Result<Box<dyn Por
 
 fn firmware_of(port: &mut dyn Port) -> Result<u32> {
     let packet = exchange(port, &Request::FirmwareVersion)?;
-    let [a, b, c, d] = *packet.payload.as_slice() else {
+    let [a, b, c, d] = *packet.payload() else {
         bail!("MAKCU sent a malformed firmware version");
     };
     Ok(u32::from_le_bytes([a, b, c, d]))
@@ -471,7 +483,7 @@ fn firmware_of(port: &mut dyn Port) -> Result<u32> {
 
 fn kinds_of(port: &mut dyn Port) -> Result<u8> {
     let packet = exchange(port, &Request::Device)?;
-    let [kinds] = *packet.payload.as_slice() else {
+    let [kinds] = *packet.payload() else {
         bail!("MAKCU sent a malformed device reply");
     };
     Ok(kinds)
@@ -480,32 +492,43 @@ fn kinds_of(port: &mut dyn Port) -> Result<u8> {
 /// Writes a request and reads until its reply. Used only before the I/O thread starts, or on the
 /// I/O thread's own port while it reconnects.
 fn exchange(port: &mut dyn Port, request: &Request) -> Result<Packet> {
-    port.write_all(&encoded(request))?;
+    write_requests(port, &mut Vec::new(), std::slice::from_ref(request))?;
     let mut decoder = PacketDecoder::default();
     let mut buf = [0u8; 256];
+    let mut answer = None;
     let deadline = Instant::now() + REPLY_TIMEOUT;
-    while Instant::now() < deadline {
+    while answer.is_none() && Instant::now() < deadline {
         let count = match port.read(&mut buf) {
             Ok(count) => count,
             Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
             Err(error) => return Err(error.into()),
         };
-        for packet in decoder.feed(&buf[..count]) {
-            if packet.cmd == request.command() {
-                if is_reject(request, &packet) {
-                    bail!("MAKCU rejected {request:?}");
-                }
-                return Ok(packet);
+        decoder.feed(&buf[..count], |packet| {
+            if answer.is_none() && packet.cmd == request.command() {
+                answer = Some(packet);
             }
-        }
+        });
     }
-    bail!("MAKCU did not answer {request:?} in time")
+    let Some(packet) = answer else {
+        bail!("MAKCU did not answer {request:?} in time");
+    };
+    if is_reject(request, &packet) {
+        bail!("MAKCU rejected {request:?}");
+    }
+    Ok(packet)
 }
 
-fn encoded(request: &Request) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    request.encode(&mut bytes);
-    bytes
+/// Encodes the requests into `buffer` and writes them with one port write. `buffer` is kept for the next write.
+fn write_requests(
+    port: &mut dyn Port,
+    buffer: &mut Vec<u8>,
+    requests: &[Request],
+) -> io::Result<()> {
+    buffer.clear();
+    for request in requests {
+        request.encode(buffer);
+    }
+    port.write_all(buffer)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -631,7 +654,7 @@ mod tests {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
         let reply = session.request(&Request::Interpolate(255)).unwrap();
-        assert_eq!(reply.payload, [0xFF]);
+        assert_eq!(reply.payload(), [0xFF]);
     }
 
     #[test]
@@ -651,7 +674,7 @@ mod tests {
             SessionEvent::Connected(Ok(_))
         ));
         let reply = session.request(&Request::Interpolate(40)).unwrap();
-        assert_eq!(reply.payload, [40]);
+        assert_eq!(reply.payload(), [40]);
     }
 
     #[test]

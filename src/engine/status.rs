@@ -4,7 +4,7 @@ use super::loop_metrics::LoopSnapshot;
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
-    makcu::{MakcuRoutes, RawStats},
+    makcu::{MakcuRoutes, Movement, RawStats},
     metrics::PerformanceSnapshot,
 };
 
@@ -170,7 +170,7 @@ pub struct RunStatus {
     pub phase: RunPhase,
     pub error: Option<String>,
     pub last_target: Option<(f32, f32, f32, i32)>,
-    pub last_command: Option<(i32, i32)>,
+    pub last_command: Option<Movement>,
     pub last_total_ms: Option<f64>,
 }
 

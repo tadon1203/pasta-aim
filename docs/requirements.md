@@ -32,8 +32,9 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 | FPS limit      | 1 to 1000  | 240     |
 | New frame wait | 1 to 20 ms | 2 ms    |
 
-- **FPS limit** sets the shortest time between the starts of two captures in a Continuous run. A late frame is not followed by a burst of frames. It does not apply to Run once.
-- **New frame wait** is the longest wait for one capture attempt. It is independent of the FPS limit.
+- **FPS limit** sets the shortest time between the starts of two captures that got a New frame in a Continuous run. A late frame is not followed by a burst of frames. It does not apply to Run once.
+- A capture attempt that gets no new desktop update is not limited by the FPS limit: the app handles the pending commands and tries again.
+- **New frame wait** is the longest wait for one capture attempt. It is independent of the FPS limit. It is also the longest time before a command is handled while the app waits for a New frame.
 - A capture attempt that gets no new desktop update does no inference and sends no Movement. The app never processes an old image again.
 
 ## Target and output
@@ -65,6 +66,7 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 - Run once starts from its Shortcut or from the `Run once` button.
 - The app handles a stop, a shutdown, a model change, and a display change at two points: before a capture, and after the inference and before the output. A capture and an inference cannot be interrupted, so the time to stop includes the stage that is in progress.
 - While the app waits for the FPS limit, it handles a command immediately.
+- While the FPS limit holds the app back, the engine keeps one CPU core busy for about 1 ms before each capture. The rest of the wait sleeps.
 - **Low-latency mode** (default off) lowers the worst latency. It keeps one CPU core fully busy during a Run. A change of this setting loads the model again.
 
 ## Hotkeys

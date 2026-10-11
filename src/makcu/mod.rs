@@ -34,6 +34,13 @@ pub struct MakcuRoutes {
     pub mouse: bool,
 }
 
+/// The mouse movement that the engine sends for one frame, in whole counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Movement {
+    pub x: i16,
+    pub y: i16,
+}
+
 /// Counters of the Raw moves. See `docs/makcu-protocol.md`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RawStats {
@@ -71,6 +78,8 @@ pub struct MakcuClient {
     raw: Option<RawLedger>,
     /// Set after the one warning that Raw move fell back to the Standard move on this connection.
     raw_fallback_warned: bool,
+    /// The requests of one move. It is kept between moves, so a move does not allocate.
+    batch: Vec<Request>,
 }
 
 impl Default for MakcuClient {
@@ -107,6 +116,7 @@ impl MakcuClient {
             interpolation: Arc::new(AtomicU8::new(INTERPOLATE_AUTO)),
             raw: None,
             raw_fallback_warned: false,
+            batch: Vec::new(),
         }
     }
 
@@ -179,24 +189,22 @@ impl MakcuClient {
         ensure!(
             is_interpolate_echo(value, &packet),
             "MAKCU answered the move interpolation with {:?}",
-            packet.payload
+            packet.payload()
         );
         Ok(())
     }
 
     /// Writes one movement with the method in use. It never waits for a reply.
-    pub fn move_mouse(&mut self, x: i32, y: i32) -> Result<()> {
+    pub fn move_mouse(&mut self, movement: Movement) -> Result<()> {
         if !self.mouse_available() {
             bail!("MAKCU reports no mouse route");
         }
-        let x = x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let y = y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         let started = Instant::now();
-        self.write_move(x, y)?;
+        self.write_move(movement)?;
         if crate::logging::makcu_command_trace_enabled() {
             tracing::trace!(
-                x,
-                y,
+                x = movement.x,
+                y = movement.y,
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                 "MAKCU mouse command completed"
             );
@@ -209,9 +217,9 @@ impl MakcuClient {
         self.raw.as_ref().map(RawLedger::stats).unwrap_or_default()
     }
 
-    /// Writes one move. A Raw move first takes the replies that arrived, then writes its request and
-    /// the peeks and consumes that are due. When Raw move cannot run, the Standard move is written.
-    fn write_move(&mut self, x: i16, y: i16) -> Result<()> {
+    /// Writes one move as one port write. A Raw move first takes the replies that arrived, then writes
+    /// its request and the peeks and consumes that are due. When Raw move cannot run, the Standard move is written.
+    fn write_move(&mut self, movement: Movement) -> Result<()> {
         let session = self.session.as_ref().context("MAKCU is not connected")?;
         if self.move_method == MoveMethod::Raw {
             match self.raw.as_mut() {
@@ -221,15 +229,13 @@ impl MakcuClient {
                             ledger.on_reply(reply);
                         }
                     }
-                    if let Some(submit) = ledger.next_submit(x, y) {
+                    if let Some(submit) = ledger.next_submit(movement.x, movement.y) {
+                        self.batch.clear();
+                        self.batch.push(submit);
+                        ledger.due_requests(&mut self.batch);
                         session
-                            .send(&submit)
+                            .send(&self.batch)
                             .context("MAKCU raw mouse move failed")?;
-                        for request in ledger.due_requests() {
-                            session
-                                .send(&request)
-                                .context("MAKCU raw status request failed")?;
-                        }
                         return Ok(());
                     }
                     warn_raw_fallback(&mut self.raw_fallback_warned, "the Raw move ids ran out");
@@ -240,7 +246,10 @@ impl MakcuClient {
             }
         }
         session
-            .send(&Request::Move { x, y })
+            .send(&[Request::Move {
+                x: movement.x,
+                y: movement.y,
+            }])
             .context("MAKCU mouse move failed")?;
         Ok(())
     }
@@ -344,12 +353,16 @@ mod tests {
             .collect()
     }
 
+    fn step(x: i16, y: i16) -> Movement {
+        Movement { x, y }
+    }
+
     /// Moves until `done` holds, so that the replies the I/O thread reads are counted.
     fn settle(client: &mut MakcuClient, done: impl Fn(&MakcuClient) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while !done(client) {
             assert!(Instant::now() < deadline, "the Raw replies did not arrive");
-            client.move_mouse(0, 0).unwrap();
+            client.move_mouse(step(0, 0)).unwrap();
             thread::sleep(Duration::from_millis(1));
         }
     }
@@ -357,20 +370,10 @@ mod tests {
     #[test]
     fn a_standard_move_writes_the_move_frame() {
         let (mut client, fake) = MakcuClient::fake();
-        client.move_mouse(10, -5).unwrap();
+        client.move_mouse(step(10, -5)).unwrap();
         assert_eq!(
             last_frame(&fake),
             [0xDE, 0xAD, 4, 0, 0x18, 10, 0, 0xFB, 0xFF]
-        );
-    }
-
-    #[test]
-    fn x_and_y_outside_i16_are_clamped() {
-        let (mut client, fake) = MakcuClient::fake();
-        client.move_mouse(100_000, -100_000).unwrap();
-        assert_eq!(
-            last_frame(&fake),
-            [0xDE, 0xAD, 4, 0, 0x18, 0xFF, 0x7F, 0x00, 0x80]
         );
     }
 
@@ -379,7 +382,7 @@ mod tests {
         let (mut client, fake) = MakcuClient::fake();
         client.routes = MakcuRoutes::default();
         let frames = fake.frames().len();
-        let error = client.move_mouse(1, 1).unwrap_err();
+        let error = client.move_mouse(step(1, 1)).unwrap_err();
         assert_eq!(error.to_string(), "MAKCU reports no mouse route");
         assert_eq!(fake.frames().len(), frames);
     }
@@ -410,8 +413,8 @@ mod tests {
         fake.set_raw_last_accepted(4);
         let mut client = MakcuClient::fake_with(fake.clone());
         client.set_move_method(MoveMethod::Raw);
-        client.move_mouse(5, -5).unwrap();
-        client.move_mouse(1, 1).unwrap();
+        client.move_mouse(step(5, -5)).unwrap();
+        client.move_mouse(step(1, 1)).unwrap();
 
         assert!(frames_of(&fake, 0x18).is_empty());
         let raw = frames_of(&fake, 0x69);
@@ -435,7 +438,7 @@ mod tests {
         client.set_move_method(MoveMethod::Raw);
         // The eighth submit peeks the seven older ids, which all report a reject.
         for _ in 0..8 {
-            client.move_mouse(1, 0).unwrap();
+            client.move_mouse(step(1, 0)).unwrap();
         }
         settle(&mut client, |client| client.raw_stats().rejected >= 7);
 
@@ -451,13 +454,36 @@ mod tests {
     }
 
     #[test]
+    fn a_raw_move_with_its_due_peeks_is_one_port_write() {
+        let fake = FakeMakcu::new();
+        let mut client = MakcuClient::fake_with(fake.clone());
+        client.set_move_method(MoveMethod::Raw);
+        for _ in 0..8 {
+            client.move_mouse(step(1, 0)).unwrap();
+        }
+        // The eighth submit writes its request and the seven peeks of the older ids together.
+        let writes = fake.writes();
+        let eighth = writes.last().unwrap();
+        assert_eq!(eighth[4], 0x69);
+        assert_eq!(eighth.len(), 15 + 7 * 10);
+        let peeks: Vec<u8> = fake
+            .frames()
+            .iter()
+            .rev()
+            .take(7)
+            .map(|frame| frame[5])
+            .collect();
+        assert_eq!(peeks, [7, 6, 5, 4, 3, 2, 1]);
+    }
+
+    #[test]
     fn a_raw_move_that_the_device_refuses_at_submit_is_counted_at_once() {
         let fake = FakeMakcu::new();
         // State 255 is an immediate error: the id was not accepted, so nothing waits for it.
         fake.set_raw_submit(1, 255, 3);
         let mut client = MakcuClient::fake_with(fake.clone());
         client.set_move_method(MoveMethod::Raw);
-        client.move_mouse(1, 0).unwrap();
+        client.move_mouse(step(1, 0)).unwrap();
         settle(&mut client, |client| client.raw_stats().rejected >= 1);
         assert_eq!(client.raw_stats().last_reason, Some(3));
     }
@@ -468,7 +494,7 @@ mod tests {
         let mut client = MakcuClient::fake_with(fake.clone());
         client.set_move_method(MoveMethod::Raw);
         for _ in 0..8 {
-            client.move_mouse(1, 0).unwrap();
+            client.move_mouse(step(1, 0)).unwrap();
         }
         // Id 0 is the metadata query that the connect sends, so it is not a peek.
         let peeks: Vec<u8> = frames_of(&fake, 0x6A)
@@ -485,7 +511,7 @@ mod tests {
         fake.set_raw_metadata(false);
         let mut client = MakcuClient::fake_with(fake.clone());
         client.set_move_method(MoveMethod::Raw);
-        client.move_mouse(3, 4).unwrap();
+        client.move_mouse(step(3, 4)).unwrap();
         assert_eq!(last_frame(&fake), [0xDE, 0xAD, 4, 0, 0x18, 3, 0, 4, 0]);
         assert!(frames_of(&fake, 0x69).is_empty());
     }
@@ -496,19 +522,19 @@ mod tests {
         fake.set_raw_last_accepted(u32::MAX - 1);
         let mut client = MakcuClient::fake_with(fake.clone());
         client.set_move_method(MoveMethod::Raw);
-        client.move_mouse(1, 1).unwrap();
+        client.move_mouse(step(1, 1)).unwrap();
         assert_eq!(frames_of(&fake, 0x69)[0][5..9], [0xFF; 4]);
-        client.move_mouse(1, 1).unwrap();
+        client.move_mouse(step(1, 1)).unwrap();
         assert_eq!(last_frame(&fake)[4], 0x18);
     }
 
     #[test]
     fn a_change_of_the_move_method_takes_effect_on_the_next_move() {
         let (mut client, fake) = MakcuClient::fake();
-        client.move_mouse(1, 1).unwrap();
+        client.move_mouse(step(1, 1)).unwrap();
         assert_eq!(last_frame(&fake)[4], 0x18);
         client.set_move_method(MoveMethod::Raw);
-        client.move_mouse(1, 1).unwrap();
+        client.move_mouse(step(1, 1)).unwrap();
         assert_eq!(last_frame(&fake)[4], 0x69);
     }
 

@@ -70,7 +70,7 @@ Data flow:
 | `src/inference`     | The inference Pipeline, the postprocess, and the selection of the target.                   |
 | `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new Shortcut, and XInput.                  |
 | `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
-| `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing).      |
+| `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing, and the deadline wait). |
 
 ## Invariants
 
@@ -85,7 +85,7 @@ Data flow:
 - A model is validated one time, when it loads. The frame path does not check tensor shapes, so the load-time validation must stay complete.
 - A model is a file name in `models/`. The settings hold no path.
 - The engine never reuses a frame. A capture attempt without a new desktop update does no inference and sends no Movement.
-- The engine thread waits only on its command channel. It does not sleep on the frame path. It sets the next capture time from the actual start of the current capture, and it gives no credit for lost time.
+- The engine thread waits only for a command or for its capture deadline. It does not sleep on the frame path. It sets the next capture time from the start of the capture that got the New frame, and it gives no credit for lost time.
 - The engine thread does not lock the shared status on the frame path. It edits its own copy and publishes snapshots.
 - The engine thread never waits for the Trace thread. A failure of the trace never stops the engine.
 - Only the engine thread uses the MAKCU client. The engine stops the Run before it reconnects MAKCU.

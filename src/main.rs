@@ -30,6 +30,8 @@ mod settings;
 mod sync;
 #[cfg(windows)]
 mod timing;
+#[cfg(windows)]
+mod wait;
 
 #[cfg(windows)]
 fn main() -> eframe::Result {

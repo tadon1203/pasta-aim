@@ -69,7 +69,7 @@ impl Worker {
         self.loop_metrics.reset();
         self.trace = self.open_frame_trace();
         self.output_stage.reset();
-        self.next_capture = std::time::Instant::now();
+        self.capture_deadline.clear();
         self.capture_stats = Default::default();
         self.capture_stats_started = std::time::Instant::now();
         if let Some(capture) = self.capture.as_mut() {

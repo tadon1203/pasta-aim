@@ -21,7 +21,10 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use serde_json::{Value, json};
 
 use super::target_track::Track;
-use crate::inference::{Candidates, Detection};
+use crate::{
+    inference::{Candidates, Detection},
+    makcu::Movement,
+};
 
 const QUEUE_CAPACITY: usize = 8192;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -51,7 +54,7 @@ pub(super) struct FrameTraceRecord {
     /// Movement before rounding (after sensitivity and the max delta cap).
     pub planned: Option<(f32, f32)>,
     /// Movement actually submitted.
-    pub sent: Option<(i32, i32)>,
+    pub sent: Option<Movement>,
 }
 
 enum Message {
@@ -186,7 +189,7 @@ fn record_json(record: &FrameTraceRecord) -> Value {
         "target_id": record.track.map(|track| track.id),
         "target_switched": record.track.map(|track| track.switched),
         "planned": record.planned.map(|(x, y)| [x, y]),
-        "sent": record.sent.map(|(x, y)| [x, y]),
+        "sent": record.sent.map(|sent| [sent.x, sent.y]),
     })
 }
 
@@ -222,7 +225,7 @@ mod tests {
                 switched: true,
             }),
             planned: Some((1.5, -2.0)),
-            sent: Some((2, -2)),
+            sent: Some(Movement { x: 2, y: -2 }),
         });
         drop(writer);
 
