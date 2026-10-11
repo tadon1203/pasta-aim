@@ -8,6 +8,9 @@ use makxd::{CommandApi, ConnectionState, Device, DeviceKinds, crossbeam_channel:
 
 use crate::settings::InjectionApi;
 
+#[expect(dead_code, reason = "the session uses this in ticket 03")]
+mod protocol;
+
 const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const RECONNECT_RETRY_WINDOW: Duration = Duration::from_millis(500);
 const DISCONNECT_WAIT: Duration = Duration::from_millis(300);
@@ -23,6 +26,16 @@ impl MakcuRoutes {
             mouse: kinds.mouse(),
         }
     }
+}
+
+/// Counters of the Raw moves. See `docs/makcu-protocol.md`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RawStats {
+    pub submitted: u64,
+    pub rejected: u64,
+    pub timed_out: u64,
+    pub consecutive_rejected: u32,
+    pub last_reason: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
