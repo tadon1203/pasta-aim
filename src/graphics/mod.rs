@@ -84,13 +84,11 @@ pub struct DisplayInfo {
     pub display_name: String,
     pub width: u32,
     pub height: u32,
-    /// Top-left corner of the display on the virtual desktop, in physical pixels.
-    pub desktop_origin: (i32, i32),
     pub refresh_hz: f64,
 }
 
 /// Top-left corner of the centered `input` region inside a `desktop`-sized
-/// frame. The capture copy and the overlay placement must agree on this.
+/// frame.
 pub fn center_crop_origin(desktop: (usize, usize), input: (usize, usize)) -> (usize, usize) {
     ((desktop.0 - input.0) / 2, (desktop.1 - input.1) / 2)
 }
@@ -189,10 +187,6 @@ fn current_display_info(
         display_name: wide_string(&output_desc.DeviceName),
         width: mode.dmPelsWidth,
         height: mode.dmPelsHeight,
-        desktop_origin: (
-            output_desc.DesktopCoordinates.left,
-            output_desc.DesktopCoordinates.top,
-        ),
         refresh_hz: f64::from(mode.dmDisplayFrequency),
     })
 }

@@ -71,7 +71,6 @@ impl Worker {
             status.capture.desktop_size = None;
             status.capture.error = Some(error.clone());
         });
-        self.refresh_overlay_region();
 
         // The model waits for its GPU queue before capture and COM are released.
         self.model = None;

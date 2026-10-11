@@ -82,23 +82,6 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 - Shortcuts work when the app does not have the focus.
 - While the user records a new Shortcut, no Shortcut starts an action. Esc cancels the recording.
 
-## Overlay
-
-| Setting       | Range        | Default           |
-| ------------- | ------------ | ----------------- |
-| Show          | on, off      | off               |
-| Line width    | 1 to 8 px    | 2 px              |
-| Line color    | RGB          | `255, 64, 64`     |
-| Opacity       | 10 to 100 %  | 100 %             |
-| Outline width | 0 to 4 px    | 1 px (0 is none)  |
-| Outline color | RGB          | `0, 0, 0`         |
-
-- The Overlay draws the box of the target over the Model input region.
-- A box disappears 1 second after its last update.
-- The Overlay does not appear in the captured image, so the model does not see it.
-- The Overlay works with borderless and windowed fullscreen. Exclusive fullscreen is not supported.
-- A failure of the Overlay does not stop a Run.
-
 ## Diagnostics
 
 - **Log level**: `off`, `error`, `warn`, `info` (default), `debug`, `trace`. Each session writes `logs/session-<unix_ms>-<pid>.log`.

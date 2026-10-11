@@ -49,14 +49,12 @@ One Windows process, written in Rust. Each thread owns its resources, and the th
 - **UI thread** (`src/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
 - **Engine thread** (`src/engine`): it owns the Pipeline and the MAK client. The Pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
 - **Input thread** (`src/hotkeys`): global keyboard hotkeys and XInput polling. It turns a Shortcut into an engine command. It holds no run state of the engine.
-- **Overlay thread** (`src/overlay`): a window with its own Direct3D 11 device, drawn with Direct2D through DirectComposition. It shares no GPU device with the Pipeline.
 - **Trace thread** (`src/engine`): it formats and writes the Frame trace.
 
 Data flow:
 
 - **UI thread and Input thread → Engine thread:** commands, on one channel.
 - **Engine thread → UI thread:** events (the result of a model load or of a capture selection) on a channel, and status snapshots that the engine publishes at a limited rate, each with a repaint request.
-- **Engine thread → Overlay thread:** the newest target box.
 - **Engine thread → Trace thread:** one record for each processed frame.
 - **Inside the engine thread, for each frame:** acquire → GPU copy and preprocess → inference and postprocess → output → next acquire. The engine handles pending commands before the acquire, and again after the inference and before the output.
 - **On the GPU:** Direct3D 11 copies the captured image into one shared texture. Direct3D 12 opens the same texture for the preprocess. Fences order the two devices.
@@ -71,7 +69,6 @@ Data flow:
 | `src/graphics`      | The capture, the shared frame texture and its fences, the GPU preprocess, and GPU faults.   |
 | `src/inference`     | The inference Pipeline, the postprocess, and the selection of the target.                   |
 | `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new Shortcut, and XInput.                  |
-| `src/overlay`       | The Overlay: its thread, window, layout, and renderer.                                      |
 | `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing, MAK). |
 | `vendor/makxd`      | The MAK SDK, vendored.                                                                      |
 
@@ -91,8 +88,7 @@ Data flow:
 - The engine discards the frame that it keeps for reuse on a stop, a start, a change of the capture settings, a Pipeline replacement, an expiry, and a lost capture access.
 - The engine thread waits only on its command channel. It does not sleep on the frame path. It sets the next capture time from the actual start of the current capture, and it gives no credit for lost time.
 - The engine thread does not lock the shared status on the frame path. It edits its own copy and publishes snapshots.
-- The engine thread never waits for the Overlay thread or the Trace thread. A failure of the Overlay or of the trace never stops the engine.
-- The Overlay window is excluded from screen capture, so the model never sees the boxes.
+- The engine thread never waits for the Trace thread. A failure of the trace never stops the engine.
 - Only the engine thread uses the MAK client. The engine stops the Run before it reconnects MAK.
 - The Rounding remainder stays inside one Target track. A Target switch, a lost target, and the start of a Run clear it.
 - Global Shortcut dispatch stops while the user records a new Shortcut.

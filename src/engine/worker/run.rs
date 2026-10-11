@@ -119,12 +119,6 @@ impl Worker {
 
     /// Stops any active run. Safe to call when idle.
     pub(super) fn stop_run(&mut self) {
-        self.stop_run_inner(true);
-    }
-
-    /// `clear_overlay = false` lets the last box of a finished one-shot run
-    /// stay visible until it expires.
-    fn stop_run_inner(&mut self, clear_overlay: bool) {
         if let Some(run) = self.run.active.take() {
             tracing::info!(generation = run.generation, "inference stopped");
         }
@@ -132,9 +126,6 @@ impl Worker {
         self.trace = None;
         self.output_stage.reset();
         self.publish_capture_stats(true);
-        if clear_overlay && let Some(overlay) = &self.overlay {
-            overlay.clear();
-        }
         self.status.edit(|status| status.run.phase = RunPhase::Idle);
     }
 
@@ -192,7 +183,7 @@ impl Worker {
             }
         });
         if report.one_shot_done {
-            self.stop_run_inner(false);
+            self.stop_run();
         } else {
             let metrics = &self.metrics;
             self.summary.log_if_due(|| metrics.snapshot());

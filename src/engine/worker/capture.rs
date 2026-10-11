@@ -8,7 +8,6 @@ use crate::{
         EpAssignmentState, TensorPrecision,
         pipeline::{InferencePipeline, prepare_directml_pipeline},
     },
-    overlay::Region,
 };
 use anyhow::Result;
 use std::sync::Arc;
@@ -174,7 +173,6 @@ impl Worker {
         });
         self.model = model;
         self.capture = Some(capture);
-        self.refresh_overlay_region();
         self.emit_event(EngineEvent::Capture {
             adapter,
             output,
@@ -216,29 +214,6 @@ impl Worker {
             capture,
             display,
         })
-    }
-
-    /// Points the overlay at the model input region of the committed pipeline,
-    /// or at nothing while there is no usable pipeline.
-    pub(super) fn refresh_overlay_region(&self) {
-        let Some(overlay) = &self.overlay else {
-            return;
-        };
-        let status = self.status.get();
-        let region = status
-            .capture
-            .selected
-            .as_ref()
-            .zip(status.model.input_size)
-            .filter(|_| self.model_ready)
-            .and_then(|(display, input)| {
-                Region::for_display(
-                    display.desktop_origin,
-                    (display.width as usize, display.height as usize),
-                    input,
-                )
-            });
-        overlay.set_region(region);
     }
 
     /// Records a freshly loaded model as the running pipeline.

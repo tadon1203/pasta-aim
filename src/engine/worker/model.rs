@@ -39,7 +39,6 @@ impl Worker {
                     status.model.active_name = Some(name.clone());
                     status.model.loading_name = None;
                 });
-                self.refresh_overlay_region();
                 if notify {
                     self.emit_event(EngineEvent::Model {
                         name: name.clone(),

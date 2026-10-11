@@ -350,11 +350,6 @@ impl SerialStages for FrameStep<'_> {
             worker.metrics.record_gpu_drop(GpuDropReason::ExpiredFrame);
             None
         };
-        if let Some(overlay) = &worker.overlay {
-            overlay
-                .publisher()
-                .publish(detection.as_ref().map(crate::overlay::BoxRect::from));
-        }
         let output_start_qpc = qpc.now();
         let outcome = match worker
             .output_stage
@@ -492,7 +487,6 @@ mod tests {
             capture_output: 0,
             selected_adapter_luid: AdapterLuid { low: 0, high: 0 },
             mak,
-            overlay: None,
             run: RunControl::default(),
             summary: RunSummary::new(),
             metrics: Metrics::new(),
@@ -509,7 +503,6 @@ mod tests {
                 display_name: "test display".into(),
                 width: 100,
                 height: 100,
-                desktop_origin: (0, 0),
                 refresh_hz: 60.0,
             });
         });

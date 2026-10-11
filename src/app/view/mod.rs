@@ -70,8 +70,6 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                     self.draw_continuous(ui, &status);
                     ui.add_space(6.0);
-                    self.draw_overlay(ui);
-                    ui.add_space(6.0);
                     self.draw_hotkeys(ui, &status);
                     ui.add_space(6.0);
                     self.draw_diagnostics(ui, &status);

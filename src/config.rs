@@ -8,7 +8,7 @@ use crate::{
     models, paths,
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi,
-        MaxDelta, OverlayConfig, Sensitivity, TargetYOffset,
+        MaxDelta, Sensitivity, TargetYOffset,
     },
 };
 
@@ -32,7 +32,6 @@ pub struct Config {
     pub capture_output: u32,
     /// Busy-waits on DirectML completion for lower tail latency at the cost of one CPU core.
     pub low_latency: bool,
-    pub overlay: OverlayConfig,
     pub diagnostics: DiagnosticsConfig,
 }
 
@@ -73,7 +72,6 @@ impl Default for Config {
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
             capture_output: 0,
             low_latency: false,
-            overlay: OverlayConfig::default(),
             diagnostics: DiagnosticsConfig::default(),
         }
     }
@@ -198,9 +196,6 @@ impl Config {
         }
         if !self.fps_limit.is_valid() {
             bail!("fps_limit must be in {}..={}", FpsLimit::MIN, FpsLimit::MAX);
-        }
-        if !self.overlay.is_valid() {
-            bail!("overlay settings are out of range");
         }
         if !self.capture.is_valid() {
             bail!("capture settings are out of range");
@@ -421,24 +416,6 @@ mod tests {
         assert!(config.low_latency);
         assert_eq!(config.confidence_threshold, ConfidenceThreshold::default());
         assert_eq!(config.hotkeys.len(), default_hotkeys().len());
-        assert_eq!(config.overlay, OverlayConfig::default());
-    }
-
-    #[test]
-    fn overlay_accepts_partial_settings_and_validates_ranges() {
-        let config: Config =
-            serde_json::from_str(r#"{"overlay": {"enabled": true, "line_width": 4}}"#).unwrap();
-        assert!(config.overlay.enabled);
-        assert_eq!(config.overlay.line_width.value(), 4);
-        assert_eq!(
-            config.overlay.outline_width,
-            OverlayConfig::default().outline_width
-        );
-        assert!(config.validate().is_ok());
-
-        let out_of_range: Config =
-            serde_json::from_str(r#"{"overlay": {"line_width": 200}}"#).unwrap();
-        assert!(out_of_range.validate().is_err());
     }
 
     #[test]

@@ -51,6 +51,5 @@ The language of nice-aimassist. Use these terms in code, docs, and tickets. Do n
 
 ## Diagnostics
 
-- **Overlay**: a transparent window that draws the box of the target over the Model input region.
 - **Frame trace**: a file that records every processed frame of one Run.
 - **Loop metrics**: measurements of how well the output follows the target, such as the error and the time to reach the target.

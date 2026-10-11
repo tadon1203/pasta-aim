@@ -38,8 +38,8 @@ use eframe::egui;
 use crate::{
     config::Config,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, InjectionApi, MaxDelta, OverlayConfig,
-        Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, InjectionApi, MaxDelta, Sensitivity,
+        TargetYOffset,
     },
 };
 use crossbeam_channel as crossbeam;
@@ -77,7 +77,6 @@ pub enum Command {
     SetLowLatency(bool),
     /// Applies to the next run.
     SetFrameTrace(bool),
-    SetOverlay(OverlayConfig),
     SetInjectionApi(InjectionApi),
     SetCaptureSelection {
         adapter: u32,

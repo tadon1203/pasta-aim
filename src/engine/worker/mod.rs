@@ -30,7 +30,6 @@ use crate::{
     mak::MakClient,
     metrics::Metrics,
     models,
-    overlay::Overlay,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     timing::QpcClock,
 };
@@ -77,9 +76,6 @@ struct Worker {
     selected_adapter_luid: AdapterLuid,
 
     mak: MakClient,
-    /// `None` when the overlay thread could not be started; the rest of the
-    /// engine works without it.
-    overlay: Option<Overlay>,
     run: RunControl,
     summary: RunSummary,
     metrics: Metrics,
@@ -151,13 +147,6 @@ pub(super) fn run_worker(
     };
     let mak = MakClient::new();
     let _boost = crate::platform::boost_current_thread("engine");
-    let overlay = match Overlay::spawn(config.overlay) {
-        Ok(overlay) => Some(overlay),
-        Err(error) => {
-            tracing::error!(error = %format!("{error:#}"), "overlay unavailable");
-            None
-        }
-    };
     let mut worker = Worker {
         event_tx,
         ui_ctx,
@@ -183,7 +172,6 @@ pub(super) fn run_worker(
         capture_output: config.capture_output,
         selected_adapter_luid: config.selected_adapter,
         mak,
-        overlay,
         run: RunControl::default(),
         summary: RunSummary::new(),
         metrics: Metrics::new(),
@@ -317,11 +305,6 @@ impl Worker {
                 self.cached_frame = None;
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
-            Command::SetOverlay(config) => {
-                if let Some(overlay) = &self.overlay {
-                    overlay.set_config(config);
-                }
-            }
             Command::SetInjectionApi(api) => {
                 let result = self.mak.set_injection_api(api);
                 match result {

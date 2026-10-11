@@ -31,12 +31,12 @@ The project builds only on Windows with the MSVC toolchain. There is no CI and t
 - Format: `cargo fmt --all -- --check`. Fix format with `cargo fmt --all`.
 - Lint: `cargo clippy --all-targets --all-features -- -D warnings`
 - Tests: `cargo test`. The tests need no hardware.
-- Changes in `src/overlay` or `src/graphics`: `cargo test -- --ignored` (needs a desktop session and a GPU).
+- Changes in `src/graphics`: `cargo test -- --ignored` (needs a desktop session and a GPU).
 - Release: `cargo build --release`
 
 The lint, the full test run, and the release build are slow. Run them in the background. While you iterate, use a focused check: `cargo check` or `cargo test <name>`.
 
-Capture, inference, MAK output, and the overlay need hardware. Only the user can test them, with a release build.
+Capture, inference, and MAK output need hardware. Only the user can test them, with a release build.
 
 ## Workflow
 
