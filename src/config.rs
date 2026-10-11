@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     models, paths,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi, MaxDelta,
-        OverlayConfig, Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, InjectionApi,
+        MaxDelta, OverlayConfig, Sensitivity, TargetYOffset,
     },
 };
 
@@ -23,6 +23,7 @@ pub struct Config {
     /// Per-frame cap on the output movement length; 0 = unlimited.
     pub max_delta: MaxDelta,
     pub fps_limit: FpsLimit,
+    pub capture: CaptureSettings,
     pub injection_api: InjectionApi,
     pub hotkeys: Vec<HotkeyBinding>,
     pub selected_adapter: crate::inference::AdapterLuid,
@@ -64,6 +65,7 @@ impl Default for Config {
             target_y_offset: TargetYOffset::default(),
             max_delta: MaxDelta::default(),
             fps_limit: FpsLimit::default(),
+            capture: CaptureSettings::default(),
             injection_api: InjectionApi::default(),
             hotkeys: default_hotkeys(),
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
@@ -180,6 +182,9 @@ impl Config {
         if !self.overlay.is_valid() {
             bail!("overlay settings are out of range");
         }
+        if !self.capture.is_valid() {
+            bail!("capture settings are out of range");
+        }
 
         if let Some(model) = &self.model {
             models::validate_model_name(model)?;
@@ -211,6 +216,29 @@ fn default_hotkeys() -> Vec<HotkeyBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_policy_defaults_round_trips_and_validates_ranges() {
+        let old: Config = serde_json::from_str(r#"{"fps_limit":120}"#).unwrap();
+        assert_eq!(old.capture, CaptureSettings::default());
+        assert_eq!(old.fps_limit.value(), 120);
+        let mut config: Config = serde_json::from_str(r#"{"capture":{"wait_ms":1}}"#).unwrap();
+        assert_eq!(config.capture.max_reuse_age_ms, 15);
+        config.validate().unwrap();
+        let restored: Config =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.capture, config.capture);
+        for invalid in [0, 21] {
+            config.capture.wait_ms = invalid;
+            assert!(config.validate().is_err());
+        }
+        config.capture.wait_ms = 1;
+        for invalid in [0, 51] {
+            config.capture.max_reuse_age_ms = invalid;
+            assert!(config.validate().is_err());
+        }
+        assert!(serde_json::from_str::<Config>(r#"{"capture":{"extra":true}}"#).is_err());
+    }
 
     #[test]
     fn current_config_deserializes_keyboard_and_xinput_bindings() {

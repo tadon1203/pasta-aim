@@ -1,13 +1,4 @@
-//! Turns detections into MAK output on the inference thread.
-//!
-//! The engine thread only configures this stage (settings via the inference
-//! command channel, MAK routes through the shared client); the per-frame path
-//! never leaves the inference thread.
-
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicI64, AtomicU64, Ordering},
-};
+//! Stateful target tracking and mouse output, owned by the engine thread.
 
 use anyhow::Result;
 
@@ -16,68 +7,14 @@ use crate::{
     inference::Detection,
     mak::MakClient,
     settings::{MaxDelta, Sensitivity, TargetYOffset},
-    sync::MutexExt,
 };
 
-/// User-tunable output parameters, sent to the inference thread on change.
+/// User-tunable output parameters, applied directly by the engine.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct OutputSettings {
     pub sensitivity: Sensitivity,
     pub target_y_offset: TargetYOffset,
     pub max_delta: MaxDelta,
-}
-
-/// Rejects frames that were presented before the last output finished: they
-/// cannot reflect the motion that output caused. Shared between the capture
-/// thread (drops before the GPU copy) and the inference thread (drops before
-/// inference).
-#[derive(Clone)]
-pub(super) struct MotionGate(Arc<GateState>);
-
-struct GateState {
-    last_complete_qpc: AtomicI64,
-    discards: AtomicU64,
-    /// Never reset; lets a trace correlate discards with frames.
-    discards_total: AtomicU64,
-}
-
-const NO_MOTION: i64 = i64::MIN;
-
-impl MotionGate {
-    pub(super) fn new() -> Self {
-        Self(Arc::new(GateState {
-            last_complete_qpc: AtomicI64::new(NO_MOTION),
-            discards: AtomicU64::new(0),
-            discards_total: AtomicU64::new(0),
-        }))
-    }
-
-    pub(super) fn reset(&self) {
-        self.0.last_complete_qpc.store(NO_MOTION, Ordering::Release);
-    }
-
-    pub(super) fn mark_complete(&self, qpc: i64) {
-        self.0.last_complete_qpc.store(qpc, Ordering::Release);
-    }
-
-    /// Counts a discard when the frame is stale.
-    pub(super) fn reject(&self, present_qpc: i64) -> bool {
-        let last = self.0.last_complete_qpc.load(Ordering::Acquire);
-        let stale = last != NO_MOTION && present_qpc <= last;
-        if stale {
-            self.0.discards.fetch_add(1, Ordering::Relaxed);
-            self.0.discards_total.fetch_add(1, Ordering::Relaxed);
-        }
-        stale
-    }
-
-    pub(super) fn discards_total(&self) -> u64 {
-        self.0.discards_total.load(Ordering::Relaxed)
-    }
-
-    pub(super) fn take_discards(&self) -> u64 {
-        self.0.discards.swap(0, Ordering::AcqRel)
-    }
 }
 
 /// `(dx, dy, confidence, class_id)` relative to the model input center.
@@ -143,7 +80,6 @@ fn plan(detection: Detection, input_size: (usize, usize), settings: OutputSettin
 }
 
 pub(super) struct OutputStage {
-    mak: Arc<Mutex<MakClient>>,
     settings: OutputSettings,
     input_size: (usize, usize),
     tracker: TargetTracker,
@@ -153,9 +89,8 @@ pub(super) struct OutputStage {
 }
 
 impl OutputStage {
-    pub(super) fn new(mak: Arc<Mutex<MakClient>>, settings: OutputSettings) -> Self {
+    pub(super) fn new(settings: OutputSettings) -> Self {
         Self {
-            mak,
             settings,
             input_size: (0, 0),
             tracker: TargetTracker::default(),
@@ -178,7 +113,12 @@ impl OutputStage {
     }
 
     /// Submits the mouse movement for one frame, if there is a target to move to.
-    pub(super) fn emit(&mut self, detection: Option<Detection>) -> Result<OutputOutcome> {
+    pub(super) fn emit(
+        &mut self,
+        mak: &mut MakClient,
+        detection: Option<Detection>,
+        can_send: impl FnOnce() -> bool,
+    ) -> Result<OutputOutcome> {
         let track = self.tracker.update(detection.as_ref());
         if track.is_none_or(|track| track.switched) {
             self.carry = (0.0, 0.0);
@@ -202,7 +142,17 @@ impl OutputStage {
                 planned: Some(movement),
             });
         };
-        self.mak.lock_recover().move_mouse(x, y)?;
+        // Check immediately before the device write.
+        if !can_send() {
+            self.carry = (0.0, 0.0);
+            return Ok(OutputOutcome {
+                target: Some(target),
+                command: None,
+                track,
+                planned: Some(movement),
+            });
+        }
+        mak.move_mouse(x, y)?;
         Ok(OutputOutcome {
             target: Some(target),
             command: Some((x, y)),
@@ -215,6 +165,19 @@ impl OutputStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expired_frame_is_not_submitted_and_does_not_carry_movement() {
+        // A submission would fail because MAK is disconnected. The expiry guard
+        // must run before any device call, even for a disconnected device.
+        let mut output = OutputStage::new(settings(100, 50));
+        output.set_input_size((100, 100));
+        let outcome = output
+            .emit(&mut MakClient::new(), Some(detection(70.0, 40.0)), || false)
+            .unwrap();
+        assert_eq!(outcome.command, None);
+        assert_eq!(output.carry, (0.0, 0.0));
+    }
 
     fn detection(center_y: f32, box_height: f32) -> Detection {
         Detection {
@@ -311,18 +274,5 @@ mod tests {
         let (step, carry) = quantize_with_carry((1.0e9, 0.0), (0.0, 0.0));
         assert_eq!(step, Some((i16::MAX as i32, 0)));
         assert_eq!(carry, (0.5, 0.0));
-    }
-
-    #[test]
-    fn causal_gate_rejects_equal_and_older_present_times() {
-        let gate = MotionGate::new();
-        assert!(!gate.reject(0));
-        gate.mark_complete(100);
-        assert!(gate.reject(99));
-        assert!(gate.reject(100));
-        assert!(!gate.reject(101));
-        assert_eq!(gate.take_discards(), 2);
-        gate.reset();
-        assert!(!gate.reject(0));
     }
 }

@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use super::{Worker, capture::load_model_into, log_pipeline_state};
+use super::{Worker, capture::prepare_model, log_pipeline_state};
 use crate::engine::{EngineEvent, ModelPhase};
 
 impl Worker {
-    /// Loads `path` on a fresh inference worker and swaps it in only on success,
+    /// Loads `path` on a candidate GPU pipeline and commits it only on success,
     /// so a failed load keeps the previous model running.
     pub(super) fn load_model(&mut self, notify: bool, name: String, path: PathBuf) {
         self.auto_reprepare_attempted = false;
@@ -23,23 +23,18 @@ impl Worker {
         // Loading blocks this thread; show the state before it starts.
         self.status.flush();
 
-        let candidate = self.spawn_inference().and_then(|candidate| {
-            let loaded = load_model_into(
-                &self.capture_worker,
-                &candidate,
-                &path,
-                self.selected_adapter_luid,
-                pipeline_id,
-            )?;
-            Ok((candidate, loaded))
-        });
+        let candidate = self
+            .capture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("capture is not configured"))
+            .and_then(|capture| prepare_model(capture, &path, pipeline_id, self.tuning));
         match candidate {
-            Ok((candidate, loaded)) => {
-                self.inference_worker = candidate;
+            Ok(loaded) => {
                 self.model_ready = true;
                 self.active_model = Some((name.clone(), path));
                 self.metrics.mark_cold_next();
                 self.commit_model_status(&loaded);
+                self.model = Some(loaded);
                 self.status.edit(|status| {
                     status.model.active_name = Some(name.clone());
                     status.model.loading_name = None;

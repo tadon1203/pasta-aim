@@ -15,7 +15,7 @@ use windows::Win32::Graphics::{
         DXGI_ADAPTER_DESC3, DXGI_ADAPTER_FLAG3_SUPPORT_MONITORED_FENCES,
         DXGI_ADAPTER_FLAG3_SUPPORT_NON_MONITORED_FENCES, DXGI_ERROR_ACCESS_LOST,
         DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIAdapter4,
-        IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+        IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
     },
 };
 use windows::core::Interface;
@@ -24,8 +24,6 @@ use super::gpu_diagnostics::GpuFaultStage;
 use super::profile_sampler::ProfileSampler;
 use super::{DisplayInfo, select_output};
 
-/// Highest value accepted by `IDXGIDevice::SetGPUThreadPriority`.
-const GPU_THREAD_PRIORITY: i32 = 7;
 const GPU_QUERY_RING_SIZE: usize = 16;
 
 pub(crate) enum CapturePoll {
@@ -33,6 +31,7 @@ pub(crate) enum CapturePoll {
     NoDesktopUpdate(NoDesktopUpdateReason),
 }
 
+#[derive(Clone)]
 pub(crate) struct AcquiredDesktopFrame {
     texture: ID3D11Texture2D,
     acquire_wait_ms: f64,
@@ -210,6 +209,7 @@ pub struct DxgiCapture {
     first_signal_logged: bool,
     last_fault_stage: GpuFaultStage,
     last_ready_completed: Option<u64>,
+    cached_texture: Option<ID3D11Texture2D>,
 }
 
 impl DxgiCapture {
@@ -248,6 +248,7 @@ impl DxgiCapture {
             first_signal_logged: false,
             last_fault_stage: GpuFaultStage::CaptureCopy,
             last_ready_completed: None,
+            cached_texture: None,
         })
     }
 
@@ -336,20 +337,65 @@ impl DxgiCapture {
         }))
     }
 
-    pub(crate) fn copy_center_to(
+    /// Private cropped GPU snapshot; shared frame and DXGI-owned images are not retained.
+    pub(crate) fn cache_frame(
         &mut self,
         frame: &AcquiredDesktopFrame,
-        slot: usize,
+        size: (usize, usize),
+    ) -> Result<AcquiredDesktopFrame> {
+        let (width, height) = size;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        if let Some(texture) = &self.cached_texture {
+            // SAFETY: texture is retained by this capture device.
+            unsafe { texture.GetDesc(&mut desc) };
+        }
+        if desc.Width as usize != width || desc.Height as usize != height {
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: u32::try_from(width)?,
+                Height: u32::try_from(height)?,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT,
+                ..Default::default()
+            };
+            let mut texture = None;
+            // SAFETY: valid descriptor and output storage; no initial data.
+            unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut texture)) }
+                .context("failed to create cached frame texture")?;
+            self.cached_texture = Some(texture.context("D3D11 returned no cache texture")?);
+        }
+        let texture = self.cached_texture.as_ref().expect("created above");
+        self.copy_center_image(frame, texture, size)?;
+        // All cache writes
+        // and copies into the shared frame are ordered on this same immediate context.
+        unsafe { self.context.Flush() };
+        Ok(AcquiredDesktopFrame {
+            texture: texture.clone(),
+            acquire_wait_ms: frame.acquire_wait_ms,
+            desktop_size: frame.desktop_size,
+            present_qpc: frame.present_qpc,
+            accumulated_frames: frame.accumulated_frames,
+        })
+    }
+
+    fn copy_center_image(
+        &self,
+        frame: &AcquiredDesktopFrame,
         destination: &ID3D11Texture2D,
-        ready_fence: &ID3D11Fence,
-        ready_value: u64,
         (width, height): (usize, usize),
-    ) -> Result<Option<CaptureSubmit>> {
-        self.last_fault_stage = GpuFaultStage::CaptureCopy;
+    ) -> Result<()> {
         if width == 0 || height == 0 {
             bail!("model input size must be non-zero");
         }
-        let (frame_width, frame_height) = frame.desktop_size;
+        let mut source_desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: the source texture is live.
+        unsafe { frame.texture.GetDesc(&mut source_desc) };
+        let (frame_width, frame_height) = (source_desc.Width as usize, source_desc.Height as usize);
         if width > frame_width || height > frame_height {
             bail!(
                 "model input {}x{} is larger than captured desktop {}x{}",
@@ -382,13 +428,6 @@ impl DxgiCapture {
             .texture
             .cast::<ID3D11Resource>()
             .context("failed to cast desktop texture to D3D11 resource")?;
-        let capture_started = Instant::now();
-        let copy_started = Instant::now();
-        let query_slot = if self.gpu_profiler.sampler.should_measure() {
-            self.gpu_profiler.begin(&self.context)
-        } else {
-            None
-        };
         // SAFETY: resources share a device; source_box stays in bounds.
         unsafe {
             self.context.CopySubresourceRegion(
@@ -402,8 +441,28 @@ impl DxgiCapture {
                 Some(&source_box as *const D3D11_BOX),
             );
         }
+        Ok(())
+    }
+
+    pub(crate) fn copy_center_to(
+        &mut self,
+        frame: &AcquiredDesktopFrame,
+        destination: &ID3D11Texture2D,
+        ready_fence: &ID3D11Fence,
+        ready_value: u64,
+        (width, height): (usize, usize),
+    ) -> Result<CaptureSubmit> {
+        self.last_fault_stage = GpuFaultStage::CaptureCopy;
+        let capture_started = Instant::now();
+        let copy_started = Instant::now();
+        let query_slot = if self.gpu_profiler.sampler.should_measure() {
+            self.gpu_profiler.begin(&self.context)
+        } else {
+            None
+        };
+        self.copy_center_image(frame, destination, (width, height))?;
         let copy_submit_ms = copy_started.elapsed().as_secs_f64() * 1000.0;
-        tracing::debug!(slot, width, height, "copy_subresource_submitted");
+        tracing::debug!(width, height, "copy_subresource_submitted");
         if let Some(index) = query_slot {
             self.gpu_profiler.end(&self.context, index);
         }
@@ -424,7 +483,6 @@ impl DxgiCapture {
         if let Err(error) = unsafe { self.context.Signal(ready_fence, ready_value) } {
             let hr = format!("0x{:08X}", error.code().0 as u32);
             tracing::error!(
-                slot,
                 value = ready_value,
                 completed_before,
                 hr,
@@ -436,7 +494,6 @@ impl DxgiCapture {
         // Signal may not reach the GPU while the D3D12 queue already waits on it.
         unsafe { self.context.Flush() };
         tracing::debug!(
-            slot,
             value = ready_value,
             completed_before,
             "capture_ready_signal"
@@ -446,14 +503,14 @@ impl DxgiCapture {
             self.first_signal_logged = true;
         }
         let capture_ms = capture_started.elapsed().as_secs_f64() * 1000.0;
-        Ok(Some(CaptureSubmit {
+        Ok(CaptureSubmit {
             present_qpc: frame.present_qpc,
             accumulated_frames: frame.accumulated_frames,
             desktop_size: frame.desktop_size,
             acquire_wait_ms: frame.acquire_wait_ms,
             capture_ms,
             copy_submit_ms,
-        }))
+        })
     }
 
     pub(crate) fn try_take_gpu_copy_sample(&mut self) -> Option<GpuCopySample> {
@@ -481,18 +538,6 @@ impl Drop for DxgiCapture {
     }
 }
 
-/// Asks the GPU scheduler to run this device's work ahead of other processes'
-/// (the game's) when the GPU is saturated. Best effort.
-fn raise_gpu_thread_priority(device: &ID3D11Device4) {
-    let Ok(dxgi_device) = device.cast::<IDXGIDevice>() else {
-        return;
-    };
-    // SAFETY: plain call on a live DXGI device.
-    if let Err(error) = unsafe { dxgi_device.SetGPUThreadPriority(GPU_THREAD_PRIORITY) } {
-        tracing::warn!(%error, "could not raise D3D11 GPU thread priority");
-    }
-}
-
 fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device4, ID3D11DeviceContext4)> {
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
@@ -514,7 +559,6 @@ fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device4, ID3D11Device
         return Err(error).context("failed to create D3D11 device");
     }
     let device: ID3D11Device4 = device.context("D3D11 returned no device")?.cast()?;
-    raise_gpu_thread_priority(&device);
     let context = context
         .context("D3D11 returned no immediate context")?
         .cast()?;

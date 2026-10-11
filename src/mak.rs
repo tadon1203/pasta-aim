@@ -55,6 +55,15 @@ impl Default for MakClient {
 }
 
 impl MakClient {
+    #[cfg(test)]
+    pub(crate) fn mock() -> (Self, std::sync::Arc<makxd::MockTransport>) {
+        let (device, transport) = Device::mock();
+        let mut client = Self::new();
+        client.device = Some(device);
+        client.routes = MakRoutes { mouse: true };
+        (client, transport)
+    }
+
     pub fn new() -> Self {
         Self {
             device: None,

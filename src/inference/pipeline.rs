@@ -6,13 +6,13 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device4;
 use crate::{
     graphics::{
         device::GpuDeviceContext,
-        frame_mailbox::{FramePublisher, GPU_FRAME_SLOTS, GpuFrameLease, GpuFrameMetadata},
+        frame::GpuFrameMetadata,
         gpu_diagnostics::{
             FenceProgress, GpuFaultReport, GpuFaultStage, collect_gpu_fault_report,
             d3d12_device_lost,
         },
         preprocess::GpuPreprocessor,
-        shared_frame_pool::{CaptureFramePool, InferenceFramePool, create_shared_frame_pool},
+        shared_frame::{CaptureFrame, InferenceFrame, create_shared_frame},
     },
     inference::{AdapterLuid, Candidates, Detection, EpAssignmentState, ModelInputSpec},
     settings::ConfidenceThreshold,
@@ -29,11 +29,11 @@ pub struct InferenceResult {
 }
 
 /// Field order is drop order: ORT objects first, then the preprocessor and frame
-/// pool, and the D3D12 device last.
+/// resource, and the D3D12 device last.
 pub struct InferencePipeline {
     backend: OrtDirectMlBackend,
     preprocess: GpuPreprocessor,
-    frames: InferenceFramePool,
+    frames: InferenceFrame,
     gpu: GpuDeviceContext,
     fault_report: Option<GpuFaultReport>,
     prepare_id: String,
@@ -41,7 +41,7 @@ pub struct InferencePipeline {
 
 pub struct PreparedPipeline {
     pub pipeline: InferencePipeline,
-    pub capture_frames: CaptureFramePool,
+    pub capture_frames: CaptureFrame,
     pub ep_assignment: EpAssignmentState,
     pub input_spec: ModelInputSpec,
     pub prepare_id: String,
@@ -51,7 +51,6 @@ pub fn prepare_directml_pipeline(
     model: &Path,
     adapter_luid: AdapterLuid,
     capture_device: &ID3D11Device4,
-    publisher: FramePublisher,
     pipeline_id: u64,
     confidence_threshold: ConfidenceThreshold,
     low_latency: bool,
@@ -62,23 +61,17 @@ pub fn prepare_directml_pipeline(
     let input_spec = backend.input_spec();
     let prepare_id = backend.prepare_id().to_owned();
     let ep_assignment = backend.ep_assignment().clone();
-    let (capture_frames, frames) = create_shared_frame_pool(
-        &gpu,
-        capture_device,
-        publisher.clone(),
-        input_spec.width,
-        input_spec.height,
-    )
-    .context("failed to create D3D12-owned shared frame pool")?;
+    let (capture_frames, frames) =
+        create_shared_frame(&gpu, capture_device, input_spec.width, input_spec.height)
+            .context("failed to create D3D11-owned shared frame")?;
     let preprocess = GpuPreprocessor::new(
         &gpu,
-        &frames.resources,
+        &frames.resource,
         backend.input_resource(),
         input_spec.width,
         input_spec.height,
         input_spec.precision,
     )?;
-    publisher.set_pipeline_identity(pipeline_id, prepare_id.clone());
     tracing::info!(
         pipeline_id,
         input_width = input_spec.width,
@@ -107,20 +100,16 @@ impl InferencePipeline {
         self.backend.set_confidence_threshold(threshold);
     }
 
-    pub fn infer(&mut self, frame: &mut GpuFrameLease) -> Result<InferenceResult> {
-        let meta = *frame.metadata();
-        if frame.slot_id() >= GPU_FRAME_SLOTS {
-            anyhow::bail!("invalid GPU frame slot {}", frame.slot_id());
-        }
+    pub fn infer(&mut self, meta: GpuFrameMetadata) -> Result<InferenceResult> {
         let ticket = match self.preprocess.submit(
-            frame,
+            meta,
             &self.frames.capture_ready_fence,
             &self.frames.reuse_fence,
         ) {
             Ok(ticket) => ticket,
             Err(error) => {
                 let stage = self.preprocess.fault_stage();
-                self.record_fault(meta, Some(frame.reuse_value()), stage, &error);
+                self.record_fault(meta, Some(meta.capture_ready_value), stage, &error);
                 return Err(error);
             }
         };
@@ -158,19 +147,31 @@ impl InferencePipeline {
         let frames = &self.frames;
         let report = collect_gpu_fault_report(
             &self.gpu,
-            &frames.mailbox,
+            &self.prepare_id,
             meta,
             stage,
             FenceProgress {
                 reuse_value,
-                // SAFETY: both fences are live COM objects owned by the frame pool.
+                // SAFETY: both fences are live COM objects owned by the shared frame.
                 ready_completed: Some(unsafe { frames.capture_ready_fence.GetCompletedValue() }),
                 reuse_completed: Some(unsafe { frames.reuse_fence.GetCompletedValue() }),
             },
             error,
         );
-        frames.mailbox.poison();
         self.fault_report = Some(report);
+    }
+
+    pub fn ensure_frame_reusable(&self, required: u64) -> Result<()> {
+        let completed = unsafe { self.frames.reuse_fence.GetCompletedValue() };
+        if completed == u64::MAX {
+            anyhow::bail!("D3D12 completion fence reports device removed");
+        }
+        if completed < required {
+            anyhow::bail!(
+                "shared frame is still being read by GPU: required={required} completed={completed}"
+            );
+        }
+        Ok(())
     }
 
     pub fn take_fault_report(&mut self) -> Option<GpuFaultReport> {

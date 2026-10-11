@@ -1,10 +1,7 @@
-//! The engine thread: owns the capture/inference workers and the MAK client,
-//! applies UI commands, and turns worker events into UI-facing status.
-//!
-//! The per-frame path (inference → output) runs on the inference thread; this
-//! thread only aggregates telemetry and reacts to control events.
+//! The engine owns and executes the complete serial frame pipeline.
 
 mod capture;
+mod frame;
 mod mak;
 mod model;
 mod recovery;
@@ -12,45 +9,42 @@ mod run;
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, mpsc::Sender},
+    sync::{Arc, Mutex, mpsc::Sender},
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
-use crossbeam_channel::{Receiver, select};
+use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
 use eframe::egui;
 
 use self::run::RunControl;
 use super::{
     CapturePhase, Command, EngineEvent, EngineStatus,
-    capture_worker::CaptureWorker,
-    inference_worker::{InferenceConfig, InferenceWorker},
     loop_metrics::LoopMetrics,
-    output::{MotionGate, OutputSettings},
+    output::{OutputSettings, OutputStage},
     telemetry::{RunSummary, StatusHub},
 };
 use crate::{
     config::Config,
-    graphics::{FrameConsumer, GraphicsThread},
+    graphics::{AcquiredDesktopFrame, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
     mak::MakClient,
     metrics::Metrics,
     models,
-    overlay::{Overlay, OverlayPublisher},
-    settings::{ConfidenceThreshold, FpsLimit},
-    sync::MutexExt,
+    overlay::Overlay,
+    settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     timing::QpcClock,
 };
 
 /// How often the engine polls MAK connection state when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Values the engine forwards to the worker threads it spawns.
+/// Settings applied directly to the serial pipeline.
 #[derive(Clone, Copy)]
 struct Tuning {
     output: OutputSettings,
     confidence_threshold: ConfidenceThreshold,
     fps_limit: FpsLimit,
+    capture: CaptureSettings,
     low_latency: bool,
     frame_trace: bool,
 }
@@ -63,9 +57,16 @@ struct Worker {
     tuning: Tuning,
 
     // Pipeline (replaced as a unit when the display or GPU changes).
-    capture_worker: CaptureWorker,
-    inference_worker: InferenceWorker,
-    frame_consumer: FrameConsumer,
+    model: Option<capture::PreparedModel>,
+    capture: Option<DxgiCapture>,
+    cached_frame: Option<AcquiredDesktopFrame>,
+    output_stage: OutputStage,
+    trace: Option<super::frame_trace::FrameTraceWriter>,
+    next_capture: Instant,
+    frame_seq: u64,
+    source_seq: u64,
+    capture_stats: frame::CaptureStats,
+    capture_stats_started: Instant,
     active_model: Option<(String, PathBuf)>,
     model_ready: bool,
     auto_reprepare_attempted: bool,
@@ -75,8 +76,7 @@ struct Worker {
     capture_output: u32,
     selected_adapter_luid: AdapterLuid,
 
-    mak: Arc<Mutex<MakClient>>,
-    gate: MotionGate,
+    mak: MakClient,
     /// `None` when the overlay thread could not be started; the rest of the
     /// engine works without it.
     overlay: Option<Overlay>,
@@ -104,40 +104,6 @@ fn log_pipeline_state(
         reason = ?reason,
         "gpu_pipeline_state"
     );
-}
-
-/// Spawns the capture and inference threads sharing one frame mailbox.
-fn spawn_workers(
-    qpc: QpcClock,
-    tuning: Tuning,
-    mak: &Arc<Mutex<MakClient>>,
-    gate: &MotionGate,
-    overlay: Option<OverlayPublisher>,
-) -> Result<(CaptureWorker, InferenceWorker, FrameConsumer)> {
-    let (capture, consumer) = CaptureWorker::spawn(qpc, gate.clone())?;
-    capture.set_fps_limit(tuning.fps_limit)?;
-    let inference = InferenceWorker::spawn(
-        qpc,
-        consumer.clone(),
-        inference_config(tuning, mak, gate, overlay),
-    )?;
-    Ok((capture, inference, consumer))
-}
-
-fn inference_config(
-    tuning: Tuning,
-    mak: &Arc<Mutex<MakClient>>,
-    gate: &MotionGate,
-    overlay: Option<OverlayPublisher>,
-) -> InferenceConfig {
-    InferenceConfig {
-        confidence_threshold: tuning.confidence_threshold,
-        low_latency: tuning.low_latency,
-        output: tuning.output,
-        mak: Arc::clone(mak),
-        gate: gate.clone(),
-        overlay,
-    }
 }
 
 pub(super) fn run_worker(
@@ -179,29 +145,17 @@ pub(super) fn run_worker(
         },
         confidence_threshold: config.confidence_threshold,
         fps_limit: config.fps_limit,
+        capture: config.capture,
         low_latency: config.low_latency,
         frame_trace: config.diagnostics.frame_trace,
     };
-    let mak = Arc::new(Mutex::new(MakClient::new()));
-    let gate = MotionGate::new();
+    let mak = MakClient::new();
+    let _boost = crate::platform::boost_current_thread("engine");
     let overlay = match Overlay::spawn(config.overlay) {
         Ok(overlay) => Some(overlay),
         Err(error) => {
             tracing::error!(error = %format!("{error:#}"), "overlay unavailable");
             None
-        }
-    };
-    let (capture_worker, inference_worker, frame_consumer) = match spawn_workers(
-        qpc,
-        tuning,
-        &mak,
-        &gate,
-        overlay.as_ref().map(Overlay::publisher),
-    ) {
-        Ok(workers) => workers,
-        Err(error) => {
-            tracing::error!(error = %format!("{error:#}"), "worker initialization failed");
-            return;
         }
     };
     let mut worker = Worker {
@@ -210,9 +164,16 @@ pub(super) fn run_worker(
         status,
         qpc,
         tuning,
-        capture_worker,
-        inference_worker,
-        frame_consumer,
+        model: None,
+        capture: None,
+        cached_frame: None,
+        output_stage: OutputStage::new(tuning.output),
+        trace: None,
+        next_capture: Instant::now(),
+        frame_seq: 0,
+        source_seq: 0,
+        capture_stats: frame::CaptureStats::default(),
+        capture_stats_started: Instant::now(),
         active_model: None,
         model_ready: false,
         auto_reprepare_attempted: false,
@@ -222,7 +183,6 @@ pub(super) fn run_worker(
         capture_output: config.capture_output,
         selected_adapter_luid: config.selected_adapter,
         mak,
-        gate,
         overlay,
         run: RunControl::default(),
         summary: RunSummary::new(),
@@ -233,7 +193,7 @@ pub(super) fn run_worker(
 
     worker.refresh_capture_catalog();
     worker.initialize_capture();
-    if let Err(error) = worker.mak().set_injection_api(config.injection_api) {
+    if let Err(error) = worker.mak.set_injection_api(config.injection_api) {
         tracing::error!(error = %format!("{error:#}"), "initial injection API setup failed");
     }
     worker.connect_mak_initial();
@@ -257,40 +217,66 @@ impl Worker {
     /// folding capture-side counters into metrics.
     fn housekeeping(&mut self) {
         self.poll_mak_events();
-        self.drain_gate_discards();
     }
 
     fn event_loop(&mut self, rx: &Receiver<Command>) {
         let mut next_housekeeping = Instant::now();
         loop {
+            if !self.drain_commands(rx) {
+                return;
+            }
             let now = Instant::now();
             if now >= next_housekeeping {
                 self.housekeeping();
                 next_housekeeping = now + HOUSEKEEPING_INTERVAL;
             }
+            self.publish_capture_stats(false);
             self.status.flush_if_due();
+            if let Some(run) = self.run.active
+                && frame::capture_due(run.mode, now, self.next_capture)
+            {
+                if !self.step_frame(rx) {
+                    return;
+                }
+                continue;
+            }
             let mut timeout = next_housekeeping.saturating_duration_since(Instant::now());
+            if self.run.active.is_some() {
+                timeout = timeout.min(self.next_capture.saturating_duration_since(Instant::now()));
+            }
             if let Some(until_flush) = self.status.time_until_flush() {
                 timeout = timeout.min(until_flush);
             }
-            select! {
-                recv(rx) -> command => match command {
-                    Ok(command) => if !self.handle_command(command) { return; },
-                    Err(_) => return,
-                },
-                recv(self.inference_worker.event_rx()) -> event => {
-                    if let Ok(event) = event { self.handle_inference_event(event); }
-                },
-                recv(self.capture_worker.event_rx()) -> event => {
-                    if let Ok(event) = event { self.handle_capture_event(event); }
-                },
-                default(timeout) => {},
+            match rx.recv_timeout(timeout) {
+                Ok(command) => {
+                    if !self.handle_command(command) {
+                        return;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.stop_run();
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
             }
         }
     }
 
-    fn mak(&self) -> MutexGuard<'_, MakClient> {
-        self.mak.lock_recover()
+    fn drain_commands(&mut self, rx: &Receiver<Command>) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(command) => {
+                    if !self.handle_command(command) {
+                        return false;
+                    }
+                }
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => {
+                    self.stop_run();
+                    return false;
+                }
+            }
+        }
     }
 
     /// Returns false when the engine should shut down.
@@ -312,19 +298,23 @@ impl Worker {
             }
             Command::SetConfidenceThreshold(value) => {
                 self.tuning.confidence_threshold = value;
-                self.inference_worker.set_confidence_threshold(value);
+                if let Some(model) = self.model.as_mut() {
+                    model.pipeline.set_confidence_threshold(value);
+                }
             }
             Command::SetFpsLimit(value) => {
                 self.tuning.fps_limit = value;
-                if let Err(error) = self.capture_worker.set_fps_limit(value) {
-                    self.set_run_error(format!("Failed to set FPS limit: {error:#}"));
-                }
+                self.next_capture = Instant::now();
             }
             Command::SetLowLatency(enabled) => {
                 self.tuning.low_latency = enabled;
                 if let Some((name, path)) = self.active_model.clone() {
                     self.load_model(false, name, path);
                 }
+            }
+            Command::SetCaptureSettings(settings) => {
+                self.tuning.capture = settings;
+                self.cached_frame = None;
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetOverlay(config) => {
@@ -333,9 +323,9 @@ impl Worker {
                 }
             }
             Command::SetInjectionApi(api) => {
-                let result = self.mak().set_injection_api(api);
+                let result = self.mak.set_injection_api(api);
                 match result {
-                    Ok(()) => self.gate.reset(),
+                    Ok(()) => {}
                     Err(error) => {
                         tracing::error!(
                             error = %format!("{error:#}"),
@@ -370,20 +360,8 @@ impl Worker {
         true
     }
 
-    fn overlay_publisher(&self) -> Option<OverlayPublisher> {
-        self.overlay.as_ref().map(Overlay::publisher)
-    }
-
-    fn spawn_inference(&self) -> Result<InferenceWorker> {
-        InferenceWorker::spawn(
-            self.qpc,
-            self.frame_consumer.clone(),
-            inference_config(self.tuning, &self.mak, &self.gate, self.overlay_publisher()),
-        )
-    }
-
-    fn push_output_settings(&self) {
-        self.inference_worker.set_output(self.tuning.output);
+    fn push_output_settings(&mut self) {
+        self.output_stage.set_settings(self.tuning.output);
     }
 
     fn set_run_error(&mut self, error: String) {

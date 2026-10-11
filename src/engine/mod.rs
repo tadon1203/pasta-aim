@@ -1,7 +1,5 @@
 use crate::sync::MutexExt;
-mod capture_worker;
 mod frame_trace;
-mod inference_worker;
 mod loop_metrics;
 mod output;
 mod status;
@@ -40,8 +38,8 @@ use eframe::egui;
 use crate::{
     config::Config,
     settings::{
-        ConfidenceThreshold, FpsLimit, InjectionApi, MaxDelta, OverlayConfig, Sensitivity,
-        TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, InjectionApi, MaxDelta, OverlayConfig,
+        Sensitivity, TargetYOffset,
     },
 };
 use crossbeam_channel as crossbeam;
@@ -74,6 +72,7 @@ pub enum Command {
     SetTargetYOffset(TargetYOffset),
     SetMaxDelta(MaxDelta),
     SetFpsLimit(FpsLimit),
+    SetCaptureSettings(CaptureSettings),
     /// Reloads the active model, since the DirectML wait mode is a session option.
     SetLowLatency(bool),
     /// Applies to the next run.

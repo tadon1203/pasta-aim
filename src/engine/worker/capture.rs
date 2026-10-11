@@ -1,24 +1,34 @@
 //! Display catalog, capture selection, and building a whole capture + inference pipeline.
 
-use super::{Worker, log_pipeline_state, spawn_workers};
+use super::{Tuning, Worker, log_pipeline_state};
 use crate::{
-    engine::{
-        CapturePhase, EngineEvent, ModelPhase, RunMode,
-        capture_worker::CaptureWorker,
-        inference_worker::{InferenceWorker, PreparedModelInfo},
+    engine::{CapturePhase, EngineEvent, ModelPhase, RunMode},
+    graphics::{DisplayInfo, DxgiCapture, shared_frame::CaptureFrame},
+    inference::{
+        EpAssignmentState, TensorPrecision,
+        pipeline::{InferencePipeline, prepare_directml_pipeline},
     },
-    graphics::{DisplayInfo, FrameConsumer},
     overlay::Region,
 };
 use anyhow::Result;
+use std::sync::Arc;
 
-/// A capture + inference pair built for a new display, not yet committed.
+/// GPU resources precede the capture owner in the engine's drop order.
+pub(super) struct PreparedModel {
+    pub pipeline: InferencePipeline,
+    pub capture_frame: CaptureFrame,
+    pub input_size: (usize, usize),
+    pub pipeline_id: u64,
+    pub prepare_id: String,
+    pub precision: TensorPrecision,
+    pub ep_assignment: Arc<EpAssignmentState>,
+    pub last_completion: u64,
+}
+
 struct PreparedPipeline {
-    capture: CaptureWorker,
-    inference: InferenceWorker,
-    consumer: FrameConsumer,
+    model: Option<PreparedModel>,
+    capture: DxgiCapture,
     display: DisplayInfo,
-    model: Option<PreparedModelInfo>,
 }
 
 impl Worker {
@@ -72,11 +82,10 @@ impl Worker {
         });
         self.status.flush();
 
-        match self
-            .capture_worker
-            .configure_output(self.capture_adapter, self.capture_output)
-        {
-            Ok(selected) => {
+        match self.create_capture(self.capture_adapter, self.capture_output) {
+            Ok(capture) => {
+                let selected = capture.info().clone();
+                self.capture = Some(capture);
                 self.selected_adapter_luid = selected.adapter_luid;
                 self.status.edit(|status| {
                     status.capture.phase = CapturePhase::Ready;
@@ -112,6 +121,7 @@ impl Worker {
             return;
         }
         let resume_continuous = self.run.is_continuous();
+        self.stop_run();
         let prepared = match self.prepare_pipeline(adapter, output) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -133,25 +143,22 @@ impl Worker {
                     result: Err(message.clone()),
                 });
                 tracing::error!(adapter, output, %message, "display prepare failed; active pipeline retained");
+                if resume_continuous && self.model_ready {
+                    self.start_run(RunMode::Continuous);
+                }
                 return;
             }
         };
 
-        // Stop the old workers before they are replaced.
-        self.stop_run();
+        // Replace only after all candidate resources have been prepared.
         let PreparedPipeline {
             capture,
-            inference,
-            consumer,
             display: selected,
             model,
         } = prepared;
         self.capture_adapter = adapter;
         self.capture_output = output;
         self.selected_adapter_luid = selected.adapter_luid;
-        self.capture_worker = capture;
-        self.inference_worker = inference;
-        self.frame_consumer = consumer;
         self.metrics.mark_cold_next();
         self.model_ready = model.is_some();
         self.active_pipeline_id = None;
@@ -165,6 +172,8 @@ impl Worker {
             status.capture.error = None;
             status.run.error = None;
         });
+        self.model = model;
+        self.capture = Some(capture);
         self.refresh_overlay_region();
         self.emit_event(EngineEvent::Capture {
             adapter,
@@ -184,35 +193,28 @@ impl Worker {
         );
     }
 
-    /// Builds workers for a display (and loads the active model on them) without
-    /// touching the running pipeline, so a failure leaves it as it was.
+    fn create_capture(&self, adapter: u32, output: u32) -> Result<DxgiCapture> {
+        self.graphics
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("graphics COM initialization unavailable"))?
+            .create_capture(adapter, output)
+    }
+
+    /// Prepare synchronously, retaining the old resources until full success.
     fn prepare_pipeline(&mut self, adapter: u32, output: u32) -> Result<PreparedPipeline> {
         let pipeline_id = self.next_pipeline_id();
         log_pipeline_state("Preparing", Some(pipeline_id), None, None, None);
-        let (capture, inference, consumer) = spawn_workers(
-            self.qpc,
-            self.tuning,
-            &self.mak,
-            &self.gate,
-            self.overlay_publisher(),
-        )?;
-        let display = capture.configure_output(adapter, output)?;
-        let model = match &self.active_model {
-            Some((_, path)) => Some(load_model_into(
-                &capture,
-                &inference,
-                path,
-                display.adapter_luid,
-                pipeline_id,
-            )?),
-            None => None,
-        };
+        let capture = self.create_capture(adapter, output)?;
+        let display = capture.info().clone();
+        let model = self
+            .active_model
+            .as_ref()
+            .map(|(_, path)| prepare_model(&capture, path, pipeline_id, self.tuning))
+            .transpose()?;
         Ok(PreparedPipeline {
-            capture,
-            inference,
-            consumer,
-            display,
             model,
+            capture,
+            display,
         })
     }
 
@@ -240,8 +242,9 @@ impl Worker {
     }
 
     /// Records a freshly loaded model as the running pipeline.
-    pub(super) fn commit_model_status(&mut self, model: &PreparedModelInfo) {
+    pub(super) fn commit_model_status(&mut self, model: &PreparedModel) {
         self.active_pipeline_id = Some(model.pipeline_id);
+        self.output_stage.set_input_size(model.input_size);
         log_pipeline_state(
             "Running",
             Some(model.pipeline_id),
@@ -261,21 +264,34 @@ impl Worker {
     }
 }
 
-/// Loads `path` on `inference` and hands the resulting frame pool to `capture`.
-pub(super) fn load_model_into(
-    capture: &CaptureWorker,
-    inference: &InferenceWorker,
+/// Build a replacement model without altering the currently committed resources.
+pub(super) fn prepare_model(
+    capture: &DxgiCapture,
     path: &std::path::Path,
-    adapter_luid: crate::inference::AdapterLuid,
     pipeline_id: u64,
-) -> Result<PreparedModelInfo> {
-    let loaded = inference.load_model(
-        path.to_path_buf(),
-        adapter_luid,
-        capture.transport_device()?,
-        capture.publisher(),
+    tuning: Tuning,
+) -> Result<PreparedModel> {
+    let prepared = prepare_directml_pipeline(
+        path,
+        capture.info().adapter_luid,
+        &capture.transport_device(),
         pipeline_id,
+        tuning.confidence_threshold,
+        tuning.low_latency,
     )?;
-    capture.configure_frame_pool(loaded.capture_frames.clone())?;
-    Ok(loaded)
+    let input_size = (prepared.input_spec.width, prepared.input_spec.height);
+    if input_size.0 > capture.info().width as usize || input_size.1 > capture.info().height as usize
+    {
+        anyhow::bail!("model input exceeds the selected display dimensions");
+    }
+    Ok(PreparedModel {
+        pipeline: prepared.pipeline,
+        capture_frame: prepared.capture_frames,
+        input_size,
+        pipeline_id,
+        prepare_id: prepared.prepare_id,
+        precision: prepared.input_spec.precision,
+        ep_assignment: Arc::new(prepared.ep_assignment),
+        last_completion: 0,
+    })
 }

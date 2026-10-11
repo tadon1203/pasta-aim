@@ -1,17 +1,16 @@
 pub mod bootstrap;
 mod capture;
 pub mod device;
-pub mod frame_mailbox;
+pub mod frame;
 pub mod gpu_diagnostics;
 pub mod preprocess;
 mod profile_sampler;
-pub mod shared_frame_pool;
+pub mod shared_frame;
 
 pub use capture::DxgiCapture;
-pub(crate) use capture::{AcquiredDesktopFrame, CapturePoll, GpuCopySample, NoDesktopUpdateReason};
-pub use frame_mailbox::{FrameConsumer, FramePublisher, GpuFrameMetadata, frame_mailbox};
-pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport, GpuFaultStage};
-pub use shared_frame_pool::CaptureFramePool;
+pub(crate) use capture::{AcquiredDesktopFrame, CapturePoll, NoDesktopUpdateReason};
+pub use frame::GpuFrameMetadata;
+pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport};
 
 use std::{marker::PhantomData, rc::Rc};
 

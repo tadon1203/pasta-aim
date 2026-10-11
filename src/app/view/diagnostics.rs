@@ -30,10 +30,6 @@ fn draw_tracking(ui: &mut egui::Ui, tracking: &LoopSnapshot) {
             ));
             ui.end_row();
 
-            ui.label("Frames dropped by gate");
-            ui.label(format!("{:.1}%", tracking.discard_ratio * 100.0));
-            ui.end_row();
-
             ui.label("Error RMS (locked)");
             ui.label(format!(
                 "{:.2} px ({} frames)",
@@ -295,7 +291,7 @@ impl App {
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/admitted FPS: {:.1}/{:.1}\nadmission drop: {:.1}%\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\nqueue age p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nGPU slot drops: {} · mailbox overwrites: {} · slots in flight: {}\ncausal discards: {}\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmak: {} · port={} · firmware={}\nmak routes: {mak_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             status
                 .capture
@@ -317,8 +313,7 @@ impl App {
             keyboard_release.assist_active,
             self.config.fps_limit.value(),
             status.performance.capture_source.fresh_fps,
-            status.performance.capture_source.admitted_fps,
-            status.performance.capture_source.admission_drop_ratio * 100.0,
+            status.performance.capture_source.processed_fps,
             status.performance.sample_count,
             status.performance.total.p50_ms,
             status.performance.total.p95_ms,
@@ -333,14 +328,8 @@ impl App {
             status.performance.gpu_copy.p95_ms,
             status.performance.preprocess.p50_ms,
             status.performance.preprocess.p95_ms,
-            status.performance.queue_age.p50_ms,
-            status.performance.queue_age.p95_ms,
             status.performance.inference.p50_ms,
             status.performance.inference.p95_ms,
-            status.performance.capture_source.gpu_slot_busy_drops,
-            status.performance.capture_source.mailbox_overwrites,
-            status.performance.capture_source.slots_in_flight,
-            status.performance.causal_discards,
         )
     }
 }
@@ -505,18 +494,20 @@ fn ep_assignment_copy_text(status: &EngineStatus) -> String {
 
 fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
     ui.label(format!(
-        "Fresh FPS {:.1} · Admitted FPS {:.1} · FPS admission drop {:.1}%",
-        performance.capture_source.fresh_fps,
-        performance.capture_source.admitted_fps,
-        performance.capture_source.admission_drop_ratio * 100.0,
+        "Fresh FPS {:.1} · Processed FPS {:.1}",
+        performance.capture_source.fresh_fps, performance.capture_source.processed_fps,
     ));
     ui.small(format!(
-        "Accumulated {:.2} · GPU slot drops {} · Mailbox overwrites {} · Slots in flight {} · Causal discards {}",
+        "Reused FPS {:.1} · Capture timeouts {} / last reporting interval · Expired reuse drops {}",
+        performance.capture_source.reused_fps,
+        performance.capture_source.timeouts,
+        performance
+            .gpu_drop_counts
+            .get(crate::graphics::GpuDropReason::ExpiredFrame),
+    ));
+    ui.small(format!(
+        "Mean accumulated desktop frames {:.2}",
         performance.capture_source.mean_accumulated_frames,
-        performance.capture_source.gpu_slot_busy_drops,
-        performance.capture_source.mailbox_overwrites,
-        performance.capture_source.slots_in_flight,
-        performance.causal_discards,
     ));
     if performance.sample_count == 0 {
         if let Some(cold) = performance.cold_run {
@@ -556,7 +547,6 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
             metric_row(ui, "GPU copy submit", performance.copy_submit);
             metric_row(ui, "GPU copy", performance.gpu_copy);
             metric_row(ui, "GPU preprocess", performance.preprocess);
-            metric_row(ui, "Queue age", performance.queue_age);
             metric_row(ui, "Inference", performance.inference);
             metric_row(ui, "Postprocess", performance.postprocess);
             metric_row(ui, "MAK write", performance.mak_write);

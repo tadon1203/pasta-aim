@@ -21,8 +21,6 @@ pub struct LoopSnapshot {
     pub samples: usize,
     pub period_p50_ms: f64,
     pub period_p95_ms: f64,
-    /// Share of fresh frames dropped by the causal gate.
-    pub discard_ratio: f64,
     pub rms_error_px: f64,
     pub overshoots: u64,
     pub locked_frames: u64,
@@ -50,8 +48,6 @@ pub(super) struct LoopMetrics {
     converged: bool,
     overshoots: u64,
     locked_frames: u64,
-    frames: u64,
-    discards: u64,
     last_publish: Instant,
 }
 
@@ -67,8 +63,6 @@ impl LoopMetrics {
             converged: true,
             overshoots: 0,
             locked_frames: 0,
-            frames: 0,
-            discards: 0,
             last_publish: Instant::now(),
         }
     }
@@ -77,12 +71,7 @@ impl LoopMetrics {
         *self = Self::new();
     }
 
-    pub(super) fn record_discards(&mut self, count: u64) {
-        self.discards += count;
-    }
-
     pub(super) fn record(&mut self, qpc: QpcClock, frame: LoopFrame) {
-        self.frames += 1;
         if frame.sent {
             if let Some(previous) = self.last_send_qpc {
                 push(
@@ -139,7 +128,6 @@ impl LoopMetrics {
         periods.sort_unstable_by(f64::total_cmp);
         let mut convergence: Vec<f64> = self.convergence_ms.iter().copied().collect();
         convergence.sort_unstable_by(f64::total_cmp);
-        let fresh = self.frames + self.discards;
         let rms_error_px = if self.squared_errors.is_empty() {
             0.0
         } else {
@@ -150,11 +138,6 @@ impl LoopMetrics {
             samples: self.periods_ms.len(),
             period_p50_ms: percentile(&periods, 0.50).unwrap_or(0.0),
             period_p95_ms: percentile(&periods, 0.95).unwrap_or(0.0),
-            discard_ratio: if fresh == 0 {
-                0.0
-            } else {
-                self.discards as f64 / fresh as f64
-            },
             rms_error_px,
             overshoots: self.overshoots,
             locked_frames: self.locked_frames,
@@ -225,13 +208,11 @@ mod tests {
     }
 
     #[test]
-    fn rms_and_discard_ratio() {
+    fn rms_error_is_reported() {
         let mut metrics = LoopMetrics::new();
         metrics.record(QPC, frame(0, 1, true, (0.0, 0.0)));
         metrics.record(QPC, frame(30, 1, false, (3.0, 4.0)));
-        metrics.record_discards(2);
         let snapshot = metrics.snapshot();
         assert!((snapshot.rms_error_px - 5.0).abs() < 1e-9);
-        assert!((snapshot.discard_ratio - 2.0 / 4.0).abs() < 1e-9);
     }
 }

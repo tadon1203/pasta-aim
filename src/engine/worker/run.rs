@@ -6,9 +6,9 @@ use crate::{
     engine::{
         RunGeneration, RunMode, RunPhase,
         frame_trace::{FrameTraceWriter, TraceHeader},
-        inference_worker::{FrameReport, InferenceEvent},
         loop_metrics::{LoopFrame, LoopSnapshot},
         status::{RunReadiness, run_block_reason},
+        worker::frame::FrameReport,
     },
     paths,
 };
@@ -66,27 +66,15 @@ impl Worker {
             return;
         }
         let generation = self.run.next_generation();
-        self.gate.reset();
         self.loop_metrics.reset();
-        let trace = self.open_frame_trace();
-        let started = self
-            .capture_worker
-            .start(mode, generation)
-            .and_then(|()| self.inference_worker.start(generation, mode, trace));
-        if let Err(error) = started {
-            let _ = self.inference_worker.stop(generation);
-            let _ = self.capture_worker.stop();
-            self.run.active = None;
-            let label = match mode {
-                RunMode::Continuous => "Failed to start inference",
-                RunMode::OneShot => "Single inference failed",
-            };
-            tracing::error!(error = %format!("{error:#}"), ?mode, "inference failed to start");
-            self.status.edit(|status| {
-                status.run.phase = RunPhase::Idle;
-                status.run.error = Some(format!("{label}: {error:#}"));
-            });
-            return;
+        self.trace = self.open_frame_trace();
+        self.cached_frame = None;
+        self.output_stage.reset();
+        self.next_capture = std::time::Instant::now();
+        self.capture_stats = Default::default();
+        self.capture_stats_started = std::time::Instant::now();
+        if let Some(capture) = self.capture.as_mut() {
+            capture.reset_gpu_profiler();
         }
         self.run.active = Some(ActiveRun { generation, mode });
         let phase = match mode {
@@ -139,11 +127,11 @@ impl Worker {
     fn stop_run_inner(&mut self, clear_overlay: bool) {
         if let Some(run) = self.run.active.take() {
             tracing::info!(generation = run.generation, "inference stopped");
-            let _ = self.inference_worker.stop(run.generation);
-            let _ = self.capture_worker.stop();
         }
-        // After the inference thread acknowledged the stop, so nothing can
-        // publish a box behind this.
+        self.cached_frame = None;
+        self.trace = None;
+        self.output_stage.reset();
+        self.publish_capture_stats(true);
         if clear_overlay && let Some(overlay) = &self.overlay {
             overlay.clear();
         }
@@ -157,7 +145,7 @@ impl Worker {
     }
 
     pub(super) fn run_block_reason(&self) -> Option<String> {
-        let mak = self.mak();
+        let mak = &self.mak;
         run_block_reason(RunReadiness {
             model_ready: self.model_ready,
             capture_ready: self.status.get().capture.phase == CapturePhase::Ready,
@@ -167,36 +155,7 @@ impl Worker {
         .map(str::to_owned)
     }
 
-    pub(super) fn handle_inference_event(&mut self, event: InferenceEvent) {
-        match event {
-            InferenceEvent::Frame(report) => self.handle_frame(*report),
-            InferenceEvent::Failed { generation, error } => {
-                if self.run.is_active(generation) {
-                    self.suspend_invalid_pipeline(error);
-                }
-            }
-            InferenceEvent::Poisoned {
-                generation,
-                error,
-                device_lost,
-                report,
-            } => {
-                let belongs_to_active_pipeline = report
-                    .as_ref()
-                    .is_some_and(|report| Some(report.pipeline_id) == self.active_pipeline_id);
-                if self.run.is_active(generation) || belongs_to_active_pipeline {
-                    self.recover_poisoned_pipeline(error, device_lost, report.map(|r| *r));
-                }
-            }
-            InferenceEvent::OutputFailed { generation, error } => {
-                if self.run.is_active(generation) {
-                    self.fail_run(format!("Inference output failed: {error}"));
-                }
-            }
-        }
-    }
-
-    fn handle_frame(&mut self, report: FrameReport) {
+    pub(super) fn handle_frame(&mut self, report: FrameReport) {
         if !self.run.is_active(report.generation) {
             tracing::debug!(
                 generation = report.generation,
@@ -206,7 +165,6 @@ impl Worker {
         }
         self.metrics
             .record_qpc(self.qpc, report.inference_start_qpc, report.timings);
-        self.drain_gate_discards();
         self.summary.record(report.detected, report.command);
         self.loop_metrics.record(
             self.qpc,
@@ -238,15 +196,6 @@ impl Worker {
         } else {
             let metrics = &self.metrics;
             self.summary.log_if_due(|| metrics.snapshot());
-        }
-    }
-
-    /// Moves causal-gate discards (counted on the capture and inference threads) into metrics.
-    pub(super) fn drain_gate_discards(&mut self) {
-        let discards = self.gate.take_discards();
-        if discards > 0 {
-            self.metrics.record_causal_discards(discards);
-            self.loop_metrics.record_discards(discards);
         }
     }
 }

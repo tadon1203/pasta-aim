@@ -16,7 +16,7 @@ impl Worker {
             status.mak.error = None;
         });
         self.status.flush();
-        let result = self.mak().connect_initial();
+        let result = self.mak.connect_initial();
         self.apply_mak_result(result);
     }
 
@@ -34,7 +34,7 @@ impl Worker {
             status.mak.error = None;
         });
         self.status.flush();
-        let result = connect(&mut self.mak());
+        let result = connect(&mut self.mak);
         self.apply_mak_result(result);
     }
 
@@ -47,7 +47,7 @@ impl Worker {
 
     pub(super) fn poll_mak_events(&mut self) {
         loop {
-            let event = self.mak().poll_connection_event();
+            let event = self.mak.poll_connection_event();
             let Some(event) = event else { break };
             match event {
                 MakConnectionEvent::Disconnected | MakConnectionEvent::Connecting => {

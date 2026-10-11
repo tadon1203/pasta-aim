@@ -14,10 +14,7 @@ use windows::{
     core::Interface,
 };
 
-use super::{
-    device::GpuDeviceContext,
-    frame_mailbox::{FramePublisher, GpuFrameMetadata, SlotState, TransportSnapshot},
-};
+use super::{device::GpuDeviceContext, frame::GpuFrameMetadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFaultStage {
@@ -56,23 +53,19 @@ impl GpuFaultStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDropReason {
-    SupersededBeforeClaim,
-    NoFreeSlot,
     StaleGeneration,
-    ReuseNotComplete,
+    ExpiredFrame,
     PipelinePoisoned,
 }
 
 impl GpuDropReason {
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 3;
 
     pub const fn index(self) -> usize {
         match self {
-            Self::SupersededBeforeClaim => 0,
-            Self::NoFreeSlot => 1,
-            Self::StaleGeneration => 2,
-            Self::ReuseNotComplete => 3,
-            Self::PipelinePoisoned => 4,
+            Self::StaleGeneration => 0,
+            Self::ExpiredFrame => 1,
+            Self::PipelinePoisoned => 2,
         }
     }
 }
@@ -89,12 +82,6 @@ impl GpuDropCounts {
     pub fn get(self, reason: GpuDropReason) -> u64 {
         self.0[reason.index()]
     }
-
-    pub fn add_assign(&mut self, other: Self) {
-        for (value, addition) in self.0.iter_mut().zip(other.0) {
-            *value = value.saturating_add(addition);
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,9 +90,7 @@ pub struct GpuFaultReport {
     pub prepare_id: String,
     pub generation: Option<u64>,
     pub stage: GpuFaultStage,
-    pub slot_id: Option<usize>,
     pub frame_seq: Option<u64>,
-    pub slot_state: Option<SlotState>,
     pub ready_value: Option<u64>,
     pub ready_completed: Option<u64>,
     pub reuse_value: Option<u64>,
@@ -114,23 +99,18 @@ pub struct GpuFaultReport {
     pub d3d11_removed_reason: Option<i32>,
     pub d3d12_removed_reason: Option<i32>,
     pub error: String,
-    pub transport: Option<TransportSnapshot>,
     pub dred: Option<String>,
 }
 
 impl GpuFaultReport {
     pub fn formatted_fields(&self) -> String {
         format!(
-            "pipeline_id={} prepare_id={} generation={} stage={} slot_id={} frame_seq={} slot_state={} ready_value={} ready_completed={} reuse_value={} reuse_completed={} hr={} d3d11_removed_reason={} d3d12_removed_reason={}",
+            "pipeline_id={} prepare_id={} generation={} stage={} frame_seq={} ready_value={} ready_completed={} reuse_value={} reuse_completed={} hr={} d3d11_removed_reason={} d3d12_removed_reason={}",
             self.pipeline_id,
             self.prepare_id,
             optional(self.generation),
             self.stage.as_str(),
-            optional(self.slot_id),
             optional(self.frame_seq),
-            self.slot_state
-                .map(|state| format!("{state:?}"))
-                .unwrap_or_else(|| "unknown".to_owned()),
             optional(self.ready_value),
             optional(self.ready_completed),
             optional(self.reuse_value),
@@ -149,9 +129,7 @@ impl GpuFaultReport {
             prepare_id = %self.prepare_id,
             generation = %optional(self.generation),
             stage = self.stage.as_str(),
-            slot_id = %optional(self.slot_id),
             frame_seq = %optional(self.frame_seq),
-            slot_state = ?self.slot_state,
             ready_value = %optional(self.ready_value),
             ready_completed = %optional(self.ready_completed),
             reuse_value = %optional(self.reuse_value),
@@ -171,28 +149,6 @@ impl GpuFaultReport {
                 "gpu_dred_report"
             );
         }
-        if let Some(snapshot) = &self.transport {
-            tracing::error!(
-                pipeline_id = self.pipeline_id,
-                prepare_id = %self.prepare_id,
-                poisoned = snapshot.poisoned,
-                drop_counts = ?snapshot.drop_counts,
-                slots = ?snapshot.slots,
-                "gpu_transport_flight_recorder"
-            );
-            for slot in &snapshot.slots {
-                tracing::error!(
-                    pipeline_id = self.pipeline_id,
-                    prepare_id = %self.prepare_id,
-                    slot_id = slot.slot_id,
-                    state = ?slot.state,
-                    frame_seq = ?slot.frame_seq,
-                    ready_value = ?slot.ready_value,
-                    reuse_value = ?slot.reuse_value,
-                    "gpu_transport_slot"
-                );
-            }
-        }
     }
 }
 
@@ -206,7 +162,7 @@ pub struct FenceProgress {
 
 pub fn collect_gpu_fault_report(
     gpu: &GpuDeviceContext,
-    mailbox: &FramePublisher,
+    prepare_id: &str,
     metadata: GpuFrameMetadata,
     stage: GpuFaultStage,
     fences: FenceProgress,
@@ -218,16 +174,13 @@ pub fn collect_gpu_fault_report(
         reuse_completed,
     } = fences;
     log_d3d12_messages(gpu.device(), true);
-    let snapshot = mailbox.diagnostic_snapshot();
     let removed = d3d12_device_removed_reason(gpu.device());
     GpuFaultReport {
         pipeline_id: metadata.pipeline_id,
-        prepare_id: snapshot.prepare_id.clone(),
+        prepare_id: prepare_id.to_owned(),
         generation: Some(metadata.generation),
         stage,
-        slot_id: Some(metadata.slot_id),
         frame_seq: Some(metadata.frame_seq),
-        slot_state: snapshot.slots.get(metadata.slot_id).map(|slot| slot.state),
         ready_value: Some(metadata.capture_ready_value),
         ready_completed,
         reuse_value,
@@ -238,7 +191,6 @@ pub fn collect_gpu_fault_report(
         d3d11_removed_reason: None,
         d3d12_removed_reason: removed,
         error: format!("{error:#}"),
-        transport: Some(snapshot),
         dred: collect_dred(gpu.device()),
     }
 }
@@ -482,9 +434,7 @@ mod tests {
             prepare_id: "12084-2".to_owned(),
             generation: Some(7),
             stage: GpuFaultStage::CaptureReadySignal,
-            slot_id: Some(0),
             frame_seq: Some(1842),
-            slot_state: Some(SlotState::CaptureWriting),
             ready_value: Some(1),
             ready_completed: Some(0),
             reuse_value: Some(0),
@@ -493,7 +443,6 @@ mod tests {
             d3d11_removed_reason: Some(0x887A0006_u32 as i32),
             d3d12_removed_reason: Some(0x887A0005_u32 as i32),
             error: "signal failed".to_owned(),
-            transport: None,
             dred: None,
         };
         let fields = report.formatted_fields();
@@ -502,9 +451,7 @@ mod tests {
             "prepare_id=12084-2",
             "generation=7",
             "stage=capture_ready_signal",
-            "slot_id=0",
             "frame_seq=1842",
-            "slot_state=CaptureWriting",
             "ready_value=1",
             "ready_completed=0",
             "reuse_value=0",

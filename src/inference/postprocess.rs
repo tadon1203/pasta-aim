@@ -75,7 +75,7 @@ pub fn select_nearest<T: Copy + Into<f32>>(
     let mut best: Option<(f32, Detection)> = None;
     let mut candidates = Candidates::EMPTY;
 
-    for row in data.chunks_exact(6).take(rows) {
+    for row in data.as_chunks::<6>().0.iter().take(rows) {
         let [x1, y1, x2, y2, confidence, class_id] = [
             row[0].into(),
             row[1].into(),

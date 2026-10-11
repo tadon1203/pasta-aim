@@ -1,7 +1,7 @@
 //! Bounding-box overlay drawn over the model input region.
 //!
 //! A dedicated thread owns a click-through, capture-excluded window and its GPU
-//! resources. The inference thread only writes the latest box into a small
+//! resources. The engine thread only writes the latest box into a small
 //! shared state and posts a wake-up; it never waits for drawing, so the overlay
 //! cannot slow the frame path down. Box coordinates are in model input space
 //! and the window is the input region plus a margin, so no conversion is needed
@@ -69,7 +69,7 @@ impl Link {
     }
 }
 
-/// Sends boxes to the overlay from the inference thread.
+/// Sends boxes to the overlay from the engine thread.
 #[derive(Clone)]
 pub struct OverlayPublisher {
     link: Link,

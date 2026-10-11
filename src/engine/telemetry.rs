@@ -120,11 +120,11 @@ impl RunSummary {
             inference_p50_ms = performance.inference.p50_ms,
             mak_write_p50_ms = performance.mak_write.p50_ms,
             pipeline_p50_ms = performance.total.p50_ms,
-            superseded_before_claim = drops.get(GpuDropReason::SupersededBeforeClaim),
-            no_free_slot = drops.get(GpuDropReason::NoFreeSlot),
             stale_generation = drops.get(GpuDropReason::StaleGeneration),
-            reuse_not_complete = drops.get(GpuDropReason::ReuseNotComplete),
             pipeline_poisoned = drops.get(GpuDropReason::PipelinePoisoned),
+            expired_frame = drops.get(GpuDropReason::ExpiredFrame),
+            reused_fps = performance.capture_source.reused_fps,
+            capture_timeouts = performance.capture_source.timeouts,
             "continuous inference summary"
         );
         self.reset();

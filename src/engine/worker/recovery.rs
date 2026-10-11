@@ -1,48 +1,12 @@
 //! Capture/inference faults: suspending a broken pipeline and rebuilding it.
 
-use super::{Worker, log_pipeline_state, spawn_workers};
+use super::{Worker, log_pipeline_state};
 use crate::{
-    engine::{
-        CapturePhase,
-        capture_worker::{CaptureEvent, CaptureFault},
-    },
+    engine::CapturePhase,
     graphics::{GpuDropReason, GpuFaultReport},
 };
 
 impl Worker {
-    pub(super) fn handle_capture_event(&mut self, event: CaptureEvent) {
-        match event {
-            CaptureEvent::Fault(fault) => self.handle_capture_fault(*fault),
-            CaptureEvent::Stats(value) => self.metrics.update_capture_source(value),
-            CaptureEvent::GpuCopy(sample) => self.metrics.record_gpu_copy(sample.gpu_copy_ms),
-        }
-        if let Some(performance) = self.metrics.snapshot_if_due(false) {
-            self.status.edit(|status| status.performance = performance);
-        }
-    }
-
-    fn handle_capture_fault(&mut self, fault: CaptureFault) {
-        if let Some(generation) = fault.generation
-            && !self.run.is_active(generation)
-            && !fault
-                .report
-                .as_ref()
-                .is_some_and(|report| Some(report.pipeline_id) == self.active_pipeline_id)
-        {
-            tracing::debug!(generation, "discarding stale capture fault");
-            return;
-        }
-        if fault.poisoned {
-            self.recover_poisoned_pipeline(
-                format!("Capture transport failed: {}", fault.error),
-                fault.device_lost,
-                fault.report,
-            );
-        } else {
-            self.suspend_invalid_pipeline(format!("Capture failed: {}", fault.error));
-        }
-    }
-
     /// Tears the pipeline down after a poisoned GPU transport and rebuilds it once.
     pub(super) fn recover_poisoned_pipeline(
         &mut self,
@@ -96,8 +60,8 @@ impl Worker {
         }
     }
 
-    /// Stops the run and drops the broken workers, leaving capture suspended
-    /// until [`Self::retry_suspended_pipeline`] rebuilds them.
+    /// Stops the run and drops the broken GPU resources, leaving capture suspended
+    /// until [`Self::retry_suspended_pipeline`] rebuilds the pipeline.
     pub(super) fn suspend_invalid_pipeline(&mut self, error: String) {
         self.fail_run(error.clone());
         self.model_ready = false;
@@ -109,25 +73,10 @@ impl Worker {
         });
         self.refresh_overlay_region();
 
-        // Stop and join both owners before constructing replacement devices.
-        self.inference_worker.shutdown();
-        self.capture_worker.shutdown();
-        match spawn_workers(
-            self.qpc,
-            self.tuning,
-            &self.mak,
-            &self.gate,
-            self.overlay_publisher(),
-        ) {
-            Ok((capture, inference, consumer)) => {
-                self.inference_worker = inference;
-                self.capture_worker = capture;
-                self.frame_consumer = consumer;
-            }
-            Err(rebuild_error) => {
-                tracing::error!(error = %format!("{rebuild_error:#}"), "failed to create suspended pipeline workers");
-            }
-        }
+        // The model waits for its GPU queue before capture and COM are released.
+        self.model = None;
+        self.capture = None;
+        self.active_pipeline_id = None;
         tracing::error!(%error, "invalid GPU pipeline dropped; capture remains suspended");
     }
 

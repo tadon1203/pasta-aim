@@ -18,7 +18,6 @@ pub struct StageTimings {
     pub copy_submit_ms: f64,
     /// Only measured on some frames.
     pub gpu_preprocess_ms: Option<f64>,
-    pub queue_age_ms: f64,
     pub ort_run_wall_ms: f64,
     pub postprocess_ms: f64,
     pub mak_write_ms: f64,
@@ -28,13 +27,10 @@ pub struct StageTimings {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CaptureSourceMetrics {
     pub fresh_fps: f64,
-    pub admitted_fps: f64,
-    pub admission_drop_ratio: f64,
+    pub processed_fps: f64,
+    pub reused_fps: f64,
+    pub timeouts: u64,
     pub mean_accumulated_frames: f64,
-    pub gpu_slot_busy_drops: u64,
-    pub mailbox_overwrites: u64,
-    pub slots_in_flight: u64,
-    pub gpu_drop_counts: GpuDropCounts,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -56,14 +52,12 @@ pub struct PerformanceSnapshot {
     pub copy_submit: MetricSummary,
     pub gpu_copy: MetricSummary,
     pub preprocess: MetricSummary,
-    pub queue_age: MetricSummary,
     pub inference: MetricSummary,
     pub postprocess: MetricSummary,
     pub mak_write: MetricSummary,
     pub total: MetricSummary,
     pub capture_source: CaptureSourceMetrics,
     pub gpu_drop_counts: GpuDropCounts,
-    pub causal_discards: u64,
     pub cold_run: Option<StageTimings>,
 }
 
@@ -78,7 +72,6 @@ pub struct Metrics {
     gpu_copy_samples: VecDeque<f64>,
     capture_source: CaptureSourceMetrics,
     gpu_drop_counts: GpuDropCounts,
-    causal_discards: u64,
     cold_run: Option<StageTimings>,
     cold_next: bool,
     previous_started_qpc: Option<i64>,
@@ -92,7 +85,6 @@ impl Metrics {
             gpu_copy_samples: VecDeque::with_capacity(MAX_SAMPLES),
             capture_source: CaptureSourceMetrics::default(),
             gpu_drop_counts: GpuDropCounts::default(),
-            causal_discards: 0,
             cold_run: None,
             cold_next: true,
             previous_started_qpc: None,
@@ -104,7 +96,6 @@ impl Metrics {
         self.samples.clear();
         self.gpu_copy_samples.clear();
         self.capture_source = CaptureSourceMetrics::default();
-        self.causal_discards = 0;
         self.cold_run = None;
         self.cold_next = true;
         self.previous_started_qpc = None;
@@ -132,7 +123,6 @@ impl Metrics {
     }
 
     pub fn update_capture_source(&mut self, value: CaptureSourceMetrics) {
-        self.gpu_drop_counts.add_assign(value.gpu_drop_counts);
         self.capture_source = value;
     }
 
@@ -145,10 +135,6 @@ impl Metrics {
             self.gpu_copy_samples.pop_front();
         }
         self.gpu_copy_samples.push_back(gpu_copy_ms);
-    }
-
-    pub fn record_causal_discards(&mut self, count: u64) {
-        self.causal_discards = self.causal_discards.saturating_add(count);
     }
 
     pub fn snapshot_if_due(&mut self, force: bool) -> Option<PerformanceSnapshot> {
@@ -199,9 +185,6 @@ impl Metrics {
             preprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
                 sample.timings.gpu_preprocess_ms
             }),
-            queue_age: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.queue_age_ms)
-            }),
             inference: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.ort_run_wall_ms)
             }),
@@ -216,7 +199,6 @@ impl Metrics {
             }),
             capture_source: self.capture_source,
             gpu_drop_counts: self.gpu_drop_counts,
-            causal_discards: self.causal_discards,
             cold_run: self.cold_run,
         }
     }
