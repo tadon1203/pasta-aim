@@ -16,6 +16,7 @@ use crate::{
     },
     inference::{AdapterLuid, Candidates, Detection, EpAssignmentState, ModelInputSpec},
     settings::ConfidenceThreshold,
+    timing::QpcClock,
 };
 
 use super::directml::OrtDirectMlBackend;
@@ -23,8 +24,10 @@ use super::directml::OrtDirectMlBackend;
 pub struct InferenceResult {
     pub detection: Option<Detection>,
     pub candidates: Candidates,
-    pub ort_run_wall_ms: f64,
-    pub postprocess_ms: f64,
+    /// After the ONNX Runtime run.
+    pub inference_done_qpc: i64,
+    /// After the postprocess.
+    pub postprocess_done_qpc: i64,
     pub gpu_preprocess_ms: Option<f64>,
 }
 
@@ -100,7 +103,7 @@ impl InferencePipeline {
         self.backend.set_confidence_threshold(threshold);
     }
 
-    pub fn infer(&mut self, meta: GpuFrameMetadata) -> Result<InferenceResult> {
+    pub fn infer(&mut self, meta: GpuFrameMetadata, qpc: QpcClock) -> Result<InferenceResult> {
         let ticket = match self.preprocess.submit(
             meta,
             &self.frames.capture_ready_fence,
@@ -113,7 +116,7 @@ impl InferencePipeline {
                 return Err(error);
             }
         };
-        let run_result = self.backend.run();
+        let run_result = self.backend.run(qpc);
         let gpu_preprocess_ms = match self.preprocess.collect(ticket, &self.frames.reuse_fence) {
             Ok(value) => value,
             Err(error) => {

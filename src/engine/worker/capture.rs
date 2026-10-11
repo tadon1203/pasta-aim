@@ -36,13 +36,17 @@ impl Worker {
             return;
         };
         match graphics.enumerate_displays() {
-            Ok(displays) => self.status.edit(|status| {
-                status.graphics.displays = displays;
-                status.graphics.catalog_error = None;
-            }),
+            Ok(displays) => {
+                self.displays = displays.clone();
+                self.status.edit(|status| {
+                    status.graphics.displays = displays;
+                    status.graphics.catalog_error = None;
+                });
+            }
             Err(error) => {
                 let error = format!("{error:#}");
                 tracing::error!(%error, "graphics enumeration failed");
+                self.displays.clear();
                 self.status.edit(|status| {
                     status.graphics.displays.clear();
                     status.graphics.catalog_error = Some(error);
@@ -53,10 +57,7 @@ impl Worker {
 
     /// The catalog entry for the remembered adapter and output, if it is present.
     pub(super) fn selected_display(&self) -> Option<DisplayInfo> {
-        self.status
-            .get()
-            .graphics
-            .displays
+        self.displays
             .iter()
             .find(|display| {
                 display.adapter_luid == self.selected_adapter_luid
@@ -85,6 +86,7 @@ impl Worker {
             Ok(capture) => {
                 let selected = capture.info().clone();
                 self.capture = Some(capture);
+                self.capture_ready = true;
                 self.selected_adapter_luid = selected.adapter_luid;
                 self.status.edit(|status| {
                     status.capture.phase = CapturePhase::Ready;
@@ -106,7 +108,7 @@ impl Worker {
 
     pub(super) fn set_capture_selection(&mut self, adapter: u32, output: u32) {
         tracing::info!(adapter, output, "changing capture selection");
-        let current = self.status.get().capture.selected.clone();
+        let current = self.capture.as_ref().map(|capture| capture.info().clone());
         if let Some(selected) = &current
             && selected.adapter_index == adapter
             && selected.output_index == output
@@ -125,12 +127,13 @@ impl Worker {
             Ok(prepared) => prepared,
             Err(error) => {
                 let message = format!("Display change failed: {error:#}");
+                let phase = if self.capture_ready {
+                    CapturePhase::Ready
+                } else {
+                    CapturePhase::Failed
+                };
                 self.status.edit(|status| {
-                    status.capture.phase = if status.capture.selected.is_some() {
-                        CapturePhase::Ready
-                    } else {
-                        CapturePhase::Failed
-                    };
+                    status.capture.phase = phase;
                     status.capture.error = Some(message.clone());
                 });
                 self.emit_event(EngineEvent::Capture {
@@ -158,7 +161,7 @@ impl Worker {
         self.capture_adapter = adapter;
         self.capture_output = output;
         self.selected_adapter_luid = selected.adapter_luid;
-        self.metrics.mark_cold_next();
+        self.telemetry.pipeline_changed();
         self.model_ready = model.is_some();
         self.active_pipeline_id = None;
         if let Some(model) = &model {
@@ -173,6 +176,7 @@ impl Worker {
         });
         self.model = model;
         self.capture = Some(capture);
+        self.capture_ready = true;
         self.emit_event(EngineEvent::Capture {
             adapter,
             output,

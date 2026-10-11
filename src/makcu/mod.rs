@@ -42,7 +42,7 @@ pub struct Movement {
 }
 
 /// Counters of the Raw moves. See `docs/makcu-protocol.md`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RawStats {
     pub submitted: u64,
     pub rejected: u64,

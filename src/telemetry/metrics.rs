@@ -1,14 +1,11 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
 
-use crate::graphics::GpuDropCounts;
+use crate::graphics::{GpuDropCounts, GpuDropReason};
 use crate::timing::QpcClock;
 
 const MAX_SAMPLES: usize = 256;
-const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 
+/// The stage times of one frame, in milliseconds.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StageTimings {
     pub present_to_gpu_submit_ms: f64,
@@ -18,7 +15,7 @@ pub struct StageTimings {
     pub copy_submit_ms: f64,
     /// Only measured on some frames.
     pub gpu_preprocess_ms: Option<f64>,
-    pub ort_run_wall_ms: f64,
+    pub inference_ms: f64,
     pub postprocess_ms: f64,
     pub makcu_write_ms: f64,
     pub total_ms: f64,
@@ -39,7 +36,7 @@ pub struct MetricSummary {
     pub p99_ms: f64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PerformanceSnapshot {
     pub sample_count: usize,
     pub fps: f64,
@@ -66,6 +63,7 @@ struct Sample {
     cadence_ms: Option<f64>,
 }
 
+/// The rolling statistics of the Frame records. The percentiles are made in `snapshot`.
 pub struct Metrics {
     samples: VecDeque<Sample>,
     gpu_copy_samples: VecDeque<f64>,
@@ -74,7 +72,6 @@ pub struct Metrics {
     cold_run: Option<StageTimings>,
     cold_next: bool,
     previous_started_qpc: Option<i64>,
-    last_publish: Instant,
 }
 
 impl Metrics {
@@ -87,7 +84,6 @@ impl Metrics {
             cold_run: None,
             cold_next: true,
             previous_started_qpc: None,
-            last_publish: Instant::now(),
         }
     }
 
@@ -125,7 +121,7 @@ impl Metrics {
         self.capture_source = value;
     }
 
-    pub fn record_gpu_drop(&mut self, reason: crate::graphics::GpuDropReason) {
+    pub fn record_gpu_drop(&mut self, reason: GpuDropReason) {
         self.gpu_drop_counts.increment(reason);
     }
 
@@ -134,14 +130,6 @@ impl Metrics {
             self.gpu_copy_samples.pop_front();
         }
         self.gpu_copy_samples.push_back(gpu_copy_ms);
-    }
-
-    pub fn snapshot_if_due(&mut self, force: bool) -> Option<PerformanceSnapshot> {
-        if !force && self.last_publish.elapsed() < PUBLISH_INTERVAL {
-            return None;
-        }
-        self.last_publish = Instant::now();
-        Some(self.snapshot())
     }
 
     pub fn snapshot(&self) -> PerformanceSnapshot {
@@ -185,7 +173,7 @@ impl Metrics {
                 sample.timings.gpu_preprocess_ms
             }),
             inference: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.ort_run_wall_ms)
+                Some(sample.timings.inference_ms)
             }),
             postprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
                 Some(sample.timings.postprocess_ms)
@@ -208,17 +196,7 @@ fn summarize_values(values: &VecDeque<f64>, scratch: &mut [f64; MAX_SAMPLES]) ->
     for (index, value) in values.iter().enumerate() {
         scratch[index] = *value;
     }
-    let values = &mut scratch[..len];
-    if values.is_empty() {
-        MetricSummary::default()
-    } else {
-        values.sort_unstable_by(f64::total_cmp);
-        MetricSummary {
-            p50_ms: percentile(values, 0.50),
-            p95_ms: percentile(values, 0.95),
-            p99_ms: percentile(values, 0.99),
-        }
-    }
+    summarize_scratch(&mut scratch[..len])
 }
 
 impl Default for Metrics {
@@ -239,22 +217,25 @@ fn summarize_samples(
             len += 1;
         }
     }
-    if len == 0 {
-        MetricSummary::default()
-    } else {
-        let values = &mut scratch[..len];
-        values.sort_unstable_by(f64::total_cmp);
-        MetricSummary {
-            p50_ms: percentile(values, 0.50),
-            p95_ms: percentile(values, 0.95),
-            p99_ms: percentile(values, 0.99),
-        }
+    summarize_scratch(&mut scratch[..len])
+}
+
+/// The p50, p95, and p99 of `values`, which the selection reorders.
+fn summarize_scratch(values: &mut [f64]) -> MetricSummary {
+    if values.is_empty() {
+        return MetricSummary::default();
+    }
+    MetricSummary {
+        p50_ms: percentile(values, 0.50),
+        p95_ms: percentile(values, 0.95),
+        p99_ms: percentile(values, 0.99),
     }
 }
 
-fn percentile(sorted: &[f64], fraction: f64) -> f64 {
-    let index = ((sorted.len() - 1) as f64 * fraction).round() as usize;
-    sorted[index]
+/// The value at `fraction` in sorted order. It selects that value without a full sort.
+fn percentile(values: &mut [f64], fraction: f64) -> f64 {
+    let index = ((values.len() - 1) as f64 * fraction).round() as usize;
+    *values.select_nth_unstable_by(index, f64::total_cmp).1
 }
 
 #[cfg(test)]

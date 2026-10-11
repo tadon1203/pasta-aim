@@ -1,16 +1,12 @@
-//! Tracking-loop quality metrics derived from per-frame reports.
+//! Tracking-loop quality metrics derived from the Frame records.
 
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
 
-use super::target_track::Track;
+use crate::engine::target_track::Track;
 use crate::timing::QpcClock;
 
 const WINDOW: usize = 256;
 const CONVERGENCE_WINDOW: usize = 64;
-const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 /// Sign flips with either side smaller than this are noise, not overshoot.
 const OVERSHOOT_DEADBAND_PX: f32 = 2.0;
 /// The target counts as reached once the error is below this.
@@ -48,7 +44,6 @@ pub(super) struct LoopMetrics {
     converged: bool,
     overshoots: u64,
     locked_frames: u64,
-    last_publish: Instant,
 }
 
 impl LoopMetrics {
@@ -63,7 +58,6 @@ impl LoopMetrics {
             converged: true,
             overshoots: 0,
             locked_frames: 0,
-            last_publish: Instant::now(),
         }
     }
 
@@ -115,19 +109,10 @@ impl LoopMetrics {
         self.previous_error = Some(error);
     }
 
-    pub(super) fn snapshot_if_due(&mut self) -> Option<LoopSnapshot> {
-        if self.last_publish.elapsed() < PUBLISH_INTERVAL {
-            return None;
-        }
-        self.last_publish = Instant::now();
-        Some(self.snapshot())
-    }
-
+    /// Made when the live values are read: the percentiles select from a copy of the windows.
     pub(super) fn snapshot(&self) -> LoopSnapshot {
         let mut periods: Vec<f64> = self.periods_ms.iter().copied().collect();
-        periods.sort_unstable_by(f64::total_cmp);
         let mut convergence: Vec<f64> = self.convergence_ms.iter().copied().collect();
-        convergence.sort_unstable_by(f64::total_cmp);
         let rms_error_px = if self.squared_errors.is_empty() {
             0.0
         } else {
@@ -136,13 +121,13 @@ impl LoopMetrics {
         };
         LoopSnapshot {
             samples: self.periods_ms.len(),
-            period_p50_ms: percentile(&periods, 0.50).unwrap_or(0.0),
-            period_p95_ms: percentile(&periods, 0.95).unwrap_or(0.0),
+            period_p50_ms: percentile(&mut periods, 0.50).unwrap_or(0.0),
+            period_p95_ms: percentile(&mut periods, 0.95).unwrap_or(0.0),
             rms_error_px,
             overshoots: self.overshoots,
             locked_frames: self.locked_frames,
             convergence_last_ms: self.convergence_ms.back().copied(),
-            convergence_p50_ms: percentile(&convergence, 0.50),
+            convergence_p50_ms: percentile(&mut convergence, 0.50),
         }
     }
 }
@@ -160,11 +145,13 @@ fn push<T>(queue: &mut VecDeque<T>, value: T, capacity: usize) {
     queue.push_back(value);
 }
 
-fn percentile(sorted: &[f64], fraction: f64) -> Option<f64> {
-    if sorted.is_empty() {
+/// The value at `fraction` in sorted order, selected without a full sort.
+fn percentile(values: &mut [f64], fraction: f64) -> Option<f64> {
+    if values.is_empty() {
         return None;
     }
-    Some(sorted[((sorted.len() - 1) as f64 * fraction).round() as usize])
+    let index = ((values.len() - 1) as f64 * fraction).round() as usize;
+    Some(*values.select_nth_unstable_by(index, f64::total_cmp).1)
 }
 
 #[cfg(test)]

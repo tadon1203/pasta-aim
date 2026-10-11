@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use super::loop_metrics::LoopSnapshot;
+use eframe::egui;
+
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
-    makcu::{MakcuRoutes, Movement, RawStats},
-    metrics::PerformanceSnapshot,
+    makcu::MakcuRoutes,
+    repaint,
+    sync::MutexExt,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -141,7 +143,6 @@ pub struct MakcuStatus {
     pub port: Option<String>,
     pub firmware: Option<u32>,
     pub routes: MakcuRoutes,
-    pub raw: RawStats,
     pub error: Option<String>,
 }
 
@@ -152,7 +153,6 @@ impl Default for MakcuStatus {
             port: None,
             firmware: None,
             routes: MakcuRoutes::default(),
-            raw: RawStats::default(),
             error: None,
         }
     }
@@ -169,9 +169,6 @@ pub enum RunPhase {
 pub struct RunStatus {
     pub phase: RunPhase,
     pub error: Option<String>,
-    pub last_target: Option<(f32, f32, f32, i32)>,
-    pub last_command: Option<Movement>,
-    pub last_total_ms: Option<f64>,
 }
 
 impl Default for RunStatus {
@@ -179,9 +176,6 @@ impl Default for RunStatus {
         Self {
             phase: RunPhase::Idle,
             error: None,
-            last_target: None,
-            last_command: None,
-            last_total_ms: None,
         }
     }
 }
@@ -210,18 +204,17 @@ pub(super) fn run_block_reason(readiness: RunReadiness) -> Option<&'static str> 
     None
 }
 
+/// The state of the engine that the UI shows. It changes on a command or a fault, not on a frame.
 #[derive(Debug, Clone, Default)]
-pub struct EngineStatus {
+pub struct EngineState {
     pub graphics: GraphicsStatus,
     pub model: ModelStatus,
     pub capture: CaptureStatus,
     pub makcu: MakcuStatus,
     pub run: RunStatus,
-    pub performance: PerformanceSnapshot,
-    pub tracking: LoopSnapshot,
 }
 
-impl EngineStatus {
+impl EngineState {
     fn readiness(&self) -> RunReadiness {
         RunReadiness {
             model_ready: self.model.phase == ModelPhase::Ready,
@@ -241,6 +234,46 @@ impl EngineStatus {
     }
 }
 
+/// The engine's own copy of the state. The UI only sees the copies that the engine publishes.
+///
+/// The engine edits `local` without locking. `flush` publishes a copy when an edit is pending.
+pub(super) struct StatusHub {
+    local: EngineState,
+    shared: Arc<Mutex<Arc<EngineState>>>,
+    ui_ctx: egui::Context,
+    dirty: bool,
+}
+
+impl StatusHub {
+    pub(super) fn new(shared: Arc<Mutex<Arc<EngineState>>>, ui_ctx: egui::Context) -> Self {
+        Self {
+            local: EngineState::default(),
+            shared,
+            ui_ctx,
+            dirty: false,
+        }
+    }
+
+    pub(super) fn get(&self) -> &EngineState {
+        &self.local
+    }
+
+    pub(super) fn edit(&mut self, edit: impl FnOnce(&mut EngineState)) {
+        edit(&mut self.local);
+        self.dirty = true;
+    }
+
+    /// Publishes the pending edit, if there is one, and asks for a repaint.
+    pub(super) fn flush(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        *self.shared.lock_recover() = Arc::new(self.local.clone());
+        self.dirty = false;
+        repaint::request_repaint(&self.ui_ctx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,32 +281,32 @@ mod tests {
         EpAssignedNode, EpAssignmentReport, EpAssignmentState, EpProviderAssignment,
     };
 
-    fn ready_status() -> EngineStatus {
-        let mut status = EngineStatus::default();
-        status.model.phase = ModelPhase::Ready;
-        status.capture.phase = CapturePhase::Ready;
-        status.makcu.phase = MakcuPhase::Connected;
-        status.makcu.routes.mouse = true;
-        status
+    fn ready_state() -> EngineState {
+        let mut state = EngineState::default();
+        state.model.phase = ModelPhase::Ready;
+        state.capture.phase = CapturePhase::Ready;
+        state.makcu.phase = MakcuPhase::Connected;
+        state.makcu.routes.mouse = true;
+        state
     }
 
     #[test]
     fn ready_when_everything_including_the_mouse_route_is_available() {
-        assert!(ready_status().ready());
+        assert!(ready_state().ready());
     }
 
     #[test]
     fn missing_mouse_route_blocks_output() {
-        let mut status = ready_status();
-        status.makcu.routes.mouse = false;
-        assert_eq!(status.block_reason(), Some("Mouse route is unavailable"));
+        let mut state = ready_state();
+        state.makcu.routes.mouse = false;
+        assert_eq!(state.block_reason(), Some("Mouse route is unavailable"));
     }
 
     #[test]
     fn disconnected_makcu_blocks_output() {
-        let mut status = ready_status();
-        status.makcu.phase = MakcuPhase::Reconnecting;
-        assert_eq!(status.block_reason(), Some("MAKCU is not connected"));
+        let mut state = ready_state();
+        state.makcu.phase = MakcuPhase::Reconnecting;
+        assert_eq!(state.block_reason(), Some("MAKCU is not connected"));
     }
 
     #[test]
@@ -316,5 +349,16 @@ mod tests {
             })
         );
         assert_eq!(cpu_fallback_nodes(&state)[0].op_type, "Shape");
+    }
+
+    #[test]
+    fn flush_publishes_only_a_pending_edit() {
+        let shared = Arc::new(Mutex::new(Arc::new(EngineState::default())));
+        let mut hub = StatusHub::new(Arc::clone(&shared), egui::Context::default());
+        hub.flush();
+        hub.edit(|state| state.run.phase = RunPhase::Continuous);
+        assert_eq!(shared.lock_recover().run.phase, RunPhase::Idle);
+        hub.flush();
+        assert_eq!(shared.lock_recover().run.phase, RunPhase::Continuous);
     }
 }

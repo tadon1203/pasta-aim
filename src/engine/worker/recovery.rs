@@ -15,8 +15,8 @@ impl Worker {
         report: Option<GpuFaultReport>,
     ) {
         let resume_continuous = self.run.is_continuous();
-        self.metrics
-            .record_gpu_drop(GpuDropReason::PipelinePoisoned);
+        self.telemetry
+            .frame_dropped(GpuDropReason::PipelinePoisoned);
         let (reported_pipeline_id, prepare_id) = log_fault_report(report);
         let pipeline_id = reported_pipeline_id.or(self.active_pipeline_id);
         let prepare_id = prepare_id.as_deref();
@@ -75,6 +75,7 @@ impl Worker {
         // The model waits for its GPU queue before capture and COM are released.
         self.model = None;
         self.capture = None;
+        self.capture_ready = false;
         self.active_pipeline_id = None;
         tracing::error!(%error, "invalid GPU pipeline dropped; capture remains suspended");
     }

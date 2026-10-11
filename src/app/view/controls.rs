@@ -6,19 +6,20 @@ use super::{
 };
 use crate::{
     app::App,
-    engine::{CapturePhase, Command, EngineStatus, ModelPhase, RunPhase},
+    engine::{CapturePhase, Command, EngineState, ModelPhase, RunPhase},
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, Interpolation,
         InterpolationPercent, MaxDelta, MoveMethod, Sensitivity, TargetYOffset,
     },
+    telemetry::LiveTelemetry,
 };
 
 /// The fixed interpolation that a switch from Auto starts with.
 const FIXED_INTERPOLATION_START: u8 = 50;
 
 impl App {
-    pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineState) {
         ui.group(|ui| {
             ui.strong("Output");
             if !status.makcu.routes.mouse {
@@ -75,7 +76,12 @@ impl App {
         });
     }
 
-    pub(super) fn draw_calibration(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_calibration(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: &EngineState,
+        live: &LiveTelemetry,
+    ) {
         ui.group(|ui| {
             ui.strong("Calibration");
             let edit = percent_row(
@@ -153,21 +159,21 @@ impl App {
                 });
             }
 
-            if status.run.last_target.is_some()
-                || status.run.last_command.is_some()
-                || status.run.last_total_ms.is_some()
+            if live.last_target.is_some()
+                || live.last_movement.is_some()
+                || live.last_total_ms.is_some()
             {
                 ui.separator();
                 ui.small("Last run");
-                if let Some((dx, dy, _, _)) = status.run.last_target {
+                if let Some((dx, dy, _, _)) = live.last_target {
                     ui.label(format!("Target     x={dx:+.1} px   y={dy:+.1} px"));
                 } else {
                     ui.label("Target     no detection");
                 }
-                if let Some(sent) = status.run.last_command {
+                if let Some(sent) = live.last_movement {
                     ui.label(format!("Command    x={:+}   y={:+}", sent.x, sent.y));
                 }
-                if let Some(ms) = status.run.last_total_ms {
+                if let Some(ms) = live.last_total_ms {
                     ui.label(format!("Pipeline   {ms:.2} ms"));
                 }
             }
@@ -178,7 +184,12 @@ impl App {
         });
     }
 
-    pub(super) fn draw_continuous(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_continuous(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: &EngineState,
+        live: &LiveTelemetry,
+    ) {
         ui.group(|ui| {
             ui.horizontal(|ui| {
                 ui.strong("Continuous");
@@ -238,7 +249,7 @@ impl App {
             } else {
                 ui.small(format!("Hold: {hold_shortcuts}"));
             }
-            if status.performance.sample_count > 0 {
+            if live.performance.sample_count > 0 {
                 if self.gpu_debug_at_startup {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
@@ -247,18 +258,18 @@ impl App {
                 }
                 ui.small(format!(
                     "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
-                    status.performance.fps,
+                    live.performance.fps,
                     self.config.fps_limit.value(),
-                    status.performance.total.p50_ms,
-                    status.performance.total.p95_ms,
-                    status.performance.inference.p50_ms,
-                    status.performance.inference.p95_ms,
+                    live.performance.total.p50_ms,
+                    live.performance.total.p95_ms,
+                    live.performance.inference.p50_ms,
+                    live.performance.inference.p95_ms,
                 ));
             }
         });
     }
 
-    pub(super) fn draw_hotkeys(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_hotkeys(&mut self, ui: &mut egui::Ui, status: &EngineState) {
         ui.group(|ui| {
             ui.strong("Hotkeys");
             for action in HotkeyAction::ALL {

@@ -1,16 +1,14 @@
+use crate::telemetry::FrameTimes;
+
 #[derive(Debug, Clone, Copy)]
 pub struct GpuFrameMetadata {
     pub pipeline_id: u64,
     pub generation: u64,
     pub frame_seq: u64,
-    /// Original desktop update identity.
-    pub source_seq: u64,
-    pub present_qpc: i64,
-    pub ready_qpc: i64,
+    /// The stage boundaries of the frame. The capture fills the first five; the inference fills the rest.
+    pub times: FrameTimes,
     pub capture_ready_value: u64,
-    pub accumulated_frames: u32,
     pub desktop_size: (usize, usize),
-    pub acquire_wait_ms: f64,
-    pub capture_ms: f64,
-    pub copy_submit_ms: f64,
+    /// A GPU copy time that became ready during this frame. It belongs to an earlier frame.
+    pub gpu_copy_ms: Option<f64>,
 }

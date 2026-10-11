@@ -17,17 +17,19 @@ mod logging;
 #[cfg(windows)]
 mod makcu;
 #[cfg(windows)]
-mod metrics;
-#[cfg(windows)]
 mod models;
 #[cfg(windows)]
 mod paths;
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
+mod repaint;
+#[cfg(windows)]
 mod settings;
 #[cfg(windows)]
 mod sync;
+#[cfg(windows)]
+mod telemetry;
 #[cfg(windows)]
 mod timing;
 #[cfg(windows)]

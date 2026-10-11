@@ -18,24 +18,23 @@ use eframe::egui;
 
 use self::{frame::StepOutcome, run::RunControl};
 use super::{
-    CapturePhase, Command, EngineEvent, EngineStatus,
-    loop_metrics::LoopMetrics,
+    CapturePhase, Command, EngineEvent, EngineState,
     output::{OutputSettings, OutputStage},
-    telemetry::{RunSummary, StatusHub},
+    status::StatusHub,
 };
 use crate::{
     config::Config,
-    graphics::{DxgiCapture, GraphicsThread},
+    graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
-    makcu::MakcuClient,
-    metrics::Metrics,
-    models,
+    makcu::{MakcuClient, RawStats},
+    models, repaint,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
+    telemetry::{RunCounters, TelemetrySink},
     timing::QpcClock,
     wait::DeadlineWait,
 };
 
-/// How often the engine polls MAKCU connection state when no other event wakes it.
+/// How often the engine polls MAKCU connection state and sends the counters, when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
 /// How long the engine spins before a capture deadline. Only the capture deadline spins.
 const CAPTURE_SPIN: Duration = Duration::from_millis(1);
@@ -51,25 +50,41 @@ struct Tuning {
     frame_trace: bool,
 }
 
+/// The channels and handles that the engine thread is started with.
+pub(super) struct WorkerLinks {
+    pub commands: Receiver<Command>,
+    pub events: Sender<EngineEvent>,
+    pub state: Arc<Mutex<Arc<EngineState>>>,
+    pub ui_ctx: egui::Context,
+    pub wait: DeadlineWait,
+    pub qpc: QpcClock,
+    pub telemetry: TelemetrySink,
+}
+
 struct Worker {
     event_tx: Sender<EngineEvent>,
     ui_ctx: egui::Context,
     status: StatusHub,
     qpc: QpcClock,
+    telemetry: TelemetrySink,
     tuning: Tuning,
+    /// The display catalog that the engine uses to find the remembered display.
+    displays: Vec<DisplayInfo>,
 
     // Pipeline (replaced as a unit when the display or GPU changes).
     model: Option<capture::PreparedModel>,
     capture: Option<DxgiCapture>,
+    /// Whether `capture` holds a working capture. It is the readiness that a Run needs.
+    capture_ready: bool,
     output_stage: OutputStage,
-    trace: Option<super::frame_trace::FrameTraceWriter>,
-    /// Wakes the engine for a command, the housekeeping, the status flush, or the capture deadline.
+    /// Wakes the engine for a command, the housekeeping, or the capture deadline.
     wait: DeadlineWait,
     capture_deadline: frame::CaptureDeadline,
     frame_seq: u64,
-    source_seq: u64,
-    capture_stats: frame::CaptureStats,
-    capture_stats_started: Instant,
+    /// The counters of the current Run, and the last values sent to the Telemetry thread.
+    run_counters: RunCounters,
+    sent_counters: RunCounters,
+    sent_raw: RawStats,
     active_model: Option<(String, PathBuf)>,
     model_ready: bool,
     auto_reprepare_attempted: bool,
@@ -81,9 +96,6 @@ struct Worker {
 
     makcu: MakcuClient,
     run: RunControl,
-    summary: RunSummary,
-    metrics: Metrics,
-    loop_metrics: LoopMetrics,
     // Must be dropped after all DXGI/DirectML objects owned by this worker.
     graphics: Option<GraphicsThread>,
 }
@@ -106,16 +118,18 @@ fn log_pipeline_state(
     );
 }
 
-pub(super) fn run_worker(
-    rx: Receiver<Command>,
-    event_tx: Sender<EngineEvent>,
-    shared_status: Arc<Mutex<EngineStatus>>,
-    config: Config,
-    ui_ctx: egui::Context,
-    wait: DeadlineWait,
-) {
+pub(super) fn run_worker(links: WorkerLinks, config: Config) {
     tracing::info!("engine worker started");
-    let mut status = StatusHub::new(shared_status, ui_ctx.clone());
+    let WorkerLinks {
+        commands,
+        events,
+        state,
+        ui_ctx,
+        wait,
+        qpc,
+        telemetry,
+    } = links;
+    let mut status = StatusHub::new(state, ui_ctx.clone());
     let graphics = match GraphicsThread::initialize() {
         Ok(apartment) => Some(apartment),
         Err(error) => {
@@ -131,13 +145,6 @@ pub(super) fn run_worker(
         }
     };
 
-    let qpc = match QpcClock::new() {
-        Ok(qpc) => qpc,
-        Err(error) => {
-            tracing::error!(error = %format!("{error:#}"), "QPC initialization failed");
-            return;
-        }
-    };
     let tuning = Tuning {
         output: OutputSettings {
             sensitivity: config.sensitivity,
@@ -158,21 +165,23 @@ pub(super) fn run_worker(
     }
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
-        event_tx,
+        event_tx: events,
         ui_ctx,
         status,
         qpc,
+        telemetry,
         tuning,
+        displays: Vec::new(),
         model: None,
         capture: None,
+        capture_ready: false,
         output_stage: OutputStage::new(tuning.output),
-        trace: None,
         wait,
         capture_deadline: frame::CaptureDeadline::new(),
         frame_seq: 0,
-        source_seq: 0,
-        capture_stats: frame::CaptureStats::default(),
-        capture_stats_started: Instant::now(),
+        run_counters: RunCounters::default(),
+        sent_counters: RunCounters::default(),
+        sent_raw: RawStats::default(),
         active_model: None,
         model_ready: false,
         auto_reprepare_attempted: false,
@@ -183,9 +192,6 @@ pub(super) fn run_worker(
         selected_adapter_luid: config.selected_adapter,
         makcu,
         run: RunControl::default(),
-        summary: RunSummary::new(),
-        metrics: Metrics::new(),
-        loop_metrics: LoopMetrics::new(),
         graphics,
     };
 
@@ -203,17 +209,24 @@ pub(super) fn run_worker(
             }
         }
     }
-    worker.event_loop(&rx);
+    worker.event_loop(&commands);
     worker.status.flush();
 }
 
 impl Worker {
-    /// Periodic work that no event triggers: MAKCU connection changes and
-    /// folding capture-side counters into metrics.
+    /// Periodic work that no event triggers: MAKCU connection changes, and the Raw and Run counters
+    /// that the Telemetry thread shows. Each value is sent only when it changed.
     fn housekeeping(&mut self) {
         self.poll_makcu_events();
         let raw = self.makcu.raw_stats();
-        self.status.edit(|status| status.makcu.raw = raw);
+        if raw != self.sent_raw {
+            self.sent_raw = raw;
+            self.telemetry.raw_stats(raw);
+        }
+        if self.run_counters != self.sent_counters {
+            self.sent_counters = self.run_counters;
+            self.telemetry.counters(self.run_counters);
+        }
     }
 
     fn event_loop(&mut self, rx: &Receiver<Command>) {
@@ -227,14 +240,14 @@ impl Worker {
                 self.housekeeping();
                 next_housekeeping = now + HOUSEKEEPING_INTERVAL;
             }
-            self.publish_capture_stats(false);
-            self.status.flush_if_due();
             let mut capture_at = None;
             if let Some(run) = self.run.active {
                 match self.capture_deadline.pending_until(run.mode, now) {
                     Some(at) => capture_at = Some(at),
                     None => {
                         let outcome = self.step_frame(rx);
+                        // The end of each pass publishes the state, if it changed.
+                        self.status.flush();
                         if outcome == StepOutcome::Shutdown {
                             return;
                         }
@@ -244,14 +257,10 @@ impl Worker {
                     }
                 }
             }
-            // The earliest of the housekeeping, the status flush, and the capture deadline wakes the loop.
+            self.status.flush();
+            // The earlier of the housekeeping and the capture deadline wakes the loop.
             let mut deadline = next_housekeeping;
             let mut spin = Duration::ZERO;
-            if let Some(flush) = self.status.time_until_flush().map(|left| now + left)
-                && flush < deadline
-            {
-                deadline = flush;
-            }
             if let Some(capture) = capture_at
                 && capture <= deadline
             {
@@ -357,7 +366,7 @@ impl Worker {
 
     fn emit_event(&self, event: EngineEvent) {
         let _ = self.event_tx.send(event);
-        self.ui_ctx.request_repaint();
+        repaint::request_repaint(&self.ui_ctx);
     }
 
     fn next_pipeline_id(&mut self) -> u64 {

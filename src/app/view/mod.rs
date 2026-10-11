@@ -36,7 +36,8 @@ impl eframe::App for App {
         }
 
         self.process_engine_events();
-        let status = self.engine.status();
+        let status = self.engine.state();
+        let live = self.engine.live();
 
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -66,13 +67,13 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                     self.draw_output(ui, &status);
                     ui.add_space(6.0);
-                    self.draw_calibration(ui, &status);
+                    self.draw_calibration(ui, &status, &live);
                     ui.add_space(6.0);
-                    self.draw_continuous(ui, &status);
+                    self.draw_continuous(ui, &status, &live);
                     ui.add_space(6.0);
                     self.draw_hotkeys(ui, &status);
                     ui.add_space(6.0);
-                    self.draw_diagnostics(ui, &status);
+                    self.draw_diagnostics(ui, &status, &live);
 
                     if let Some(warning) = &self.config_load_warning {
                         ui.add_space(6.0);

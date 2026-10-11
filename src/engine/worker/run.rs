@@ -2,15 +2,11 @@
 
 use super::Worker;
 use crate::{
-    engine::CapturePhase,
     engine::{
         RunGeneration, RunMode, RunPhase,
-        frame_trace::{FrameTraceWriter, TraceHeader},
-        loop_metrics::{LoopFrame, LoopSnapshot},
         status::{RunReadiness, run_block_reason},
-        worker::frame::FrameReport,
     },
-    paths,
+    telemetry::{RunCounters, RunStart, TraceHeader},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -66,19 +62,16 @@ impl Worker {
             return;
         }
         let generation = self.run.next_generation();
-        self.loop_metrics.reset();
-        self.trace = self.open_frame_trace();
         self.output_stage.reset();
         self.capture_deadline.clear();
-        self.capture_stats = Default::default();
-        self.capture_stats_started = std::time::Instant::now();
+        self.run_counters = RunCounters::default();
+        self.sent_counters = RunCounters::default();
         if let Some(capture) = self.capture.as_mut() {
             capture.reset_gpu_profiler();
         }
         self.run.active = Some(ActiveRun { generation, mode });
         let phase = match mode {
             RunMode::Continuous => {
-                self.summary.reset();
                 tracing::info!(
                     fps_limit = self.tuning.fps_limit.value(),
                     "continuous inference started"
@@ -87,44 +80,42 @@ impl Worker {
             }
             RunMode::OneShot => RunPhase::OneShot,
         };
+        self.telemetry.run_started(RunStart {
+            generation,
+            mode,
+            trace: self.trace_header(),
+        });
         self.status.edit(|status| {
             status.run.phase = phase;
             status.run.error = None;
-            status.tracking = LoopSnapshot::default();
         });
     }
 
-    /// A trace that cannot be opened is logged and skipped; it never blocks a run.
-    fn open_frame_trace(&self) -> Option<FrameTraceWriter> {
+    /// The header of the Frame trace, when the trace is on for this Run.
+    fn trace_header(&self) -> Option<TraceHeader> {
         if !self.tuning.frame_trace {
             return None;
         }
         let output = self.tuning.output;
-        let header = TraceHeader {
+        Some(TraceHeader {
             qpc_hz: self.qpc.frequency_hz(),
-            input_size: self.status.get().model.input_size,
+            input_size: self.model.as_ref().map(|model| model.input_size),
             sensitivity_percent: output.sensitivity.value(),
             target_y_offset_percent: output.target_y_offset.value(),
             max_delta: output.max_delta.value(),
-        };
-        match FrameTraceWriter::create(&paths::logs_dir(), &header) {
-            Ok(writer) => Some(writer),
-            Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "frame trace could not be started");
-                None
-            }
-        }
+        })
     }
 
     /// Stops any active run. Safe to call when idle.
     pub(super) fn stop_run(&mut self) {
         if let Some(run) = self.run.active.take() {
             tracing::info!(generation = run.generation, "inference stopped");
+            self.telemetry.run_stopped(run.generation);
         }
-        self.trace = None;
         self.output_stage.reset();
-        self.publish_capture_stats(true);
-        self.status.edit(|status| status.run.phase = RunPhase::Idle);
+        if self.status.get().run.phase != RunPhase::Idle {
+            self.status.edit(|status| status.run.phase = RunPhase::Idle);
+        }
     }
 
     pub(super) fn fail_run(&mut self, error: String) {
@@ -137,55 +128,11 @@ impl Worker {
         let makcu = &self.makcu;
         run_block_reason(RunReadiness {
             model_ready: self.model_ready,
-            capture_ready: self.status.get().capture.phase == CapturePhase::Ready,
+            capture_ready: self.capture_ready,
             makcu_connected: makcu.is_connected(),
             mouse_route: makcu.mouse_available(),
         })
         .map(str::to_owned)
-    }
-
-    pub(super) fn handle_frame(&mut self, report: FrameReport) {
-        if !self.run.is_active(report.generation) {
-            tracing::debug!(
-                generation = report.generation,
-                "discarding old-generation inference report"
-            );
-            return;
-        }
-        self.metrics
-            .record_qpc(self.qpc, report.inference_start_qpc, report.timings);
-        self.summary.record(report.detected, report.command);
-        self.loop_metrics.record(
-            self.qpc,
-            LoopFrame {
-                present_qpc: report.metadata.present_qpc,
-                output_complete_qpc: report.output_complete_qpc,
-                track: report.track,
-                error: report.target.map(|(dx, dy, _, _)| (dx, dy)),
-                sent: report.command.is_some(),
-            },
-        );
-        let tracking = self.loop_metrics.snapshot_if_due();
-        let performance = self.metrics.snapshot_if_due(report.one_shot_done);
-        self.status.edit(|status| {
-            status.capture.desktop_size = Some(report.metadata.desktop_size);
-            status.run.last_target = report.target;
-            status.run.last_command = report.command;
-            status.run.last_total_ms = Some(report.timings.total_ms);
-            status.run.error = None;
-            if let Some(performance) = performance {
-                status.performance = performance;
-            }
-            if let Some(tracking) = tracking {
-                status.tracking = tracking;
-            }
-        });
-        if report.one_shot_done {
-            self.stop_run();
-        } else {
-            let metrics = &self.metrics;
-            self.summary.log_if_due(|| metrics.snapshot());
-        }
     }
 }
 

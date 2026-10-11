@@ -680,10 +680,11 @@ mod tests {
             .context("no desktop display available")?;
         let mut capture = graphics.create_capture(display.adapter_index, display.output_index)?;
         let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
+        let qpc = crate::timing::QpcClock::new()?;
         let size = (32, 32);
         let mut image = None;
         for _ in 0..50 {
-            if let CapturePoll::Fresh(frame) = capture.acquire(20)? {
+            if let CapturePoll::Fresh(frame) = capture.acquire(20, qpc)? {
                 image = Some(frame);
                 break;
             }
@@ -751,20 +752,25 @@ mod tests {
                         &capture_frame.capture_ready_fence,
                         seq,
                         size,
+                        qpc,
                     )?;
                     let metadata = GpuFrameMetadata {
                         pipeline_id: 1,
                         generation: 1,
                         frame_seq: seq,
-                        source_seq: 1,
-                        present_qpc: submit.present_qpc,
-                        ready_qpc: submit.present_qpc,
+                        times: crate::telemetry::FrameTimes {
+                            present: submit.present_qpc,
+                            attempt_start: submit.attempt_start_qpc,
+                            acquired: submit.acquired_qpc,
+                            copy_submitted: submit.copy_submitted_qpc,
+                            ready: submit.ready_qpc,
+                            inference_start: 0,
+                            inference_done: 0,
+                            postprocess_done: 0,
+                        },
                         capture_ready_value: seq,
-                        accumulated_frames: submit.accumulated_frames,
                         desktop_size: submit.desktop_size,
-                        acquire_wait_ms: submit.acquire_wait_ms,
-                        capture_ms: submit.capture_ms,
-                        copy_submit_ms: submit.copy_submit_ms,
+                        gpu_copy_ms: None,
                     };
                     let ticket = preprocess.submit(
                         metadata,

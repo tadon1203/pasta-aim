@@ -49,13 +49,14 @@ One Windows process, written in Rust. Each thread owns its resources, and the th
 - **UI thread** (`src/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
 - **Engine thread** (`src/engine`): it owns the Pipeline and the MAKCU client. The Pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
 - **Input thread** (`src/hotkeys`): global keyboard hotkeys and XInput polling. It turns a Shortcut into an engine command. It holds no run state of the engine.
-- **Trace thread** (`src/engine`): it formats and writes the Frame trace.
+- **Telemetry thread** (`src/telemetry`): it takes the Frame records. It makes the statistics and the Loop metrics, writes the Frame trace, and publishes the live values for the UI.
 
 Data flow:
 
 - **UI thread and Input thread → Engine thread:** commands, on one channel.
-- **Engine thread → UI thread:** events (the result of a model load or of a capture selection) on a channel, and status snapshots that the engine publishes at a limited rate, each with a repaint request.
-- **Engine thread → Trace thread:** one record for each processed frame.
+- **Engine thread → UI thread:** events (the result of a model load or of a capture selection) on a channel, and the engine state, published when it changes.
+- **Engine thread → Telemetry thread:** one Frame record for each processed frame, and the counters of a Run.
+- **Telemetry thread → UI thread:** the live values, at a limited rate (see [docs/requirements.md](./docs/requirements.md)).
 - **Inside the engine thread, for each frame:** acquire → GPU copy and preprocess → inference and postprocess → output → next acquire. The engine handles pending commands before the acquire, and again after the inference and before the output.
 - **On the GPU:** Direct3D 11 copies the captured image into one shared texture. Direct3D 12 opens the same texture for the preprocess. Fences order the two devices.
 
@@ -64,8 +65,9 @@ Data flow:
 | Directory           | What it holds                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------- |
 | `src/app`           | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
-| `src/engine`        | The engine thread: commands, status, output, the Target track, loop metrics, and the trace. |
+| `src/engine`        | The engine thread: commands, the engine state, output, and the Target track.              |
 | `src/engine/worker` | The frame transaction, the Run, model loading, Pipeline replacement, and the MAKCU lifecycle. |
+| `src/telemetry`     | The Telemetry thread: the Frame records, the statistics, the Loop metrics, the Frame trace, and the live values. |
 | `src/graphics`      | The capture, the shared frame texture and its fences, the GPU preprocess, and GPU faults.   |
 | `src/inference`     | The inference Pipeline, the postprocess, and the selection of the target.                   |
 | `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new Shortcut, and XInput.                  |
@@ -86,8 +88,8 @@ Data flow:
 - A model is a file name in `models/`. The settings hold no path.
 - The engine never reuses a frame. A capture attempt without a new desktop update does no inference and sends no Movement.
 - The engine thread waits only for a command or for its capture deadline. It does not sleep on the frame path. It sets the next capture time from the start of the capture that got the New frame, and it gives no credit for lost time.
-- The engine thread does not lock the shared status on the frame path. It edits its own copy and publishes snapshots.
-- The engine thread never waits for the Trace thread. A failure of the trace never stops the engine.
+- The engine thread does not lock shared data on the frame path. It publishes its state only when the state changes, and it sends one Frame record for each processed frame.
+- The engine thread never waits for the Telemetry thread between a capture and its output. A failure of the Telemetry thread never stops the engine.
 - Only the engine thread uses the MAKCU client. The engine stops the Run before it reconnects MAKCU.
 - The engine thread writes a Movement to the MAKCU port itself. No thread or queue sits between the Movement and the port.
 - The Rounding remainder stays inside one Target track. A Target switch, a lost target, and the start of a Run clear it.

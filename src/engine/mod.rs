@@ -1,28 +1,24 @@
 use crate::sync::MutexExt;
-mod frame_trace;
-mod loop_metrics;
 mod output;
 mod status;
-mod target_track;
-mod telemetry;
+pub(crate) mod target_track;
 mod worker;
 
-pub(super) type RunGeneration = u64;
+pub(crate) type RunGeneration = u64;
 
 /// Whether a run keeps capturing until stopped or handles a single frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RunMode {
+pub(crate) enum RunMode {
     Continuous,
     OneShot,
 }
 
-pub use loop_metrics::LoopSnapshot;
 pub use status::{
-    CapturePhase, EngineStatus, MakcuPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
+    CapturePhase, EngineState, MakcuPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
     ep_assignment_summary, provider_display_name,
 };
 
-use worker::run_worker;
+use worker::{WorkerLinks, run_worker};
 
 use std::{
     path::PathBuf,
@@ -41,6 +37,8 @@ use crate::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, MoveMethod,
         Sensitivity, TargetYOffset,
     },
+    telemetry::{LiveTelemetry, Telemetry},
+    timing::QpcClock,
 };
 use crossbeam_channel as crossbeam;
 
@@ -112,7 +110,8 @@ impl EngineControl {
 pub struct Engine {
     control: EngineControl,
     events: Receiver<EngineEvent>,
-    status: Arc<Mutex<EngineStatus>>,
+    state: Arc<Mutex<Arc<EngineState>>>,
+    telemetry: Telemetry,
     join: Option<JoinHandle<()>>,
 }
 
@@ -122,18 +121,29 @@ impl Engine {
         let (tx, rx) = crossbeam::unbounded();
         let (wait, waker) = DeadlineWait::new().expect("failed to create the engine wait");
         let (event_tx, events) = mpsc::channel();
-        let status = Arc::new(Mutex::new(EngineStatus::default()));
-        let worker_status = Arc::clone(&status);
+        let qpc = QpcClock::new().expect("failed to read the QPC frequency");
+        let (telemetry, sink) = Telemetry::spawn(qpc, ui_ctx.clone());
+        let state = Arc::new(Mutex::new(Arc::new(EngineState::default())));
+        let links = WorkerLinks {
+            commands: rx,
+            events: event_tx,
+            state: Arc::clone(&state),
+            ui_ctx,
+            wait,
+            qpc,
+            telemetry: sink,
+        };
         let initial = config.clone();
         let join = thread::Builder::new()
             .name("nice-aimassist-engine".to_owned())
-            .spawn(move || run_worker(rx, event_tx, worker_status, initial, ui_ctx, wait))
+            .spawn(move || run_worker(links, initial))
             .expect("failed to spawn engine worker");
 
         Self {
             control: EngineControl { tx, waker },
             events,
-            status,
+            state,
+            telemetry,
             join: Some(join),
         }
     }
@@ -146,8 +156,14 @@ impl Engine {
         self.control.send(command);
     }
 
-    pub fn status(&self) -> EngineStatus {
-        self.status.lock_recover().clone()
+    /// The engine state. The UI takes a clone of the `Arc`, which the engine replaces when the state changes.
+    pub fn state(&self) -> Arc<EngineState> {
+        Arc::clone(&self.state.lock_recover())
+    }
+
+    /// The values that the Telemetry thread publishes, at most ten times each second.
+    pub fn live(&self) -> LiveTelemetry {
+        self.telemetry.live()
     }
 
     pub fn poll_events(&self) -> impl Iterator<Item = EngineEvent> + '_ {
@@ -162,5 +178,6 @@ impl Drop for Engine {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+        self.telemetry.stop();
     }
 }

@@ -6,38 +6,14 @@ use crossbeam_channel::Receiver;
 
 use super::{Worker, run::ActiveRun};
 use crate::{
-    engine::{
-        Command, RunMode, frame_trace::FrameTraceRecord, output::TargetInfo, target_track::Track,
-    },
+    engine::{Command, RunMode},
     graphics::{
         CapturePoll, GpuDropReason, GpuFaultReport, GpuFrameMetadata, NoDesktopUpdateReason,
     },
     inference::pipeline::InferenceResult,
-    makcu::Movement,
-    metrics::{CaptureSourceMetrics, StageTimings},
     settings::FpsLimit,
+    telemetry::{FrameRecord, FrameTimes},
 };
-
-pub(super) struct FrameReport {
-    pub generation: u64,
-    pub metadata: GpuFrameMetadata,
-    pub inference_start_qpc: i64,
-    pub timings: StageTimings,
-    pub detected: bool,
-    pub target: Option<TargetInfo>,
-    pub command: Option<Movement>,
-    pub track: Option<Track>,
-    pub output_complete_qpc: i64,
-    pub one_shot_done: bool,
-}
-
-#[derive(Default)]
-pub(super) struct CaptureStats {
-    fresh: u64,
-    processed: u64,
-    timeouts: u64,
-    accumulated: u64,
-}
 
 /// The earliest time of the next capture in a Continuous run.
 pub(super) struct CaptureDeadline {
@@ -116,10 +92,9 @@ struct FrameStep<'a> {
 }
 
 struct InferredFrame {
+    /// The stage boundaries are complete: the inference and the postprocess are filled in.
     metadata: GpuFrameMetadata,
     result: InferenceResult,
-    started_qpc: i64,
-    ended_qpc: i64,
 }
 
 impl Worker {
@@ -149,29 +124,6 @@ impl Worker {
         }
     }
 
-    pub(super) fn publish_capture_stats(&mut self, force: bool) {
-        let elapsed = self.capture_stats_started.elapsed();
-        if !force && elapsed < Duration::from_secs(1) {
-            return;
-        }
-        let stats = std::mem::take(&mut self.capture_stats);
-        let seconds = elapsed.as_secs_f64().max(f64::EPSILON);
-        self.metrics.update_capture_source(CaptureSourceMetrics {
-            fresh_fps: stats.fresh as f64 / seconds,
-            processed_fps: stats.processed as f64 / seconds,
-            timeouts: stats.timeouts,
-            mean_accumulated_frames: if stats.fresh == 0 {
-                0.0
-            } else {
-                stats.accumulated as f64 / stats.fresh as f64
-            },
-        });
-        self.capture_stats_started = Instant::now();
-        if let Some(performance) = self.metrics.snapshot_if_due(force) {
-            self.status.edit(|status| status.performance = performance);
-        }
-    }
-
     /// `new_frame` is set when the capture got a New frame, even if a later step of this attempt fails.
     fn acquire_frame(&mut self, run: ActiveRun, new_frame: &mut bool) -> Option<GpuFrameMetadata> {
         let Some(model) = self.model.as_ref() else {
@@ -189,21 +141,21 @@ impl Worker {
         }
         let size = model.input_size;
         let settings = self.tuning.capture;
+        let qpc = self.qpc;
         let Some(capture) = self.capture.as_mut() else {
             self.fail_run("capture is not configured".to_owned());
             return None;
         };
-        let frame = match capture.acquire(settings.wait_ms) {
+        let frame = match capture.acquire(settings.wait_ms, qpc) {
             Ok(CapturePoll::Fresh(frame)) => {
                 *new_frame = true;
-                self.capture_stats.fresh += 1;
-                self.capture_stats.accumulated += u64::from(frame.accumulated_frames());
-                self.source_seq = self.source_seq.saturating_add(1);
+                self.run_counters.new_frames += 1;
+                self.run_counters.accumulated_frames += u64::from(frame.accumulated_frames());
                 frame
             }
             Ok(CapturePoll::NoDesktopUpdate(reason)) => {
                 if matches!(reason, NoDesktopUpdateReason::Timeout) {
-                    self.capture_stats.timeouts += 1;
+                    self.run_counters.timeouts += 1;
                 }
                 return None;
             }
@@ -233,6 +185,7 @@ impl Worker {
             &model.capture_frame.capture_ready_fence,
             ready_value,
             size,
+            qpc,
         );
         let submit = match submit {
             Ok(submit) => submit,
@@ -264,23 +217,39 @@ impl Worker {
                 return None;
             }
         };
-        while let Some(sample) = capture.try_take_gpu_copy_sample() {
-            self.metrics.record_gpu_copy(sample.gpu_copy_ms);
-        }
+        // One GPU copy time per New frame. A sample that is not ready yet waits for the next frame.
+        let gpu_copy_ms = capture
+            .try_take_gpu_copy_sample()
+            .map(|sample| sample.gpu_copy_ms);
         Some(GpuFrameMetadata {
             pipeline_id: model.pipeline_id,
             generation: run.generation,
             frame_seq: self.frame_seq,
-            source_seq: self.source_seq,
-            present_qpc: submit.present_qpc,
-            ready_qpc: self.qpc.now(),
+            times: FrameTimes {
+                present: submit.present_qpc,
+                attempt_start: submit.attempt_start_qpc,
+                acquired: submit.acquired_qpc,
+                copy_submitted: submit.copy_submitted_qpc,
+                ready: submit.ready_qpc,
+                inference_start: 0,
+                inference_done: 0,
+                postprocess_done: 0,
+            },
             capture_ready_value: ready_value,
-            accumulated_frames: submit.accumulated_frames,
             desktop_size: submit.desktop_size,
-            acquire_wait_ms: submit.acquire_wait_ms,
-            capture_ms: submit.capture_ms,
-            copy_submit_ms: submit.copy_submit_ms,
+            gpu_copy_ms,
         })
+    }
+
+    /// Edits the state for a frame that reached the output. Each edit is made only when its value changes.
+    fn note_output(&mut self, desktop_size: (usize, usize)) {
+        if self.status.get().capture.desktop_size != Some(desktop_size) {
+            self.status
+                .edit(|status| status.capture.desktop_size = Some(desktop_size));
+        }
+        if self.status.get().run.error.is_some() {
+            self.status.edit(|status| status.run.error = None);
+        }
     }
 }
 
@@ -292,22 +261,20 @@ impl SerialStages for FrameStep<'_> {
         self.worker.acquire_frame(self.run, &mut self.new_frame)
     }
 
-    fn infer(&mut self, metadata: Self::Frame) -> Option<Self::Inferred> {
+    fn infer(&mut self, mut metadata: Self::Frame) -> Option<Self::Inferred> {
         let worker = &mut self.worker;
+        let qpc = worker.qpc;
         let model = worker
             .model
             .as_mut()
             .expect("acquisition requires a prepared model");
-        let started_qpc = worker.qpc.now();
-        match model.pipeline.infer(metadata) {
+        metadata.times.inference_start = qpc.now();
+        match model.pipeline.infer(metadata, qpc) {
             Ok(result) => {
                 model.last_completion = metadata.capture_ready_value;
-                Some(InferredFrame {
-                    metadata,
-                    result,
-                    started_qpc,
-                    ended_qpc: worker.qpc.now(),
-                })
+                metadata.times.inference_done = result.inference_done_qpc;
+                metadata.times.postprocess_done = result.postprocess_done_qpc;
+                Some(InferredFrame { metadata, result })
             }
             Err(error) => {
                 let report = model.pipeline.take_fault_report();
@@ -331,18 +298,13 @@ impl SerialStages for FrameStep<'_> {
         if !worker.drain_commands(self.commands) {
             return false;
         }
-        let InferredFrame {
-            metadata,
-            result,
-            started_qpc,
-            ended_qpc,
-        } = frame;
+        let InferredFrame { metadata, result } = frame;
         if !worker.run.is_active(metadata.generation)
             || worker.active_pipeline_id != Some(metadata.pipeline_id)
         {
             worker
-                .metrics
-                .record_gpu_drop(GpuDropReason::StaleGeneration);
+                .telemetry
+                .frame_dropped(GpuDropReason::StaleGeneration);
             return true;
         }
         let qpc = worker.qpc;
@@ -358,61 +320,25 @@ impl SerialStages for FrameStep<'_> {
             }
         };
         let output_complete_qpc = qpc.now();
-        worker.capture_stats.processed += 1;
-        let timings = StageTimings {
-            present_to_gpu_submit_ms: qpc.elapsed_ms(metadata.present_qpc, metadata.ready_qpc),
-            present_to_inference_start_ms: qpc.elapsed_ms(metadata.present_qpc, started_qpc),
-            acquire_wait_ms: metadata.acquire_wait_ms,
-            capture_ms: metadata.capture_ms,
-            copy_submit_ms: metadata.copy_submit_ms,
-            gpu_preprocess_ms: result.gpu_preprocess_ms,
-            ort_run_wall_ms: result.ort_run_wall_ms,
-            postprocess_ms: result.postprocess_ms,
-            makcu_write_ms: qpc.elapsed_ms(output_start_qpc, output_complete_qpc),
-            total_ms: qpc.elapsed_ms(metadata.present_qpc, output_complete_qpc),
-        };
-        if let Some(trace) = &worker.trace {
-            trace.record(FrameTraceRecord {
-                frame_seq: metadata.frame_seq,
-                source_seq: metadata.source_seq,
-                present_qpc: metadata.present_qpc,
-                ready_qpc: metadata.ready_qpc,
-                inference_start_qpc: started_qpc,
-                output_start_qpc,
-                output_complete_qpc,
-                candidates: result.candidates,
-                selected: result.detection,
-                track: outcome.track,
-                planned: outcome.planned,
-                sent: outcome.command,
-            });
-        }
-        if crate::logging::frame_trace_enabled() {
-            tracing::trace!(
-                pipeline_id = metadata.pipeline_id, generation = metadata.generation,
-                frame_seq = metadata.frame_seq, source_seq = metadata.source_seq,
-                accumulated_frames = metadata.accumulated_frames,
-                acquire_wait_ms = timings.acquire_wait_ms, capture_ms = timings.capture_ms,
-                gpu_preprocess_ms = ?timings.gpu_preprocess_ms,
-                ort_run_wall_ms = timings.ort_run_wall_ms,
-                inference_span_ms = qpc.elapsed_ms(started_qpc, ended_qpc),
-                makcu_write_ms = timings.makcu_write_ms, total_ms = timings.total_ms,
-                target = ?outcome.target, command = ?outcome.command,
-                "frame pipeline completed"
-            );
-        }
-        worker.handle_frame(FrameReport {
+        worker.telemetry.frame(FrameRecord {
             generation: metadata.generation,
-            metadata,
-            inference_start_qpc: started_qpc,
-            timings,
-            detected: result.detection.is_some(),
-            target: outcome.target,
-            command: outcome.command,
-            track: outcome.track,
+            frame_seq: metadata.frame_seq,
+            times: metadata.times,
+            output_start_qpc,
             output_complete_qpc,
-            one_shot_done: self.run.mode == RunMode::OneShot,
+            gpu_preprocess_ms: result.gpu_preprocess_ms,
+            gpu_copy_ms: metadata.gpu_copy_ms,
+            candidates: result.candidates,
+            selected: result.detection,
+            track: outcome.track,
+            aim_error: outcome.target.map(|(dx, dy, _, _)| (dx, dy)),
+            planned: outcome.planned,
+            sent: outcome.command,
         });
+        worker.note_output(metadata.desktop_size);
+        if self.run.mode == RunMode::OneShot {
+            worker.stop_run();
+        }
         true
     }
 }
@@ -424,17 +350,17 @@ mod tests {
     use crate::{
         config::Config,
         engine::{
-            CapturePhase, EngineStatus, RunPhase,
-            loop_metrics::LoopMetrics,
+            CapturePhase, EngineState, RunPhase,
             output::{OutputSettings, OutputStage},
-            telemetry::{RunSummary, StatusHub},
+            status::StatusHub,
         },
         inference::{AdapterLuid, Candidates, Detection},
-        makcu::{FakeMakcu, MakcuClient},
-        metrics::Metrics,
+        makcu::{FakeMakcu, MakcuClient, RawStats},
+        telemetry::{RunCounters, TelemetryMessage, TelemetrySink},
         timing::QpcClock,
         wait::{DeadlineWait, Waker},
     };
+    use crossbeam_channel::Receiver as TestReceiver;
     use std::sync::{Arc, Mutex, mpsc};
 
     /// The Move frames that the fake MAKCU received.
@@ -445,13 +371,27 @@ mod tests {
             .collect()
     }
 
-    fn worker() -> (Worker, FakeMakcu) {
-        let (worker, fake, _waker) = worker_with_waker();
-        (worker, fake)
+    /// The Frame records and the dropped frames that the telemetry queue received.
+    fn output_messages(telemetry: &TestReceiver<TelemetryMessage>) -> (Vec<FrameRecord>, usize) {
+        let mut records = Vec::new();
+        let mut dropped = 0;
+        for message in telemetry.try_iter() {
+            match message {
+                TelemetryMessage::Frame(record) => records.push(record),
+                TelemetryMessage::FrameDropped(_) => dropped += 1,
+                _ => {}
+            }
+        }
+        (records, dropped)
     }
 
-    /// The fixture, with the waker of its wait, which the test raises to wake the loop.
-    fn worker_with_waker() -> (Worker, FakeMakcu, Waker) {
+    fn worker() -> (Worker, FakeMakcu, TestReceiver<TelemetryMessage>) {
+        let (worker, fake, _waker, telemetry) = worker_with_waker();
+        (worker, fake, telemetry)
+    }
+
+    /// The fixture, with the waker of its wait, which the test raises to wake the loop, and the telemetry queue.
+    fn worker_with_waker() -> (Worker, FakeMakcu, Waker, TestReceiver<TelemetryMessage>) {
         let config = Config::default();
         let tuning = Tuning {
             output: OutputSettings {
@@ -469,25 +409,29 @@ mod tests {
         let ui_ctx = eframe::egui::Context::default();
         let (event_tx, _) = mpsc::channel();
         let (wait, waker) = DeadlineWait::new().unwrap();
+        let (telemetry, telemetry_rx) = TelemetrySink::for_test();
         let mut worker = Worker {
             event_tx,
             status: StatusHub::new(
-                Arc::new(Mutex::new(EngineStatus::default())),
+                Arc::new(Mutex::new(Arc::new(EngineState::default()))),
                 ui_ctx.clone(),
             ),
             ui_ctx,
             qpc: QpcClock::new().unwrap(),
+            telemetry,
             tuning,
+            displays: Vec::new(),
             model: None,
             capture: None,
+            // The fixture has no GPU capture, so it stands in for a ready one.
+            capture_ready: true,
             output_stage: OutputStage::new(tuning.output),
-            trace: None,
             wait,
             capture_deadline: CaptureDeadline::new(),
             frame_seq: 0,
-            source_seq: 0,
-            capture_stats: CaptureStats::default(),
-            capture_stats_started: Instant::now(),
+            run_counters: RunCounters::default(),
+            sent_counters: RunCounters::default(),
+            sent_raw: RawStats::default(),
             active_model: Some(("previous.onnx".into(), "previous.onnx".into())),
             model_ready: true,
             auto_reprepare_attempted: false,
@@ -498,9 +442,6 @@ mod tests {
             selected_adapter_luid: AdapterLuid { low: 0, high: 0 },
             makcu,
             run: RunControl::default(),
-            summary: RunSummary::new(),
-            metrics: Metrics::new(),
-            loop_metrics: LoopMetrics::new(),
             graphics: None,
         };
         worker.status.edit(|status| {
@@ -518,7 +459,7 @@ mod tests {
         });
         worker.output_stage.set_input_size((100, 100));
         worker.start_run(RunMode::Continuous);
-        (worker, fake, waker)
+        (worker, fake, waker, telemetry_rx)
     }
 
     fn inferred(worker: &Worker, present_qpc: i64) -> InferredFrame {
@@ -527,15 +468,19 @@ mod tests {
                 pipeline_id: 1,
                 generation: worker.run.active.unwrap().generation,
                 frame_seq: 1,
-                source_seq: 1,
-                present_qpc,
-                ready_qpc: present_qpc,
+                times: FrameTimes {
+                    present: present_qpc,
+                    attempt_start: present_qpc,
+                    acquired: present_qpc,
+                    copy_submitted: present_qpc,
+                    ready: present_qpc,
+                    inference_start: present_qpc,
+                    inference_done: present_qpc,
+                    postprocess_done: present_qpc,
+                },
                 capture_ready_value: 1,
-                accumulated_frames: 1,
                 desktop_size: (100, 100),
-                acquire_wait_ms: 0.0,
-                capture_ms: 0.0,
-                copy_submit_ms: 0.0,
+                gpu_copy_ms: None,
             },
             result: InferenceResult {
                 detection: Some(Detection {
@@ -547,12 +492,10 @@ mod tests {
                     class_id: 0,
                 }),
                 candidates: Candidates::EMPTY,
-                ort_run_wall_ms: 0.0,
-                postprocess_ms: 0.0,
+                inference_done_qpc: present_qpc,
+                postprocess_done_qpc: present_qpc,
                 gpu_preprocess_ms: None,
             },
-            started_qpc: present_qpc,
-            ended_qpc: present_qpc,
         }
     }
 
@@ -585,28 +528,37 @@ mod tests {
             Command::SetLowLatency(true),
         ] {
             let shutdown = matches!(command, Command::Shutdown);
-            let (mut worker, fake) = worker();
+            let (mut worker, fake, telemetry) = worker();
             let frame = inferred(&worker, worker.qpc.now());
             let (tx, rx) = crossbeam_channel::unbounded();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, frame), !shutdown);
             assert!(moves(&fake).is_empty());
-            assert!(worker.status.get().run.last_command.is_none());
+            let (records, dropped) = output_messages(&telemetry);
+            assert!(records.is_empty());
+            // A stale frame is reported as dropped. A shutdown ends before the output stage.
+            assert_eq!(dropped, usize::from(!shutdown));
         }
     }
 
     #[test]
     fn valid_result_outputs() {
-        let (mut worker, fake) = worker();
+        let (mut worker, fake, telemetry) = worker();
         let (_tx, rx) = crossbeam_channel::unbounded();
         let frame = inferred(&worker, worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
         assert!(!moves(&fake).is_empty());
+        let (records, dropped) = output_messages(&telemetry);
+        assert_eq!(dropped, 0);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].frame_seq, 1);
+        assert_eq!(records[0].aim_error, Some((20.0, 0.0)));
+        assert!(records[0].sent.is_some());
     }
 
     #[test]
     fn failed_model_and_display_changes_preserve_selection_and_run_policy() {
-        let (mut worker, _fake) = worker();
+        let (mut worker, _fake, _telemetry) = worker();
         let old_generation = worker.run.active.unwrap().generation;
         worker.set_capture_selection(99, 99);
         assert_eq!(worker.active_pipeline_id, Some(1));
@@ -622,7 +574,7 @@ mod tests {
 
     #[test]
     fn one_shot_ignores_fps_wait_and_finishes_after_one_output() {
-        let (mut worker, fake) = worker();
+        let (mut worker, fake, telemetry) = worker();
         worker.stop_run();
         worker.start_run(RunMode::OneShot);
         let now = Instant::now();
@@ -640,11 +592,13 @@ mod tests {
         assert!(!moves(&fake).is_empty());
         assert!(worker.run.active.is_none());
         assert_eq!(worker.status.get().run.phase, RunPhase::Idle);
+        let (records, _) = output_messages(&telemetry);
+        assert_eq!(records.len(), 1);
     }
 
     #[test]
     fn stop_before_acquisition_and_shutdown_during_fps_wait_are_handled() {
-        let (mut worker, _, waker) = worker_with_waker();
+        let (mut worker, _, waker, _telemetry) = worker_with_waker();
         let (tx, rx) = crossbeam_channel::unbounded();
         tx.send(Command::SetContinuous(false)).unwrap();
         assert_eq!(worker.step_frame(&rx), StepOutcome::NoDesktopUpdate);
@@ -742,8 +696,9 @@ mod tests {
         let fps = FpsLimit::new(100);
         let start = Instant::now();
         let mut deadline = CaptureDeadline::new();
+        let before = deadline.next;
         deadline.after_step(StepOutcome::NoDesktopUpdate, fps);
-        assert!(deadline.pending_until(RunMode::Continuous, start).is_none());
+        assert_eq!(deadline.next, before);
         deadline.after_step(
             StepOutcome::NewFrame {
                 attempt_start: start,

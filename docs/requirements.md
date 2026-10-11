@@ -88,9 +88,11 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 - **Log level**: `off`, `error`, `warn`, `info` (default), `debug`, `trace`. Each session writes `logs/session-<unix_ms>-<pid>.log`.
 - **GPU debug** (default off) applies only at the start of the app. It makes inference slower.
 - **Frame trace** (default off): each Run writes `logs/trace-<unix_ms>.jsonl`. The file has a header line, one `frame` line for each processed frame, and a footer line. A change of this setting applies to the next Run.
-  - The trace never slows a Run. A record that cannot be written in time is dropped, and the footer has the count of dropped records.
+  - The trace never slows a Run. A Frame record that cannot be taken in time is dropped.
+    It is then missing from the trace, the statistics, and the Loop metrics. The footer has the count of dropped records.
   - A trace file that cannot be opened does not stop the Run.
 - The UI shows the Loop metrics: the frame period, the RMS error, the overshoots, and the time to reach the target.
+- The UI updates the statistics and the last target at most 10 times each second. A Run that stops updates them at once.
 - The UI shows the Raw move counters: moves sent, rejected, and timed out, and the last reject reason. The counters start again at each MAKCU connection. After 8 rejects in a row, the UI warns to select Standard move or to lower Max delta.
 - The UI shows timing statistics for each stage of a frame. The Cold run is shown apart and is not part of the statistics.
 

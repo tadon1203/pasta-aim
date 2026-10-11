@@ -7,10 +7,10 @@ use super::{
 use crate::{
     app::App,
     config::LogLevel,
-    engine::{Command, EngineStatus, LoopSnapshot, cpu_fallback_nodes, provider_display_name},
+    engine::{Command, EngineState, cpu_fallback_nodes, provider_display_name},
     graphics::DisplayInfo,
     inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
-    metrics::{MetricSummary, PerformanceSnapshot},
+    telemetry::{LiveTelemetry, LoopSnapshot, MetricSummary, PerformanceSnapshot},
 };
 
 /// The number of Raw move rejects in a row at which the warning shows.
@@ -59,7 +59,12 @@ fn format_ms(value: Option<f64>) -> String {
 }
 
 impl App {
-    pub(super) fn draw_diagnostics(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_diagnostics(
+        &mut self,
+        ui: &mut egui::Ui,
+        status: &EngineState,
+        live: &LiveTelemetry,
+    ) {
         egui::CollapsingHeader::new("Diagnostics")
             .default_open(false)
             .show(ui, |ui| {
@@ -113,7 +118,7 @@ impl App {
                 }
                 ui.small("JSON Lines in logs/trace-*.jsonl, applied from the next run.");
                 ui.add_space(6.0);
-                draw_tracking(ui, &status.tracking);
+                draw_tracking(ui, &live.tracking);
                 ui.add_space(6.0);
                 egui::Grid::new("diagnostics_state")
                     .num_columns(2)
@@ -191,19 +196,19 @@ impl App {
                         }
 
                         ui.label("Raw moves sent");
-                        ui.label(status.makcu.raw.submitted.to_string());
+                        ui.label(live.raw.submitted.to_string());
                         ui.end_row();
 
                         ui.label("Raw moves rejected");
-                        ui.label(status.makcu.raw.rejected.to_string());
+                        ui.label(live.raw.rejected.to_string());
                         ui.end_row();
 
                         ui.label("Raw moves timed out");
-                        ui.label(status.makcu.raw.timed_out.to_string());
+                        ui.label(live.raw.timed_out.to_string());
                         ui.end_row();
 
                         ui.label("Last Raw reject");
-                        ui.label(raw_reason_label(status.makcu.raw.last_reason));
+                        ui.label(raw_reason_label(live.raw.last_reason));
                         ui.end_row();
 
                         ui.label("XInput hotkey pad");
@@ -242,14 +247,14 @@ impl App {
                         ui.label(format!("{}%", self.config.confidence_threshold.value()));
                         ui.end_row();
 
-                        if let Some((_, _, confidence, class_id)) = status.run.last_target {
+                        if let Some((_, _, confidence, class_id)) = live.last_target {
                             ui.label("Last detection");
                             ui.label(format!("conf={confidence:.3}, class={class_id}"));
                             ui.end_row();
                         }
                     });
 
-                if status.makcu.raw.consecutive_rejected >= RAW_REJECT_WARNING {
+                if live.raw.consecutive_rejected >= RAW_REJECT_WARNING {
                     warn_label(
                         ui,
                         "MAKCU rejects Raw moves. Select Standard move, or lower Max delta.",
@@ -278,16 +283,16 @@ impl App {
 
                 ui.add_space(6.0);
                 ui.strong("Performance");
-                draw_performance(ui, &status.performance);
+                draw_performance(ui, &live.performance);
 
                 ui.add_space(8.0);
                 if ui.button("Copy diagnostics").clicked() {
-                    ui.ctx().copy_text(self.diagnostics_text(status));
+                    ui.ctx().copy_text(self.diagnostics_text(status, live));
                 }
             });
     }
 
-    pub(super) fn diagnostics_text(&self, status: &EngineStatus) -> String {
+    pub(super) fn diagnostics_text(&self, status: &EngineState, live: &LiveTelemetry) -> String {
         let display = status
             .capture
             .selected
@@ -333,33 +338,33 @@ impl App {
                 .firmware
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_owned()),
-            status.makcu.raw.submitted,
-            status.makcu.raw.rejected,
-            status.makcu.raw.timed_out,
-            raw_reason_label(status.makcu.raw.last_reason),
+            live.raw.submitted,
+            live.raw.rejected,
+            live.raw.timed_out,
+            raw_reason_label(live.raw.last_reason),
             keyboard_release.p50_ms,
             keyboard_release.p95_ms,
             keyboard_release.samples,
             keyboard_release.assist_active,
             self.config.fps_limit.value(),
-            status.performance.capture_source.fresh_fps,
-            status.performance.capture_source.processed_fps,
-            status.performance.sample_count,
-            status.performance.total.p50_ms,
-            status.performance.total.p95_ms,
-            status.performance.total.p99_ms,
-            status.performance.acquire_wait.p50_ms,
-            status.performance.acquire_wait.p95_ms,
-            status.performance.capture.p50_ms,
-            status.performance.capture.p95_ms,
-            status.performance.copy_submit.p50_ms,
-            status.performance.copy_submit.p95_ms,
-            status.performance.gpu_copy.p50_ms,
-            status.performance.gpu_copy.p95_ms,
-            status.performance.preprocess.p50_ms,
-            status.performance.preprocess.p95_ms,
-            status.performance.inference.p50_ms,
-            status.performance.inference.p95_ms,
+            live.performance.capture_source.fresh_fps,
+            live.performance.capture_source.processed_fps,
+            live.performance.sample_count,
+            live.performance.total.p50_ms,
+            live.performance.total.p95_ms,
+            live.performance.total.p99_ms,
+            live.performance.acquire_wait.p50_ms,
+            live.performance.acquire_wait.p95_ms,
+            live.performance.capture.p50_ms,
+            live.performance.capture.p95_ms,
+            live.performance.copy_submit.p50_ms,
+            live.performance.copy_submit.p95_ms,
+            live.performance.gpu_copy.p50_ms,
+            live.performance.gpu_copy.p95_ms,
+            live.performance.preprocess.p50_ms,
+            live.performance.preprocess.p95_ms,
+            live.performance.inference.p50_ms,
+            live.performance.inference.p95_ms,
         )
     }
 }
@@ -394,7 +399,7 @@ fn actual_backend_label(state: &EpAssignmentState) -> String {
     }
 }
 
-fn draw_ep_assignment_diagnostics(ui: &mut egui::Ui, status: &EngineStatus) {
+fn draw_ep_assignment_diagnostics(ui: &mut egui::Ui, status: &EngineState) {
     let Some(state) = &status.model.ep_assignment else {
         return;
     };
@@ -484,7 +489,7 @@ fn draw_assigned_nodes(ui: &mut egui::Ui, nodes: &[EpAssignedNode]) {
     }
 }
 
-fn ep_assignment_copy_text(status: &EngineStatus) -> String {
+fn ep_assignment_copy_text(status: &EngineState) -> String {
     let Some(state) = &status.model.ep_assignment else {
         return "Actual assignment: not available (no active model session)".to_owned();
     };

@@ -6,13 +6,13 @@ use super::{
 };
 use crate::{
     app::App,
-    engine::{Command, EngineStatus, MakcuPhase, RunPhase},
+    engine::{Command, EngineState, MakcuPhase, RunPhase},
     graphics::DisplayInfo,
     makcu::format_firmware,
 };
 
 impl App {
-    pub(super) fn draw_devices(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_devices(&mut self, ui: &mut egui::Ui, status: &EngineState) {
         ui.group(|ui| {
             ui.strong("Devices");
             ui.horizontal(|ui| {

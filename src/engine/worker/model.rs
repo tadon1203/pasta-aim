@@ -32,7 +32,7 @@ impl Worker {
             Ok(loaded) => {
                 self.model_ready = true;
                 self.active_model = Some((name.clone(), path));
-                self.metrics.mark_cold_next();
+                self.telemetry.pipeline_changed();
                 self.commit_model_status(&loaded);
                 self.model = Some(loaded);
                 self.status.edit(|status| {

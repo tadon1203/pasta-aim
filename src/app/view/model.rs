@@ -3,13 +3,13 @@ use eframe::egui;
 use super::widgets::error_label;
 use crate::{
     app::App,
-    engine::{EngineStatus, ModelPhase, RunPhase},
+    engine::{EngineState, ModelPhase, RunPhase},
     inference::TensorPrecision,
     models,
 };
 
 impl App {
-    pub(super) fn draw_model(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
+    pub(super) fn draw_model(&mut self, ui: &mut egui::Ui, status: &EngineState) {
         ui.group(|ui| {
             ui.horizontal(|ui| {
                 ui.strong("Model");

@@ -25,6 +25,7 @@ use crate::{
         postprocess::{Selection, select_nearest},
     },
     settings::ConfidenceThreshold,
+    timing::QpcClock,
 };
 
 use super::{append_dml1, d3d12_resource_from_dml_tensor};
@@ -246,13 +247,11 @@ impl OrtDirectMlBackend {
         self.confidence_threshold = value;
     }
 
-    pub fn run(&mut self) -> Result<InferenceResult> {
+    pub fn run(&mut self, qpc: QpcClock) -> Result<InferenceResult> {
         // The tensor was bound once during prepare and is populated by the
         // pipeline's D3D12 preprocess dispatch before this call.
-        let started = Instant::now();
         let outputs = self.session.run_binding(&self.binding)?;
-        let ort_run_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let postprocess_start = Instant::now();
+        let inference_done_qpc = qpc.now();
         let threshold = self.confidence_threshold.ratio();
         let output = &outputs[self.output_name.as_str()];
         let selection = match self.output_precision {
@@ -266,8 +265,8 @@ impl OrtDirectMlBackend {
         Ok(InferenceResult {
             detection: selection.nearest,
             candidates: selection.candidates,
-            ort_run_wall_ms,
-            postprocess_ms: postprocess_start.elapsed().as_secs_f64() * 1000.0,
+            inference_done_qpc,
+            postprocess_done_qpc: qpc.now(),
             gpu_preprocess_ms: None,
         })
     }

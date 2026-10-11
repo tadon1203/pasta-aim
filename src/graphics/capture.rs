@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use anyhow::{Context, Result, bail};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_1},
@@ -23,6 +21,7 @@ use windows::core::Interface;
 use super::gpu_diagnostics::GpuFaultStage;
 use super::profile_sampler::ProfileSampler;
 use super::{DisplayInfo, select_output};
+use crate::timing::QpcClock;
 
 const GPU_QUERY_RING_SIZE: usize = 16;
 
@@ -34,7 +33,8 @@ pub(crate) enum CapturePoll {
 #[derive(Clone)]
 pub(crate) struct AcquiredDesktopFrame {
     texture: ID3D11Texture2D,
-    acquire_wait_ms: f64,
+    attempt_start_qpc: i64,
+    acquired_qpc: i64,
     desktop_size: (usize, usize),
     present_qpc: i64,
     accumulated_frames: u32,
@@ -47,13 +47,14 @@ pub(crate) enum NoDesktopUpdateReason {
     AccessLost,
 }
 
+/// The stage boundaries of a submitted copy, as QPC ticks.
 pub(crate) struct CaptureSubmit {
     pub present_qpc: i64,
-    pub accumulated_frames: u32,
+    pub attempt_start_qpc: i64,
+    pub acquired_qpc: i64,
+    pub copy_submitted_qpc: i64,
+    pub ready_qpc: i64,
     pub desktop_size: (usize, usize),
-    pub acquire_wait_ms: f64,
-    pub capture_ms: f64,
-    pub copy_submit_ms: f64,
 }
 
 impl AcquiredDesktopFrame {
@@ -271,7 +272,7 @@ impl DxgiCapture {
         self.last_ready_completed
     }
 
-    pub(crate) fn acquire(&mut self, timeout_ms: u32) -> Result<CapturePoll> {
+    pub(crate) fn acquire(&mut self, timeout_ms: u32, qpc: QpcClock) -> Result<CapturePoll> {
         if self.frame_held {
             // SAFETY: this instance tracks that the previous successful acquire is held.
             let release_result = unsafe { self.duplication.ReleaseFrame() };
@@ -289,7 +290,7 @@ impl DxgiCapture {
 
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
-        let acquire_started = Instant::now();
+        let attempt_start_qpc = qpc.now();
         // SAFETY: output parameters point to writable storage and timeout is caller supplied.
         match unsafe {
             self.duplication
@@ -307,7 +308,7 @@ impl DxgiCapture {
             }
             Err(error) => return Err(error).context("failed to acquire DXGI desktop frame"),
         }
-        let acquire_wait_ms = acquire_started.elapsed().as_secs_f64() * 1000.0;
+        let acquired_qpc = qpc.now();
         if frame_info.LastPresentTime == 0 {
             return Ok(CapturePoll::NoDesktopUpdate(
                 NoDesktopUpdateReason::PointerOnly,
@@ -325,7 +326,8 @@ impl DxgiCapture {
         }
         Ok(CapturePoll::Fresh(AcquiredDesktopFrame {
             texture,
-            acquire_wait_ms,
+            attempt_start_qpc,
+            acquired_qpc,
             desktop_size: (desc.Width as usize, desc.Height as usize),
             present_qpc: frame_info.LastPresentTime,
             accumulated_frames: frame_info.AccumulatedFrames,
@@ -400,17 +402,16 @@ impl DxgiCapture {
         ready_fence: &ID3D11Fence,
         ready_value: u64,
         (width, height): (usize, usize),
+        qpc: QpcClock,
     ) -> Result<CaptureSubmit> {
         self.last_fault_stage = GpuFaultStage::CaptureCopy;
-        let capture_started = Instant::now();
-        let copy_started = Instant::now();
         let query_slot = if self.gpu_profiler.sampler.should_measure() {
             self.gpu_profiler.begin(&self.context)
         } else {
             None
         };
         self.copy_center_image(frame, destination, (width, height))?;
-        let copy_submit_ms = copy_started.elapsed().as_secs_f64() * 1000.0;
+        let copy_submitted_qpc = qpc.now();
         tracing::debug!(width, height, "copy_subresource_submitted");
         if let Some(index) = query_slot {
             self.gpu_profiler.end(&self.context, index);
@@ -451,14 +452,13 @@ impl DxgiCapture {
             tracing::info!(value = ready_value, "capture_fence_first_signal_ok");
             self.first_signal_logged = true;
         }
-        let capture_ms = capture_started.elapsed().as_secs_f64() * 1000.0;
         Ok(CaptureSubmit {
             present_qpc: frame.present_qpc,
-            accumulated_frames: frame.accumulated_frames,
+            attempt_start_qpc: frame.attempt_start_qpc,
+            acquired_qpc: frame.acquired_qpc,
+            copy_submitted_qpc,
+            ready_qpc: qpc.now(),
             desktop_size: frame.desktop_size,
-            acquire_wait_ms: frame.acquire_wait_ms,
-            capture_ms,
-            copy_submit_ms,
         })
     }
 
