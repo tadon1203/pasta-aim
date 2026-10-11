@@ -10,7 +10,7 @@ pub enum MissingFrameMode {
 
 /// Capture policy shared by persistence, UI, capture and inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct CaptureSettings {
     pub wait_ms: u32,
     pub missing_frame_mode: MissingFrameMode,
@@ -80,7 +80,6 @@ impl HotkeyAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HotkeyBinding {
     pub action: HotkeyAction,
     pub shortcut: String,

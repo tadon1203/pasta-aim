@@ -113,5 +113,9 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 
 - `settings.json` has no version and no migration.
 - A field that is missing gets its default. The other fields keep their values.
-- An unknown field or a value out of range makes the app use the defaults for the whole file. The app shows a warning.
+- An unknown field is removed. A value that is out of range or of the wrong type is replaced with the default of its field. An invalid hotkey entry is removed. The other fields keep their values.
+- Invalid JSON, or a file that cannot be read, makes the app use the defaults for the whole file.
+- The app shows one warning that names the removed fields and the reset fields.
+- Loading does not change the file. The next save writes the settings that the app uses.
+- When the file could not be read or parsed, the next save first copies it to `settings.json.bak`. An earlier `settings.json.bak` is replaced.
 - Hotkeys, the selected display, and the selected model are part of the settings.

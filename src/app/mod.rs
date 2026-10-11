@@ -24,6 +24,8 @@ pub struct App {
     hotkey_error: Option<String>,
     model_catalog_error: Option<String>,
     config_load_warning: Option<String>,
+    /// The settings file could not be read at startup; the next save backs it up first.
+    config_file_unusable: bool,
     config_save_error: Option<String>,
     dirty: UnsavedEdits,
     model_load_requested: bool,
@@ -48,6 +50,7 @@ impl App {
         let config = loaded.config;
         let gpu_debug_at_startup = config.diagnostics.gpu_debug;
         let config_load_warning = loaded.warning;
+        let config_file_unusable = loaded.file_unusable;
         tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), injection_api = ?config.injection_api, "application initialized with settings");
         let (models, model_catalog_error) = match ModelCatalog::scan() {
             Ok(catalog) => (catalog, None),
@@ -76,6 +79,7 @@ impl App {
             hotkey_error,
             model_catalog_error,
             config_load_warning,
+            config_file_unusable,
             config_save_error: None,
             dirty: UnsavedEdits::default(),
             model_load_requested: false,
@@ -90,11 +94,12 @@ impl App {
     }
 
     fn persist(&mut self) {
-        match self.config.save() {
+        match self.config.save(self.config_file_unusable) {
             Ok(()) => {
                 tracing::debug!("settings persistence succeeded");
                 self.config_save_error = None;
                 self.config_load_warning = None;
+                self.config_file_unusable = false;
             }
             Err(error) => {
                 tracing::error!(error = %format!("{error:#}"), "settings persistence failed");

@@ -1,7 +1,8 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::{
     models, paths,
@@ -12,9 +13,10 @@ use crate::{
 };
 
 /// Missing fields fall back to their defaults so that adding a setting never
-/// discards the rest of an existing file; unknown fields are still rejected.
+/// discards the rest of an existing file. Unknown fields are ignored here and
+/// removed by `Config::load`, which also resets each invalid field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub model: Option<String>,
     pub sensitivity: Sensitivity,
@@ -35,7 +37,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct DiagnosticsConfig {
     pub level: LogLevel,
     /// D3D12 debug layer + DRED. Applied at startup only; slows inference.
@@ -81,55 +83,73 @@ impl Default for Config {
 pub struct ConfigLoad {
     pub config: Config,
     pub warning: Option<String>,
+    /// The file exists but could not be read or parsed. The next save backs it up first.
+    pub file_unusable: bool,
 }
 
 impl Config {
     pub fn load() -> ConfigLoad {
         let path = paths::settings_path();
         tracing::debug!(path = %path.display(), "loading settings");
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
+        match fs::read(&path) {
+            Ok(bytes) => Self::parse(&bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 tracing::debug!(path = %path.display(), "settings file not found; using defaults");
-                return ConfigLoad {
+                ConfigLoad {
                     config: Self::default(),
                     warning: None,
-                };
+                    file_unusable: false,
+                }
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "settings file could not be read; using defaults");
-                return ConfigLoad {
-                    config: Self::default(),
-                    warning: Some(format!("Settings could not be read: {error}")),
-                };
-            }
-        };
-
-        match serde_json::from_slice::<Self>(&bytes)
-            .map_err(anyhow::Error::from)
-            .and_then(|config| {
-                config.validate()?;
-                Ok(config)
-            }) {
-            Ok(config) => ConfigLoad {
-                config,
-                warning: None,
-            },
-            Err(error) => {
-                tracing::warn!(path = %path.display(), error = %format!("{error:#}"), "settings file could not be parsed; using defaults");
                 ConfigLoad {
                     config: Self::default(),
-                    warning: Some(format!(
-                        "Settings could not be loaded. Using defaults until the next settings change: {error:#}"
-                    )),
+                    warning: Some(format!("Settings could not be read: {error}")),
+                    file_unusable: true,
                 }
             }
         }
     }
 
-    pub fn save(&self) -> Result<()> {
+    /// Reads a settings file. Invalid JSON, or JSON that is not an object, uses the defaults.
+    fn parse(bytes: &[u8]) -> ConfigLoad {
+        match Self::read_fields(bytes) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "settings file could not be parsed; using defaults");
+                ConfigLoad {
+                    config: Self::default(),
+                    warning: Some(format!(
+                        "Settings could not be loaded. Using defaults until the next settings change: {error:#}"
+                    )),
+                    file_unusable: true,
+                }
+            }
+        }
+    }
+
+    fn read_fields(bytes: &[u8]) -> Result<ConfigLoad> {
+        let Value::Object(fields) = serde_json::from_slice::<Value>(bytes)? else {
+            bail!("settings must be a JSON object");
+        };
+        let mut loader = FieldLoader::new();
+        loader.load_object(&fields, "", "");
+        Ok(ConfigLoad {
+            warning: loader.warning(),
+            config: loader.config,
+            file_unusable: false,
+        })
+    }
+
+    /// Writes the settings. When the file was unusable at load, it is copied to
+    /// `settings.json.bak` first, so that the save does not lose its content.
+    pub fn save(&self, file_unusable: bool) -> Result<()> {
         self.validate()?;
         let path = paths::settings_path();
+        if file_unusable && path.exists() {
+            back_up(&path)?;
+        }
         let bytes = serde_json::to_vec_pretty(self)?;
         fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
         tracing::debug!(path = %path.display(), "settings saved");
@@ -200,6 +220,137 @@ impl Config {
     }
 }
 
+/// Loads a settings file one field at a time. Each change is checked against the
+/// whole config, so one invalid field does not reject the fields around it.
+struct FieldLoader {
+    /// The settings so far: the defaults, with each accepted field applied.
+    fields: Value,
+    config: Config,
+    removed: Vec<String>,
+    reset: Vec<String>,
+}
+
+impl FieldLoader {
+    fn new() -> Self {
+        let config = Config::default();
+        Self {
+            fields: serde_json::to_value(&config).expect("the default config serializes"),
+            config,
+            removed: Vec::new(),
+            reset: Vec::new(),
+        }
+    }
+
+    fn load_object(&mut self, file: &Map<String, Value>, pointer: &str, name: &str) {
+        for (key, value) in file {
+            let child = child_pointer(pointer, key);
+            if self.fields.pointer(&child).is_none() {
+                self.removed.push(join_name(name, key));
+            } else {
+                self.load_value(value, &child, &join_name(name, key));
+            }
+        }
+    }
+
+    fn load_value(&mut self, file: &Value, pointer: &str, name: &str) {
+        let current = self.fields.pointer(pointer).cloned();
+        match (file, current) {
+            (Value::Object(fields), Some(Value::Object(_))) => {
+                self.load_object(fields, pointer, name);
+            }
+            (Value::Array(items), Some(Value::Array(_))) => self.load_array(items, pointer, name),
+            _ => {
+                if !self.accept(pointer, file.clone()) {
+                    self.reset.push(name.to_owned());
+                }
+            }
+        }
+    }
+
+    /// Keeps each element that is valid on its own. An element is removed when it is
+    /// invalid or when it is not an object. Unknown keys inside an element are removed.
+    fn load_array(&mut self, items: &[Value], pointer: &str, name: &str) {
+        let template = self
+            .fields
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .and_then(|list| list.first())
+            .and_then(Value::as_object)
+            .cloned();
+        if let Some(slot) = self.fields.pointer_mut(pointer) {
+            *slot = Value::Array(Vec::new());
+        }
+        for (index, item) in items.iter().enumerate() {
+            let item_name = format!("{name}[{index}]");
+            if let (Value::Object(fields), Some(template)) = (item, &template) {
+                for key in fields.keys().filter(|key| !template.contains_key(*key)) {
+                    self.removed.push(join_name(&item_name, key));
+                }
+            }
+            let mut list = self
+                .fields
+                .pointer(pointer)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            list.push(item.clone());
+            if !self.accept(pointer, Value::Array(list)) {
+                self.removed.push(item_name);
+            }
+        }
+    }
+
+    /// Stores `value` at `pointer` when the settings stay valid with it.
+    fn accept(&mut self, pointer: &str, value: Value) -> bool {
+        let mut fields = self.fields.clone();
+        let Some(slot) = fields.pointer_mut(pointer) else {
+            return false;
+        };
+        *slot = value;
+        let Ok(config) = serde_json::from_value::<Config>(fields.clone()) else {
+            return false;
+        };
+        if config.validate().is_err() {
+            return false;
+        }
+        self.fields = fields;
+        self.config = config;
+        true
+    }
+
+    fn warning(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.removed.is_empty() {
+            parts.push(format!("removed {}", self.removed.join(", ")));
+        }
+        if !self.reset.is_empty() {
+            parts.push(format!("reset to default {}", self.reset.join(", ")));
+        }
+        (!parts.is_empty()).then(|| format!("Settings: {}", parts.join("; ")))
+    }
+}
+
+/// The name of a field in a message, such as `capture.wait_ms`.
+fn join_name(parent: &str, key: &str) -> String {
+    if parent.is_empty() {
+        key.to_owned()
+    } else {
+        format!("{parent}.{key}")
+    }
+}
+
+/// The JSON pointer of `key` under `pointer`. It escapes `~` and `/` as the pointer syntax requires.
+fn child_pointer(pointer: &str, key: &str) -> String {
+    format!("{pointer}/{}", key.replace('~', "~0").replace('/', "~1"))
+}
+
+fn back_up(path: &Path) -> Result<()> {
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bak");
+    fs::copy(path, &backup).with_context(|| format!("failed to back up {}", path.display()))?;
+    Ok(())
+}
+
 fn default_hotkeys() -> Vec<HotkeyBinding> {
     vec![
         HotkeyBinding {
@@ -237,7 +388,6 @@ mod tests {
             config.capture.max_reuse_age_ms = invalid;
             assert!(config.validate().is_err());
         }
-        assert!(serde_json::from_str::<Config>(r#"{"capture":{"extra":true}}"#).is_err());
     }
 
     #[test]
@@ -292,16 +442,68 @@ mod tests {
     }
 
     #[test]
-    fn version_field_is_not_recognized() {
-        assert!(serde_json::from_str::<Config>(r#"{"version": 2}"#).is_err());
+    fn unknown_fields_are_removed_and_reported_and_the_rest_is_kept() {
+        let loaded = Config::parse(
+            br#"{"sensitivity": 150, "version": 2, "capture": {"wait_ms": 3, "extra": true}}"#,
+        );
+        assert_eq!(loaded.config.sensitivity.value(), 150);
+        assert_eq!(loaded.config.capture.wait_ms, 3);
+        assert!(!loaded.file_unusable);
+        let warning = loaded.warning.unwrap();
+        assert!(warning.contains("version"));
+        assert!(warning.contains("capture.extra"));
     }
 
     #[test]
-    fn unknown_fields_are_rejected() {
-        let json = serde_json::to_string(&Config::default()).unwrap();
-        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        value["unexpected"] = serde_json::Value::Bool(true);
-        assert!(serde_json::from_value::<Config>(value).is_err());
+    fn invalid_values_are_reset_to_their_defaults_and_the_rest_is_kept() {
+        let loaded = Config::parse(
+            br#"{"sensitivity": 0, "target_y_offset": "top", "fps_limit": 120, "capture": {"wait_ms": 0, "max_reuse_age_ms": 30}}"#,
+        );
+        assert_eq!(loaded.config.sensitivity, Sensitivity::default());
+        assert_eq!(loaded.config.target_y_offset, TargetYOffset::default());
+        assert_eq!(loaded.config.fps_limit.value(), 120);
+        assert_eq!(
+            loaded.config.capture.wait_ms,
+            CaptureSettings::default().wait_ms
+        );
+        assert_eq!(loaded.config.capture.max_reuse_age_ms, 30);
+        let warning = loaded.warning.unwrap();
+        assert!(warning.contains("sensitivity"));
+        assert!(warning.contains("target_y_offset"));
+        assert!(warning.contains("capture.wait_ms"));
+    }
+
+    #[test]
+    fn invalid_hotkey_entry_is_removed_and_the_other_entries_are_kept() {
+        let loaded = Config::parse(
+            br#"{"hotkeys": [
+                {"action": "run_once", "shortcut": "F9"},
+                {"action": "run_once", "shortcut": " "},
+                {"action": "continuous_hold", "shortcut": "F8", "extra": 1}
+            ]}"#,
+        );
+        assert_eq!(loaded.config.hotkeys.len(), 2);
+        assert_eq!(loaded.config.hotkeys[0].shortcut, "F9");
+        assert_eq!(loaded.config.hotkeys[1].shortcut, "F8");
+        let warning = loaded.warning.unwrap();
+        assert!(warning.contains("hotkeys[1]"));
+        assert!(warning.contains("hotkeys[2].extra"));
+    }
+
+    #[test]
+    fn unreadable_file_uses_defaults_and_is_marked_for_backup() {
+        let broken = Config::parse(br#"{"sensitivity": 150"#);
+        assert_eq!(broken.config.sensitivity, Sensitivity::default());
+        assert!(broken.file_unusable);
+        assert!(broken.warning.is_some());
+        assert!(Config::parse(b"[1, 2]").file_unusable);
+    }
+
+    #[test]
+    fn valid_file_has_no_warning_and_is_not_marked_for_backup() {
+        let loaded = Config::parse(br#"{"fps_limit": 120}"#);
+        assert!(loaded.warning.is_none());
+        assert!(!loaded.file_unusable);
     }
 
     #[test]
