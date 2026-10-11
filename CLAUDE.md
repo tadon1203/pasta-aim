@@ -6,14 +6,15 @@ Respond and communicate with the user in the language they are using.
 
 Read a document only when its trigger applies. Do not read them all up front.
 
-| Document                   | What it is                                              | Read when                                                           |
-| -------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------- |
-| `README.md`                | What the project is and how to run it                   | You need setup or run steps                                         |
-| `ARCHITECTURE.md`          | System map, code map, and rules that must not break     | You change structure, add a module, or cross a thread boundary      |
-| `docs/requirements.md`     | How the product behaves                                 | A task changes or depends on user-visible behavior                  |
-| `CONTEXT.md`               | Domain terms (glossary)                                 | You name something or write docs                                    |
-| `docs/adr/`                | Hard-to-reverse decisions, with the reason (none yet)   | Your work may touch a recorded decision (search it)                 |
-| `docs/coding-standards.md` | Rules for code and documentation that lint cannot check | You write or review code or docs                                    |
+| Document                   | What it is                                              | Read when                                                      |
+| -------------------------- | ------------------------------------------------------- | -------------------------------------------------------------- |
+| `README.md`                | What the project is and how to run it                   | You need setup or run steps                                    |
+| `ARCHITECTURE.md`          | System map, code map, and rules that must not break     | You change structure, add a module, or cross a thread boundary |
+| `docs/requirements.md`     | How the product behaves                                 | A task changes or depends on user-visible behavior             |
+| `CONTEXT.md`               | Domain terms (glossary)                                 | You name something or write docs                               |
+| `docs/adr/`                | Hard-to-reverse decisions, with the reason (none yet)   | Your work may touch a recorded decision (search it)            |
+| `docs/coding-standards.md` | Rules for code and documentation that lint cannot check | You write or review code or docs                               |
+| `docs/git-workflow.md`     | Commit branch and commit message rules                  | You commit or prepare a commit                                 |
 
 - If a term that you need is missing from `CONTEXT.md`, say so.
 - If your work contradicts an ADR, say so. Do not override it silently.
