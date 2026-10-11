@@ -17,7 +17,7 @@ use crate::{
     },
     inference::pipeline::InferenceResult,
     metrics::{CaptureSourceMetrics, StageTimings},
-    settings::{FpsLimit, MissingFrameMode},
+    settings::FpsLimit,
 };
 
 pub(super) struct FrameReport {
@@ -37,7 +37,6 @@ pub(super) struct FrameReport {
 pub(super) struct CaptureStats {
     fresh: u64,
     processed: u64,
-    reused: u64,
     timeouts: u64,
     accumulated: u64,
 }
@@ -109,7 +108,6 @@ impl Worker {
         self.metrics.update_capture_source(CaptureSourceMetrics {
             fresh_fps: stats.fresh as f64 / seconds,
             processed_fps: stats.processed as f64 / seconds,
-            reused_fps: stats.reused as f64 / seconds,
             timeouts: stats.timeouts,
             mean_accumulated_frames: if stats.fresh == 0 {
                 0.0
@@ -139,54 +137,22 @@ impl Worker {
         }
         let size = model.input_size;
         let settings = self.tuning.capture;
-        // A cached image retains its original present timestamp, never its reuse time.
-        if self.cached_frame.as_ref().is_some_and(|frame| {
-            !settings.allows_reuse(frame.present_qpc(), self.qpc.now(), self.qpc.frequency_hz())
-        }) {
-            self.cached_frame = None;
-        }
         let Some(capture) = self.capture.as_mut() else {
             self.fail_run("capture is not configured".to_owned());
             return None;
         };
-        let selected = match capture.acquire(settings.wait_ms) {
+        let frame = match capture.acquire(settings.wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => {
                 self.capture_stats.fresh += 1;
                 self.capture_stats.accumulated += u64::from(frame.accumulated_frames());
                 self.source_seq = self.source_seq.saturating_add(1);
-                if run.mode == RunMode::Continuous
-                    && settings.missing_frame_mode == MissingFrameMode::ReusePrevious
-                {
-                    match capture.cache_frame(&frame, size) {
-                        Ok(cached) => self.cached_frame = Some(cached),
-                        Err(error) => {
-                            self.suspend_invalid_pipeline(format!(
-                                "GPU snapshot failed: {error:#}"
-                            ));
-                            return None;
-                        }
-                    }
-                }
-                Some((frame, false))
+                frame
             }
             Ok(CapturePoll::NoDesktopUpdate(reason)) => {
-                match reason {
-                    NoDesktopUpdateReason::Timeout => self.capture_stats.timeouts += 1,
-                    NoDesktopUpdateReason::PointerOnly => {}
-                    NoDesktopUpdateReason::AccessLost => self.cached_frame = None,
+                if matches!(reason, NoDesktopUpdateReason::Timeout) {
+                    self.capture_stats.timeouts += 1;
                 }
-                self.cached_frame
-                    .as_ref()
-                    .filter(|frame| {
-                        run.mode == RunMode::Continuous
-                            && settings.allows_reuse(
-                                frame.present_qpc(),
-                                self.qpc.now(),
-                                self.qpc.frequency_hz(),
-                            )
-                    })
-                    .cloned()
-                    .map(|frame| (frame, true))
+                return None;
             }
             Err(error) => {
                 let device_lost = capture.device_lost();
@@ -202,7 +168,6 @@ impl Worker {
                 return None;
             }
         };
-        let (frame, reused) = selected?;
         self.frame_seq = self
             .frame_seq
             .checked_add(1)
@@ -254,13 +219,12 @@ impl Worker {
             generation: run.generation,
             frame_seq: self.frame_seq,
             source_seq: self.source_seq,
-            reused,
             present_qpc: submit.present_qpc,
             ready_qpc: self.qpc.now(),
             capture_ready_value: ready_value,
             accumulated_frames: submit.accumulated_frames,
             desktop_size: submit.desktop_size,
-            acquire_wait_ms: if reused { 0.0 } else { submit.acquire_wait_ms },
+            acquire_wait_ms: submit.acquire_wait_ms,
             capture_ms: submit.capture_ms,
             copy_submit_ms: submit.copy_submit_ms,
         })
@@ -277,16 +241,6 @@ impl SerialStages for FrameStep<'_> {
 
     fn infer(&mut self, metadata: Self::Frame) -> Option<Self::Inferred> {
         let worker = &mut self.worker;
-        if metadata.reused
-            && !worker.tuning.capture.allows_reuse(
-                metadata.present_qpc,
-                worker.qpc.now(),
-                worker.qpc.frequency_hz(),
-            )
-        {
-            worker.metrics.record_gpu_drop(GpuDropReason::ExpiredFrame);
-            return None;
-        }
         let model = worker
             .model
             .as_mut()
@@ -339,22 +293,8 @@ impl SerialStages for FrameStep<'_> {
             return true;
         }
         let qpc = worker.qpc;
-        let settings = worker.tuning.capture;
-        let can_send = || {
-            !metadata.reused
-                || settings.allows_reuse(metadata.present_qpc, qpc.now(), qpc.frequency_hz())
-        };
-        let detection = if can_send() {
-            result.detection
-        } else {
-            worker.metrics.record_gpu_drop(GpuDropReason::ExpiredFrame);
-            None
-        };
         let output_start_qpc = qpc.now();
-        let outcome = match worker
-            .output_stage
-            .emit(&mut worker.mak, detection, can_send)
-        {
+        let outcome = match worker.output_stage.emit(&mut worker.mak, result.detection) {
             Ok(outcome) => outcome,
             Err(error) => {
                 worker.fail_run(format!("Inference output failed: {error:#}"));
@@ -363,7 +303,6 @@ impl SerialStages for FrameStep<'_> {
         };
         let output_complete_qpc = qpc.now();
         worker.capture_stats.processed += 1;
-        worker.capture_stats.reused += u64::from(metadata.reused);
         let timings = StageTimings {
             present_to_gpu_submit_ms: qpc.elapsed_ms(metadata.present_qpc, metadata.ready_qpc),
             present_to_inference_start_ms: qpc.elapsed_ms(metadata.present_qpc, started_qpc),
@@ -380,7 +319,6 @@ impl SerialStages for FrameStep<'_> {
             trace.record(FrameTraceRecord {
                 frame_seq: metadata.frame_seq,
                 source_seq: metadata.source_seq,
-                reused: metadata.reused,
                 present_qpc: metadata.present_qpc,
                 ready_qpc: metadata.ready_qpc,
                 inference_start_qpc: started_qpc,
@@ -396,7 +334,7 @@ impl SerialStages for FrameStep<'_> {
         if crate::logging::frame_trace_enabled() {
             tracing::trace!(
                 pipeline_id = metadata.pipeline_id, generation = metadata.generation,
-                frame_seq = metadata.frame_seq, source_seq = metadata.source_seq, reused = metadata.reused,
+                frame_seq = metadata.frame_seq, source_seq = metadata.source_seq,
                 accumulated_frames = metadata.accumulated_frames,
                 acquire_wait_ms = timings.acquire_wait_ms, capture_ms = timings.capture_ms,
                 gpu_preprocess_ms = ?timings.gpu_preprocess_ms,
@@ -470,7 +408,6 @@ mod tests {
             tuning,
             model: None,
             capture: None,
-            cached_frame: None,
             output_stage: OutputStage::new(tuning.output),
             trace: None,
             next_capture: Instant::now(),
@@ -511,14 +448,13 @@ mod tests {
         (worker, transport)
     }
 
-    fn inferred(worker: &Worker, reused: bool, present_qpc: i64) -> InferredFrame {
+    fn inferred(worker: &Worker, present_qpc: i64) -> InferredFrame {
         InferredFrame {
             metadata: GpuFrameMetadata {
                 pipeline_id: 1,
                 generation: worker.run.active.unwrap().generation,
                 frame_seq: 1,
                 source_seq: 1,
-                reused,
                 present_qpc,
                 ready_qpc: present_qpc,
                 capture_ready_value: 1,
@@ -575,7 +511,7 @@ mod tests {
         ] {
             let shutdown = matches!(command, Command::Shutdown);
             let (mut worker, transport) = worker();
-            let frame = inferred(&worker, false, worker.qpc.now());
+            let frame = inferred(&worker, worker.qpc.now());
             let (tx, rx) = crossbeam_channel::unbounded();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, frame), !shutdown);
@@ -585,28 +521,12 @@ mod tests {
     }
 
     #[test]
-    fn valid_result_outputs_and_expired_or_disabled_reuse_does_not() {
+    fn valid_result_outputs() {
         let (mut worker, transport) = worker();
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let frame = inferred(&worker, false, worker.qpc.now());
+        let frame = inferred(&worker, worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
         assert!(!transport.sent_commands().is_empty());
-        transport.clear_sent();
-        let expired = worker.qpc.now() - worker.qpc.frequency_hz();
-        let frame = inferred(&worker, true, expired);
-        assert!(finish(&mut worker, &rx, frame));
-        assert!(transport.sent_commands().is_empty());
-        let frame = inferred(&worker, true, worker.qpc.now());
-        let (tx, rx) = crossbeam_channel::unbounded();
-        tx.send(Command::SetCaptureSettings(
-            crate::settings::CaptureSettings {
-                missing_frame_mode: MissingFrameMode::WaitForNew,
-                ..worker.tuning.capture
-            },
-        ))
-        .unwrap();
-        assert!(finish(&mut worker, &rx, frame));
-        assert!(transport.sent_commands().is_empty());
     }
 
     #[test]
@@ -642,7 +562,7 @@ mod tests {
             now + Duration::from_secs(1)
         ));
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let frame = inferred(&worker, false, worker.qpc.now());
+        let frame = inferred(&worker, worker.qpc.now());
         assert!(finish(&mut worker, &rx, frame));
         assert!(!transport.sent_commands().is_empty());
         assert!(worker.run.active.is_none());

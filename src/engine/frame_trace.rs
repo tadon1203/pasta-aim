@@ -40,7 +40,6 @@ pub(super) struct TraceHeader {
 pub(super) struct FrameTraceRecord {
     pub frame_seq: u64,
     pub source_seq: u64,
-    pub reused: bool,
     pub present_qpc: i64,
     pub ready_qpc: i64,
     pub inference_start_qpc: i64,
@@ -175,7 +174,6 @@ fn record_json(record: &FrameTraceRecord) -> Value {
         "type": "frame",
         "seq": record.frame_seq,
         "source_seq": record.source_seq,
-        "reused": record.reused,
         "present_qpc": record.present_qpc,
         "ready_qpc": record.ready_qpc,
         "inference_start_qpc": record.inference_start_qpc,
@@ -212,7 +210,6 @@ mod tests {
         writer.record(FrameTraceRecord {
             frame_seq: 7,
             source_seq: 3,
-            reused: true,
             present_qpc: 1,
             ready_qpc: 2,
             inference_start_qpc: 3,
@@ -238,7 +235,6 @@ mod tests {
         assert_eq!(lines[0]["type"], "header");
         assert_eq!(lines[1]["seq"], 7);
         assert_eq!(lines[1]["source_seq"], 3);
-        assert_eq!(lines[1]["reused"], true);
         assert_eq!(lines[1]["target_id"], 3);
         assert_eq!(lines[1]["sent"], json!([2, -2]));
         assert_eq!(lines[2]["dropped_records"], 0);

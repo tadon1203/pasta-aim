@@ -3,9 +3,8 @@ pub struct GpuFrameMetadata {
     pub pipeline_id: u64,
     pub generation: u64,
     pub frame_seq: u64,
-    /// Original desktop update identity; repeats get a new frame_seq only.
+    /// Original desktop update identity.
     pub source_seq: u64,
-    pub reused: bool,
     pub present_qpc: i64,
     pub ready_qpc: i64,
     pub capture_ready_value: u64,

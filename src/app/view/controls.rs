@@ -10,7 +10,7 @@ use crate::{
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, InjectionApi, MaxDelta,
-        MissingFrameMode, Sensitivity, TargetYOffset,
+        Sensitivity, TargetYOffset,
     },
 };
 
@@ -184,27 +184,8 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("New frame wait");
                 ui.add(egui::DragValue::new(&mut capture.wait_ms).range(CaptureSettings::WAIT_RANGE).suffix(" ms"))
-                    .on_hover_text("Maximum wait per capture attempt. FPS limit still applies to new and reused frames together.");
+                    .on_hover_text("Maximum wait per capture attempt. FPS limit still applies to new frames.");
             });
-            ui.horizontal(|ui| {
-                ui.label("When no new frame");
-                egui::ComboBox::from_id_salt("missing_frame_mode")
-                    .selected_text(match capture.missing_frame_mode {
-                        MissingFrameMode::WaitForNew => "Wait for new frame",
-                        MissingFrameMode::ReusePrevious => "Reuse previous frame",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut capture.missing_frame_mode, MissingFrameMode::WaitForNew, "Wait for new frame");
-                        ui.selectable_value(&mut capture.missing_frame_mode, MissingFrameMode::ReusePrevious, "Reuse previous frame");
-                    });
-            });
-            if capture.missing_frame_mode == MissingFrameMode::ReusePrevious {
-                ui.horizontal(|ui| {
-                    ui.label("Maximum reuse age");
-                    ui.add(egui::DragValue::new(&mut capture.max_reuse_age_ms).range(CaptureSettings::REUSE_AGE_RANGE).suffix(" ms"))
-                        .on_hover_text("Measured from the original desktop update. Reusing an image does not renew its lifetime.");
-                });
-            }
             if capture != self.config.capture {
                 self.config.capture = capture;
                 self.engine.send(Command::SetCaptureSettings(capture));

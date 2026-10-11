@@ -498,12 +498,8 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
         performance.capture_source.fresh_fps, performance.capture_source.processed_fps,
     ));
     ui.small(format!(
-        "Reused FPS {:.1} · Capture timeouts {} / last reporting interval · Expired reuse drops {}",
-        performance.capture_source.reused_fps,
+        "Capture timeouts {} / last reporting interval",
         performance.capture_source.timeouts,
-        performance
-            .gpu_drop_counts
-            .get(crate::graphics::GpuDropReason::ExpiredFrame),
     ));
     ui.small(format!(
         "Mean accumulated desktop frames {:.2}",

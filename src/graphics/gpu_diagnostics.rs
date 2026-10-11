@@ -54,18 +54,16 @@ impl GpuFaultStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuDropReason {
     StaleGeneration,
-    ExpiredFrame,
     PipelinePoisoned,
 }
 
 impl GpuDropReason {
-    pub const COUNT: usize = 3;
+    pub const COUNT: usize = 2;
 
     pub const fn index(self) -> usize {
         match self {
             Self::StaleGeneration => 0,
-            Self::ExpiredFrame => 1,
-            Self::PipelinePoisoned => 2,
+            Self::PipelinePoisoned => 1,
         }
     }
 }

@@ -369,18 +369,12 @@ mod tests {
         assert_eq!(old.capture, CaptureSettings::default());
         assert_eq!(old.fps_limit.value(), 120);
         let mut config: Config = serde_json::from_str(r#"{"capture":{"wait_ms":1}}"#).unwrap();
-        assert_eq!(config.capture.max_reuse_age_ms, 15);
         config.validate().unwrap();
         let restored: Config =
             serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert_eq!(restored.capture, config.capture);
         for invalid in [0, 21] {
             config.capture.wait_ms = invalid;
-            assert!(config.validate().is_err());
-        }
-        config.capture.wait_ms = 1;
-        for invalid in [0, 51] {
-            config.capture.max_reuse_age_ms = invalid;
             assert!(config.validate().is_err());
         }
     }
@@ -434,7 +428,7 @@ mod tests {
     #[test]
     fn invalid_values_are_reset_to_their_defaults_and_the_rest_is_kept() {
         let loaded = Config::parse(
-            br#"{"sensitivity": 0, "target_y_offset": "top", "fps_limit": 120, "capture": {"wait_ms": 0, "max_reuse_age_ms": 30}}"#,
+            br#"{"sensitivity": 0, "target_y_offset": "top", "fps_limit": 120, "capture": {"wait_ms": 0}}"#,
         );
         assert_eq!(loaded.config.sensitivity, Sensitivity::default());
         assert_eq!(loaded.config.target_y_offset, TargetYOffset::default());
@@ -443,7 +437,6 @@ mod tests {
             loaded.config.capture.wait_ms,
             CaptureSettings::default().wait_ms
         );
-        assert_eq!(loaded.config.capture.max_reuse_age_ms, 30);
         let warning = loaded.warning.unwrap();
         assert!(warning.contains("sensitivity"));
         assert!(warning.contains("target_y_offset"));

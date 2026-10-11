@@ -28,7 +28,6 @@ pub struct StageTimings {
 pub struct CaptureSourceMetrics {
     pub fresh_fps: f64,
     pub processed_fps: f64,
-    pub reused_fps: f64,
     pub timeouts: u64,
     pub mean_accumulated_frames: f64,
 }

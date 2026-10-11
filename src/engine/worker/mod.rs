@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
     config::Config,
-    graphics::{AcquiredDesktopFrame, DxgiCapture, GraphicsThread},
+    graphics::{DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
     mak::MakClient,
     metrics::Metrics,
@@ -58,7 +58,6 @@ struct Worker {
     // Pipeline (replaced as a unit when the display or GPU changes).
     model: Option<capture::PreparedModel>,
     capture: Option<DxgiCapture>,
-    cached_frame: Option<AcquiredDesktopFrame>,
     output_stage: OutputStage,
     trace: Option<super::frame_trace::FrameTraceWriter>,
     next_capture: Instant,
@@ -155,7 +154,6 @@ pub(super) fn run_worker(
         tuning,
         model: None,
         capture: None,
-        cached_frame: None,
         output_stage: OutputStage::new(tuning.output),
         trace: None,
         next_capture: Instant::now(),
@@ -302,7 +300,6 @@ impl Worker {
             }
             Command::SetCaptureSettings(settings) => {
                 self.tuning.capture = settings;
-                self.cached_frame = None;
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetInjectionApi(api) => {

@@ -68,7 +68,6 @@ impl Worker {
         let generation = self.run.next_generation();
         self.loop_metrics.reset();
         self.trace = self.open_frame_trace();
-        self.cached_frame = None;
         self.output_stage.reset();
         self.next_capture = std::time::Instant::now();
         self.capture_stats = Default::default();
@@ -122,7 +121,6 @@ impl Worker {
         if let Some(run) = self.run.active.take() {
             tracing::info!(generation = run.generation, "inference stopped");
         }
-        self.cached_frame = None;
         self.trace = None;
         self.output_stage.reset();
         self.publish_capture_stats(true);

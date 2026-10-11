@@ -122,8 +122,6 @@ impl RunSummary {
             pipeline_p50_ms = performance.total.p50_ms,
             stale_generation = drops.get(GpuDropReason::StaleGeneration),
             pipeline_poisoned = drops.get(GpuDropReason::PipelinePoisoned),
-            expired_frame = drops.get(GpuDropReason::ExpiredFrame),
-            reused_fps = performance.capture_source.reused_fps,
             capture_timeouts = performance.capture_source.timeouts,
             "continuous inference summary"
         );

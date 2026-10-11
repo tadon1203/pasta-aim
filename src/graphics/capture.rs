@@ -57,9 +57,6 @@ pub(crate) struct CaptureSubmit {
 }
 
 impl AcquiredDesktopFrame {
-    pub(crate) fn present_qpc(&self) -> i64 {
-        self.present_qpc
-    }
     pub(crate) fn accumulated_frames(&self) -> u32 {
         self.accumulated_frames
     }
@@ -209,7 +206,6 @@ pub struct DxgiCapture {
     first_signal_logged: bool,
     last_fault_stage: GpuFaultStage,
     last_ready_completed: Option<u64>,
-    cached_texture: Option<ID3D11Texture2D>,
 }
 
 impl DxgiCapture {
@@ -248,7 +244,6 @@ impl DxgiCapture {
             first_signal_logged: false,
             last_fault_stage: GpuFaultStage::CaptureCopy,
             last_ready_completed: None,
-            cached_texture: None,
         })
     }
 
@@ -335,52 +330,6 @@ impl DxgiCapture {
             present_qpc: frame_info.LastPresentTime,
             accumulated_frames: frame_info.AccumulatedFrames,
         }))
-    }
-
-    /// Private cropped GPU snapshot; shared frame and DXGI-owned images are not retained.
-    pub(crate) fn cache_frame(
-        &mut self,
-        frame: &AcquiredDesktopFrame,
-        size: (usize, usize),
-    ) -> Result<AcquiredDesktopFrame> {
-        let (width, height) = size;
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        if let Some(texture) = &self.cached_texture {
-            // SAFETY: texture is retained by this capture device.
-            unsafe { texture.GetDesc(&mut desc) };
-        }
-        if desc.Width as usize != width || desc.Height as usize != height {
-            let desc = D3D11_TEXTURE2D_DESC {
-                Width: u32::try_from(width)?,
-                Height: u32::try_from(height)?,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Usage: windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT,
-                ..Default::default()
-            };
-            let mut texture = None;
-            // SAFETY: valid descriptor and output storage; no initial data.
-            unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut texture)) }
-                .context("failed to create cached frame texture")?;
-            self.cached_texture = Some(texture.context("D3D11 returned no cache texture")?);
-        }
-        let texture = self.cached_texture.as_ref().expect("created above");
-        self.copy_center_image(frame, texture, size)?;
-        // All cache writes
-        // and copies into the shared frame are ordered on this same immediate context.
-        unsafe { self.context.Flush() };
-        Ok(AcquiredDesktopFrame {
-            texture: texture.clone(),
-            acquire_wait_ms: frame.acquire_wait_ms,
-            desktop_size: frame.desktop_size,
-            present_qpc: frame.present_qpc,
-            accumulated_frames: frame.accumulated_frames,
-        })
     }
 
     fn copy_center_image(

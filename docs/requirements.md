@@ -27,19 +27,14 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 - The user picks the display. The app captures the Model input region of that display.
 - When the display changes, the Run pauses and the app prepares a new Pipeline. On success, the app changes to it. On failure, the app keeps the old one. Then a Continuous run resumes.
 
-| Setting           | Range                                        | Default                |
-| ----------------- | -------------------------------------------- | ---------------------- |
-| FPS limit         | 1 to 1000                                    | 240                    |
-| New frame wait    | 1 to 20 ms                                   | 2 ms                   |
-| When no new frame | `Reuse previous frame`, `Wait for new frame` | `Reuse previous frame` |
-| Maximum reuse age | 1 to 50 ms                                   | 15 ms                  |
+| Setting        | Range      | Default |
+| -------------- | ---------- | ------- |
+| FPS limit      | 1 to 1000  | 240     |
+| New frame wait | 1 to 20 ms | 2 ms    |
 
-- **FPS limit** sets the shortest time between the starts of two captures in a Continuous run. New frames and Reused frames share it. A late frame is not followed by a burst of frames. It does not apply to Run once.
+- **FPS limit** sets the shortest time between the starts of two captures in a Continuous run. A late frame is not followed by a burst of frames. It does not apply to Run once.
 - **New frame wait** is the longest wait for one capture attempt. It is independent of the FPS limit.
-- **When no new frame**: `Reuse previous frame` processes the last image again. `Wait for new frame` does no inference and sends no Movement.
-- **Maximum reuse age** is measured from the Present time. A reuse does not extend it. The app checks it before the inference and again immediately before the output. An expired Reused frame sends no Movement.
-- Run once uses only a New frame.
-- After a capture fault, the app does not reuse a frame.
+- A capture attempt that gets no new desktop update does no inference and sends no Movement. The app never processes an old image again.
 
 ## Target and output
 

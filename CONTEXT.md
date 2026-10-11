@@ -16,9 +16,7 @@ The language of nice-aimassist. Use these terms in code, docs, and tickets. Do n
 - **Frame**: one image of the Model input region, with the time data of its capture.
 - **Model input region**: the rectangle at the center of the captured display that has the size of the model input.
 - **Present time**: the time of the desktop update that made a Frame.
-- **New frame**: a Frame that comes from a new desktop update.
-- **Reused frame**: the image of the last New frame, processed again because no new desktop update came.
-- **Maximum reuse age**: the longest time after its Present time that a Frame can be reused.
+- **New frame**: a Frame that comes from a new desktop update. Every Frame is a New frame.
 
 ## Pipeline
 

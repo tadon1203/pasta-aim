@@ -684,7 +684,7 @@ mod tests {
         let mut image = None;
         for _ in 0..50 {
             if let CapturePoll::Fresh(frame) = capture.acquire(20)? {
-                image = Some(capture.cache_frame(&frame, size)?);
+                image = Some(frame);
                 break;
             }
         }
@@ -757,7 +757,6 @@ mod tests {
                         generation: 1,
                         frame_seq: seq,
                         source_seq: 1,
-                        reused: seq > 1,
                         present_qpc: submit.present_qpc,
                         ready_qpc: submit.present_qpc,
                         capture_ready_value: seq,

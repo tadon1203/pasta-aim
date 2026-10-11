@@ -1,46 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum MissingFrameMode {
-    WaitForNew,
-    #[default]
-    ReusePrevious,
-}
-
 /// Capture policy shared by persistence, UI, capture and inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureSettings {
     pub wait_ms: u32,
-    pub missing_frame_mode: MissingFrameMode,
-    pub max_reuse_age_ms: u32,
 }
 
 impl CaptureSettings {
     pub const WAIT_RANGE: std::ops::RangeInclusive<u32> = 1..=20;
-    pub const REUSE_AGE_RANGE: std::ops::RangeInclusive<u32> = 1..=50;
 
     pub(crate) fn is_valid(self) -> bool {
         Self::WAIT_RANGE.contains(&self.wait_ms)
-            && Self::REUSE_AGE_RANGE.contains(&self.max_reuse_age_ms)
-    }
-
-    pub(crate) fn allows_reuse(self, present_qpc: i64, now_qpc: i64, qpc_hz: i64) -> bool {
-        self.missing_frame_mode == MissingFrameMode::ReusePrevious
-            && present_qpc <= now_qpc
-            && i128::from(now_qpc).saturating_sub(i128::from(present_qpc)) * 1000
-                <= i128::from(self.max_reuse_age_ms) * i128::from(qpc_hz)
     }
 }
 
 impl Default for CaptureSettings {
     fn default() -> Self {
-        Self {
-            wait_ms: 2,
-            missing_frame_mode: MissingFrameMode::ReusePrevious,
-            max_reuse_age_ms: 15,
-        }
+        Self { wait_ms: 2 }
     }
 }
 
@@ -252,22 +229,6 @@ impl Default for FpsLimit {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reuse_expires_from_original_present_time_without_renewal() {
-        let policy = CaptureSettings::default();
-        assert!(policy.allows_reuse(100, 114, 1000));
-        assert!(policy.allows_reuse(100, 115, 1000));
-        assert!(!policy.allows_reuse(100, 116, 1000));
-        assert!(!policy.allows_reuse(100, 99, 1000));
-        let wait = CaptureSettings {
-            missing_frame_mode: MissingFrameMode::WaitForNew,
-            ..policy
-        };
-        assert!(!wait.allows_reuse(100, 101, 1000));
-        // Non-integral QPC milliseconds must not round an expired source down.
-        assert!(!policy.allows_reuse(0, 151, 10_000));
-    }
 
     #[test]
     fn sensitivity_is_integer_and_normalized_at_construction() {

@@ -117,7 +117,6 @@ impl OutputStage {
         &mut self,
         mak: &mut MakClient,
         detection: Option<Detection>,
-        can_send: impl FnOnce() -> bool,
     ) -> Result<OutputOutcome> {
         let track = self.tracker.update(detection.as_ref());
         if track.is_none_or(|track| track.switched) {
@@ -142,16 +141,6 @@ impl OutputStage {
                 planned: Some(movement),
             });
         };
-        // Check immediately before the device write.
-        if !can_send() {
-            self.carry = (0.0, 0.0);
-            return Ok(OutputOutcome {
-                target: Some(target),
-                command: None,
-                track,
-                planned: Some(movement),
-            });
-        }
         mak.move_mouse(x, y)?;
         Ok(OutputOutcome {
             target: Some(target),
@@ -165,19 +154,6 @@ impl OutputStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn expired_frame_is_not_submitted_and_does_not_carry_movement() {
-        // A submission would fail because MAK is disconnected. The expiry guard
-        // must run before any device call, even for a disconnected device.
-        let mut output = OutputStage::new(settings(100, 50));
-        output.set_input_size((100, 100));
-        let outcome = output
-            .emit(&mut MakClient::new(), Some(detection(70.0, 40.0)), || false)
-            .unwrap();
-        assert_eq!(outcome.command, None);
-        assert_eq!(output.carry, (0.0, 0.0));
-    }
 
     fn detection(center_y: f32, box_height: f32) -> Detection {
         Detection {

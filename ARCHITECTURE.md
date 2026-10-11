@@ -84,8 +84,7 @@ Data flow:
 - A failed model load keeps the model that was active. Only a successful load is written to the settings file.
 - A model is validated one time, when it loads. The frame path does not check tensor shapes, so the load-time validation must stay complete.
 - A model is a file name in `models/`. The settings hold no path.
-- Only a Continuous run reuses a frame. A Reused frame keeps its Present time. The engine checks the Maximum reuse age before the inference and immediately before the device output.
-- The engine discards the frame that it keeps for reuse on a stop, a start, a change of the capture settings, a Pipeline replacement, an expiry, and a lost capture access.
+- The engine never reuses a frame. A capture attempt without a new desktop update does no inference and sends no Movement.
 - The engine thread waits only on its command channel. It does not sleep on the frame path. It sets the next capture time from the actual start of the current capture, and it gives no credit for lost time.
 - The engine thread does not lock the shared status on the frame path. It edits its own copy and publishes snapshots.
 - The engine thread never waits for the Trace thread. A failure of the trace never stops the engine.

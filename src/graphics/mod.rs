@@ -8,7 +8,7 @@ mod profile_sampler;
 pub mod shared_frame;
 
 pub use capture::DxgiCapture;
-pub(crate) use capture::{AcquiredDesktopFrame, CapturePoll, NoDesktopUpdateReason};
+pub(crate) use capture::{CapturePoll, NoDesktopUpdateReason};
 pub use frame::GpuFrameMetadata;
 pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport};
 
