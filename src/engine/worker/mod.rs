@@ -144,7 +144,12 @@ pub(super) fn run_worker(
         low_latency: config.low_latency,
         frame_trace: config.diagnostics.frame_trace,
     };
-    let makcu = MakcuClient::new();
+    let mut makcu = MakcuClient::new();
+    makcu.set_move_method(config.move_method);
+    // Before the first connect, so this sends nothing: the value is sent when the connect succeeds.
+    if let Err(error) = makcu.set_interpolation(config.interpolation) {
+        tracing::warn!(error = %format!("{error:#}"), "move interpolation could not be applied");
+    }
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
         event_tx,
@@ -200,6 +205,8 @@ impl Worker {
     /// folding capture-side counters into metrics.
     fn housekeeping(&mut self) {
         self.poll_makcu_events();
+        let raw = self.makcu.raw_stats();
+        self.status.edit(|status| status.makcu.raw = raw);
     }
 
     fn event_loop(&mut self, rx: &Receiver<Command>) {
@@ -283,6 +290,13 @@ impl Worker {
                 self.tuning.confidence_threshold = value;
                 if let Some(model) = self.model.as_mut() {
                     model.pipeline.set_confidence_threshold(value);
+                }
+            }
+            Command::SetMoveMethod(method) => self.makcu.set_move_method(method),
+            Command::SetInterpolation(interpolation) => {
+                if let Err(error) = self.makcu.set_interpolation(interpolation) {
+                    tracing::warn!(error = %format!("{error:#}"), "move interpolation failed");
+                    self.set_run_error(format!("{error:#}"));
                 }
             }
             Command::SetFpsLimit(value) => {

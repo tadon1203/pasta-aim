@@ -1,4 +1,15 @@
-use crate::engine::{CapturePhase, MakcuPhase, ModelPhase};
+use crate::{
+    engine::{CapturePhase, MakcuPhase, ModelPhase},
+    makcu::reject_reason_text,
+};
+
+/// The last Raw move reject: its reason code and text, or `None`.
+pub(super) fn raw_reason_label(reason: Option<u8>) -> String {
+    match reason {
+        Some(reason) => format!("{reason}: {}", reject_reason_text(reason)),
+        None => "None".to_owned(),
+    }
+}
 
 pub(super) fn model_phase_label(phase: ModelPhase) -> &'static str {
     match phase {

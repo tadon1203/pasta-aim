@@ -6,7 +6,7 @@ use std::{
     fmt, io,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -18,8 +18,8 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounde
 use super::{
     port::{Connector, Port},
     protocol::{
-        FIRMWARE_FLOOR, Packet, PacketDecoder, RawMetadata, Request, format_firmware, is_raw_reply,
-        is_reject, parse_raw_metadata,
+        FIRMWARE_FLOOR, Packet, PacketDecoder, RawMetadata, Request, format_firmware,
+        is_interpolate_echo, is_raw_reply, is_reject, parse_raw_metadata,
     },
 };
 
@@ -36,6 +36,8 @@ pub(super) struct SessionInfo {
     pub kinds: u8,
     pub raw: Option<RawMetadata>,
     pub baud: u32,
+    /// The stored Move interpolation could not be sent on this connect. The connect still succeeds.
+    pub interpolation_error: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,13 +117,19 @@ pub(super) struct Session {
 
 impl Session {
     /// Connects to the first port that answers as MAKCU. The preferred port is tried first.
+    /// `interpolation` is the wire value of the Move interpolation. Each connect, including a reconnect, sends it.
     pub(super) fn connect(
         connector: Arc<dyn Connector>,
         preferred: Option<&str>,
+        interpolation: Arc<AtomicU8>,
     ) -> Result<(Self, SessionInfo)> {
-        let (port, info) = connect_any(connector.as_ref(), preferred)?;
+        let (port, info) = connect_any(
+            connector.as_ref(),
+            preferred,
+            interpolation.load(Ordering::Acquire),
+        )?;
         let reader = port.try_clone()?;
-        let session = Self::start(connector, port, reader, info.port.clone())?;
+        let session = Self::start(connector, port, reader, info.port.clone(), interpolation)?;
         Ok((session, info))
     }
 
@@ -130,6 +138,7 @@ impl Session {
         writer: Box<dyn Port>,
         reader: Box<dyn Port>,
         preferred: String,
+        interpolation: Arc<AtomicU8>,
     ) -> Result<Self> {
         let shared = Arc::new(Shared {
             writer: Mutex::new(Some(writer)),
@@ -146,6 +155,7 @@ impl Session {
             events: event_sender,
             raw: raw_sender,
             preferred,
+            interpolation,
         };
         let io = thread::Builder::new()
             .name("makcu-io".to_owned())
@@ -245,6 +255,8 @@ struct IoThread {
     raw: Sender<Packet>,
     /// The port that was used last. It is tried first.
     preferred: String,
+    /// The Move interpolation to send on each connect. The client changes it.
+    interpolation: Arc<AtomicU8>,
 }
 
 impl IoThread {
@@ -318,7 +330,12 @@ impl IoThread {
     }
 
     fn try_connect(&mut self) -> Result<Box<dyn Port>> {
-        let (port, info) = connect_any(self.connector.as_ref(), Some(&self.preferred))?;
+        let interpolation = self.interpolation.load(Ordering::Acquire);
+        let (port, info) = connect_any(
+            self.connector.as_ref(),
+            Some(&self.preferred),
+            interpolation,
+        )?;
         let reader = port.try_clone()?;
         self.preferred = info.port.clone();
         *lock(&self.shared.writer) = Some(port);
@@ -358,6 +375,7 @@ fn backoff(attempt: u32) -> Duration {
 fn connect_any(
     connector: &dyn Connector,
     preferred: Option<&str>,
+    interpolation: u8,
 ) -> Result<(Box<dyn Port>, SessionInfo)> {
     let mut ports = connector.ports()?;
     if let Some(index) = preferred.and_then(|name| ports.iter().position(|port| port == name)) {
@@ -366,7 +384,7 @@ fn connect_any(
     }
     let mut last_error = anyhow!("no MAKCU port found");
     for port in &ports {
-        match connect_port(connector, port) {
+        match connect_port(connector, port, interpolation) {
             Ok(connected) => return Ok(connected),
             Err(error) => last_error = error,
         }
@@ -375,8 +393,12 @@ fn connect_any(
 }
 
 /// The connect sequence on one port: probe both rates, check the firmware floor, switch to 4,000,000
-/// baud when the port is at 115,200, then read the routes and the Raw metadata.
-fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Port>, SessionInfo)> {
+/// baud when the port is at 115,200, then read the routes and the Raw metadata, and send the Move interpolation.
+fn connect_port(
+    connector: &dyn Connector,
+    name: &str,
+    interpolation: u8,
+) -> Result<(Box<dyn Port>, SessionInfo)> {
     // The rate that MAKCU keeps is not known after the app closes, so both rates are probed.
     let (mut port, mut baud) = match probe(connector, name, LOW_BAUD) {
         Ok(port) => (port, LOW_BAUD),
@@ -404,14 +426,32 @@ fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Port>,
     let raw = exchange(port.as_mut(), &Request::RawMetadata)
         .ok()
         .and_then(|packet| parse_raw_metadata(&packet.payload));
+    // The device can lose the value when it restarts, so it is sent on every connect. A failure
+    // does not fail the connect: the caller reports it.
+    let interpolation_error = send_interpolation(port.as_mut(), interpolation)
+        .err()
+        .map(|error| format!("{error:#}"));
     let info = SessionInfo {
         port: name.to_owned(),
         firmware,
         kinds,
         raw,
         baud,
+        interpolation_error,
     };
     Ok((port, info))
+}
+
+/// Sends `INTERPOLATE` and checks the echo.
+fn send_interpolation(port: &mut dyn Port, value: u8) -> Result<()> {
+    let packet = exchange(port, &Request::Interpolate(value))?;
+    if !is_interpolate_echo(value, &packet) {
+        bail!(
+            "MAKCU answered the move interpolation {value} with {:?}",
+            packet.payload
+        );
+    }
+    Ok(())
 }
 
 /// Opens the port at `baud` and asks for the routes. The port is kept only when the device answers.
@@ -480,7 +520,7 @@ mod tests {
     const SET_BAUD_4M: [u8; 9] = [0xDE, 0xAD, 5, 0, 0xA5, 0x00, 0x09, 0x3D, 0x00];
 
     fn connect(fake: &FakeMakcu) -> Result<(Session, SessionInfo)> {
-        Session::connect(Arc::new(fake.clone()), None)
+        Session::connect(Arc::new(fake.clone()), None, Arc::new(AtomicU8::new(255)))
     }
 
     fn next_event(session: &Session) -> SessionEvent {

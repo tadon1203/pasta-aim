@@ -9,10 +9,13 @@ use crate::{
     engine::{CapturePhase, Command, EngineStatus, ModelPhase, RunPhase},
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, MaxDelta, Sensitivity,
-        TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, Interpolation,
+        InterpolationPercent, MaxDelta, MoveMethod, Sensitivity, TargetYOffset,
     },
 };
+
+/// The fixed interpolation that a switch from Auto starts with.
+const FIXED_INTERPOLATION_START: u8 = 50;
 
 impl App {
     pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineStatus) {
@@ -20,6 +23,54 @@ impl App {
             ui.strong("Output");
             if !status.makcu.routes.mouse {
                 warn_label(ui, "Waiting for a mouse route.");
+            }
+
+            let mut method = self.config.move_method;
+            ui.horizontal(|ui| {
+                ui.label("Move method");
+                for option in MoveMethod::ALL {
+                    if ui
+                        .radio_value(&mut method, option, option.label())
+                        .changed()
+                    {
+                        self.set_move_method(option);
+                    }
+                }
+            });
+
+            let raw = self.config.move_method == MoveMethod::Raw;
+            ui.add_enabled_ui(!raw, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Move interpolation");
+                    let mut auto = self.config.interpolation == Interpolation::Auto;
+                    if ui.checkbox(&mut auto, "Auto").changed() {
+                        self.set_interpolation(if auto {
+                            Interpolation::Auto
+                        } else {
+                            Interpolation::Percent(InterpolationPercent::new(
+                                FIXED_INTERPOLATION_START,
+                            ))
+                        });
+                        self.persist();
+                    }
+                });
+                if let Interpolation::Percent(percent) = self.config.interpolation {
+                    let edit = percent_row(
+                        ui,
+                        "Fixed",
+                        i32::from(percent.value()),
+                        i32::from(InterpolationPercent::MIN)..=i32::from(InterpolationPercent::MAX),
+                        &mut self.dirty.interpolation,
+                    );
+                    self.apply_edit(edit, |app, value| {
+                        app.set_interpolation(Interpolation::Percent(InterpolationPercent::new(
+                            value as u8,
+                        )))
+                    });
+                }
+            });
+            if raw {
+                ui.small("Raw move skips the interpolation.");
             }
         });
     }

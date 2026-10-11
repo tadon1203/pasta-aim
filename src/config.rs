@@ -7,8 +7,8 @@ use serde_json::{Map, Value};
 use crate::{
     models, paths,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, MaxDelta,
-        Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation,
+        InterpolationPercent, MaxDelta, MoveMethod, Sensitivity, TargetYOffset,
     },
 };
 
@@ -31,6 +31,8 @@ pub struct Config {
     pub capture_output: u32,
     /// Busy-waits on DirectML completion for lower tail latency at the cost of one CPU core.
     pub low_latency: bool,
+    pub move_method: MoveMethod,
+    pub interpolation: Interpolation,
     pub diagnostics: DiagnosticsConfig,
 }
 
@@ -70,6 +72,8 @@ impl Default for Config {
             selected_adapter: crate::inference::AdapterLuid { low: 0, high: 0 },
             capture_output: 0,
             low_latency: false,
+            move_method: MoveMethod::default(),
+            interpolation: Interpolation::default(),
             diagnostics: DiagnosticsConfig::default(),
         }
     }
@@ -197,6 +201,15 @@ impl Config {
         }
         if !self.capture.is_valid() {
             bail!("capture settings are out of range");
+        }
+        if let Interpolation::Percent(percent) = self.interpolation
+            && !percent.is_valid()
+        {
+            bail!(
+                "interpolation must be in {}..={} percent",
+                InterpolationPercent::MIN,
+                InterpolationPercent::MAX
+            );
         }
 
         if let Some(model) = &self.model {
@@ -533,5 +546,34 @@ mod tests {
         let restored: Config =
             serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert!(restored.low_latency);
+    }
+
+    #[test]
+    fn move_method_and_interpolation_default_to_standard_and_auto() {
+        let config = Config::default();
+        assert_eq!(config.move_method, MoveMethod::Standard);
+        assert_eq!(config.interpolation, Interpolation::Auto);
+    }
+
+    #[test]
+    fn an_out_of_range_interpolation_falls_back_to_auto_and_the_rest_is_kept() {
+        let loaded = Config::parse(
+            br#"{"interpolation": {"percent": 150}, "move_method": "raw", "fps_limit": 120}"#,
+        );
+        assert_eq!(loaded.config.interpolation, Interpolation::Auto);
+        assert_eq!(loaded.config.move_method, MoveMethod::Raw);
+        assert_eq!(loaded.config.fps_limit.value(), 120);
+        assert!(loaded.warning.unwrap().contains("interpolation"));
+    }
+
+    #[test]
+    fn an_interpolation_percent_round_trips_through_the_file() {
+        let config = Config {
+            interpolation: Interpolation::Percent(InterpolationPercent::new(40)),
+            ..Config::default()
+        };
+        let restored = Config::parse(&serde_json::to_vec(&config).unwrap());
+        assert_eq!(restored.config.interpolation, config.interpolation);
+        assert!(restored.warning.is_none());
     }
 }

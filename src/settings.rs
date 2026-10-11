@@ -209,9 +209,123 @@ impl Default for FpsLimit {
     }
 }
 
+/// How the Output sends a movement to MAKCU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveMethod {
+    /// The V4 `MOVE` command.
+    #[default]
+    Standard,
+    /// The V4 `RAW_MOVE` command: one USB report per move, with a result read later.
+    Raw,
+}
+
+impl MoveMethod {
+    pub const ALL: [Self; 2] = [Self::Standard, Self::Raw];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard move",
+            Self::Raw => "Raw move",
+        }
+    }
+}
+
+/// The fixed Move interpolation, in percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InterpolationPercent(u8);
+
+impl InterpolationPercent {
+    pub const MIN: u8 = 0;
+    pub const MAX: u8 = 100;
+
+    pub fn new(value: u8) -> Self {
+        Self(value.clamp(Self::MIN, Self::MAX))
+    }
+
+    pub fn value(self) -> u8 {
+        self.0
+    }
+
+    pub(crate) fn is_valid(self) -> bool {
+        (Self::MIN..=Self::MAX).contains(&self.0)
+    }
+}
+
+/// The Move interpolation of a Standard move. It has no effect on a Raw move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Interpolation {
+    /// MAKCU chooses. This is the `INTERPOLATE 255` value.
+    #[default]
+    Auto,
+    Percent(InterpolationPercent),
+}
+
+impl Interpolation {
+    /// The value of the `INTERPOLATE` command. `Auto` is 255.
+    pub fn wire_value(self) -> u8 {
+        match self {
+            Self::Auto => 255,
+            Self::Percent(percent) => percent.value(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_method_defaults_to_standard_and_has_labels() {
+        assert_eq!(MoveMethod::default(), MoveMethod::Standard);
+        assert_eq!(MoveMethod::Standard.label(), "Standard move");
+        assert_eq!(MoveMethod::Raw.label(), "Raw move");
+    }
+
+    #[test]
+    fn move_method_and_interpolation_round_trip_through_json() {
+        let json = serde_json::to_string(&MoveMethod::Raw).unwrap();
+        assert_eq!(json, r#""raw""#);
+        assert_eq!(
+            serde_json::from_str::<MoveMethod>(&json).unwrap(),
+            MoveMethod::Raw
+        );
+
+        let percent = Interpolation::Percent(InterpolationPercent::new(40));
+        assert_eq!(
+            serde_json::to_string(&percent).unwrap(),
+            r#"{"percent":40}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Interpolation>(r#"{"percent":40}"#).unwrap(),
+            percent
+        );
+        assert_eq!(
+            serde_json::to_string(&Interpolation::Auto).unwrap(),
+            r#""auto""#
+        );
+        assert_eq!(
+            serde_json::from_str::<Interpolation>(r#""auto""#).unwrap(),
+            Interpolation::Auto
+        );
+    }
+
+    #[test]
+    fn interpolation_percent_is_clamped_at_construction() {
+        assert_eq!(InterpolationPercent::new(150).value(), 100);
+        assert_eq!(InterpolationPercent::new(0).value(), 0);
+    }
+
+    #[test]
+    fn auto_is_the_255_wire_value_and_percent_is_its_own_value() {
+        assert_eq!(Interpolation::Auto.wire_value(), 255);
+        assert_eq!(
+            Interpolation::Percent(InterpolationPercent::new(40)).wire_value(),
+            40
+        );
+    }
 
     #[test]
     fn sensitivity_is_integer_and_normalized_at_construction() {

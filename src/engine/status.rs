@@ -4,7 +4,7 @@ use super::loop_metrics::LoopSnapshot;
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
-    makcu::MakcuRoutes,
+    makcu::{MakcuRoutes, RawStats},
     metrics::PerformanceSnapshot,
 };
 
@@ -141,6 +141,7 @@ pub struct MakcuStatus {
     pub port: Option<String>,
     pub firmware: Option<u32>,
     pub routes: MakcuRoutes,
+    pub raw: RawStats,
     pub error: Option<String>,
 }
 
@@ -151,6 +152,7 @@ impl Default for MakcuStatus {
             port: None,
             firmware: None,
             routes: MakcuRoutes::default(),
+            raw: RawStats::default(),
             error: None,
         }
     }

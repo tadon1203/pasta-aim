@@ -38,7 +38,8 @@ use eframe::egui;
 use crate::{
     config::Config,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, MaxDelta, Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, MoveMethod,
+        Sensitivity, TargetYOffset,
     },
 };
 use crossbeam_channel as crossbeam;
@@ -70,6 +71,8 @@ pub enum Command {
     SetConfidenceThreshold(ConfidenceThreshold),
     SetTargetYOffset(TargetYOffset),
     SetMaxDelta(MaxDelta),
+    SetMoveMethod(MoveMethod),
+    SetInterpolation(Interpolation),
     SetFpsLimit(FpsLimit),
     SetCaptureSettings(CaptureSettings),
     /// Reloads the active model, since the DirectML wait mode is a session option.

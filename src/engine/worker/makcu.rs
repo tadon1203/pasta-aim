@@ -69,6 +69,11 @@ impl Worker {
 
     fn apply_makcu_metadata(&mut self, metadata: MakcuMetadata) {
         tracing::info!(port = %metadata.port, firmware = metadata.firmware, "MAKCU connected in engine");
+        // The Run still starts: a stored interpolation that the device did not confirm is only reported.
+        if let Some(error) = metadata.interpolation_error {
+            tracing::warn!(%error, "move interpolation was not applied on connect");
+            self.set_run_error(error);
+        }
         self.status.edit(|status| {
             status.makcu.phase = MakcuPhase::Connected;
             status.makcu.port = Some(metadata.port);

@@ -131,6 +131,12 @@ pub(super) fn is_reject(request: &Request, packet: &Packet) -> bool {
     packet.payload == [0xFF] && *request != Request::Interpolate(255)
 }
 
+/// Whether the reply to `INTERPOLATE value` confirms the value. Auto (255) is never checked,
+/// because a reject of Auto has the same bytes as its echo.
+pub(super) fn is_interpolate_echo(value: u8, packet: &Packet) -> bool {
+    value == 255 || packet.payload == [value]
+}
+
 /// The replies of the Raw moves go to the ledger, not to a request. See "Reply payload" in `docs/makcu-protocol.md`.
 pub(super) fn is_raw_reply(cmd: u8) -> bool {
     matches!(cmd, CMD_RAW_MOVE | CMD_RAW_STATUS)
@@ -193,7 +199,7 @@ pub(crate) fn format_firmware(version: u32) -> String {
 }
 
 /// A short text for a reason code. See "Reply payload" in `docs/makcu-protocol.md`.
-pub(super) fn reject_reason_text(reason: u8) -> &'static str {
+pub(crate) fn reject_reason_text(reason: u8) -> &'static str {
     match reason {
         1 => "invalid length, id, consume flag, or timeout",
         2 => "id not above the highest accepted id",
@@ -291,7 +297,6 @@ pub(super) struct RawLedger {
     /// The ids that wait for a result. The value is true when the result is final
     /// and the id waits for its consume.
     pending: BTreeMap<u32, bool>,
-    exhausted: bool,
     stats: RawStats,
 }
 
@@ -303,17 +308,13 @@ impl RawLedger {
             newest_id: 0,
             submits_since_collect: 0,
             pending: BTreeMap::new(),
-            exhausted: false,
             stats: RawStats::default(),
         }
     }
 
     /// Takes the next id. Returns `None` when the ids ran out.
     pub(super) fn next_submit(&mut self, x: i16, y: i16) -> Option<Request> {
-        let Some(id) = self.next_id else {
-            self.exhausted = true;
-            return None;
-        };
+        let id = self.next_id?;
         self.next_id = id.checked_add(1);
         self.newest_id = id;
         self.submits_since_collect += 1;
@@ -373,10 +374,6 @@ impl RawLedger {
             );
         }
         due
-    }
-
-    pub(super) fn exhausted(&self) -> bool {
-        self.exhausted
     }
 
     pub(super) fn stats(&self) -> RawStats {
@@ -829,9 +826,7 @@ mod tests {
         let mut ledger = RawLedger::new(u32::MAX - 1);
         assert_eq!(raw_move_id(ledger.next_submit(1, 1).unwrap()), u32::MAX - 1);
         assert_eq!(raw_move_id(ledger.next_submit(1, 1).unwrap()), u32::MAX);
-        assert!(!ledger.exhausted());
         assert!(ledger.next_submit(1, 1).is_none());
-        assert!(ledger.exhausted());
     }
 
     #[test]

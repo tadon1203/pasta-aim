@@ -6,8 +6,8 @@ use crate::{
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, MaxDelta, Sensitivity,
-        TargetYOffset,
+        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation, MaxDelta,
+        MoveMethod, Sensitivity, TargetYOffset,
     },
 };
 
@@ -38,6 +38,7 @@ struct UnsavedEdits {
     confidence_threshold: bool,
     target_y_offset: bool,
     max_delta: bool,
+    interpolation: bool,
     fps_limit: bool,
 }
 
@@ -211,6 +212,20 @@ impl App {
         tracing::debug!(value = value.value(), "max delta changed");
         self.config.max_delta = value;
         self.engine.send(Command::SetMaxDelta(value));
+    }
+
+    fn set_move_method(&mut self, method: MoveMethod) {
+        tracing::debug!(?method, "move method changed");
+        self.config.move_method = method;
+        self.engine.send(Command::SetMoveMethod(method));
+        self.persist();
+    }
+
+    /// Only stores and sends the value. The caller saves it with `persist`, after the drag or click ends.
+    fn set_interpolation(&mut self, interpolation: Interpolation) {
+        tracing::debug!(?interpolation, "move interpolation changed");
+        self.config.interpolation = interpolation;
+        self.engine.send(Command::SetInterpolation(interpolation));
     }
 
     fn set_fps_limit(&mut self, fps_limit: FpsLimit) {

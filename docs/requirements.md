@@ -38,18 +38,22 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 
 ## Target and output
 
-| Setting         | Range                | Default        |
-| --------------- | -------------------- | -------------- |
-| Confidence      | 0 to 100 %           | 50 %           |
-| Target Y offset | 0 to 100 %           | 50 %           |
-| Sensitivity     | 1 to 10000 %         | 100 %          |
-| Max delta       | 0 to 32767           | 512            |
+| Setting            | Range                | Default        |
+| ------------------ | -------------------- | -------------- |
+| Confidence         | 0 to 100 %           | 50 %           |
+| Target Y offset    | 0 to 100 %           | 50 %           |
+| Sensitivity        | 1 to 10000 %         | 100 %          |
+| Max delta          | 0 to 32767           | 512            |
+| Move method        | Standard, Raw        | Standard       |
+| Move interpolation | Auto, 0 to 100 %     | Auto           |
 
 - **Confidence** is the Confidence threshold.
 - The Selected target is the Candidate detection nearest to the center of the Model input region.
 - **Target Y offset** sets the Aim point: 0 % is the top edge of the box, 50 % is its center, and 100 % is its bottom edge. It applies before the Sensitivity.
 - **Sensitivity** is a whole percent. The gain is the Sensitivity divided by 100.
 - **Max delta** limits the length of the Movement of one frame, after the Sensitivity. The direction stays the same. 0 means no limit.
+- **Move method** is Standard move (the `MOVE` command) or Raw move (the `RAW_MOVE` command: MAKCU takes one USB report per move and reports a result later). A change applies to the next move, and it is saved.
+- **Move interpolation** is Auto or a fixed percent. It applies only to a Standard move, so the UI disables it while Raw move is selected. A change is sent to MAKCU at once and again after each connect. If MAKCU does not confirm it, the error line shows the reason, and the Run still starts.
 - The Rounding remainder goes to the next frame of the same Target track. A Target switch, a lost target, and the start of a Run clear it.
 - The output is mouse movement only, through MAKCU. There is no controller output.
 - MAKCU needs firmware V4.085 or newer. An older device is refused, and the Devices panel shows the error, such as `MAKCU firmware V4.084 is older than V4.085`.
@@ -85,6 +89,7 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
   - The trace never slows a Run. A record that cannot be written in time is dropped, and the footer has the count of dropped records.
   - A trace file that cannot be opened does not stop the Run.
 - The UI shows the Loop metrics: the frame period, the RMS error, the overshoots, and the time to reach the target.
+- The UI shows the Raw move counters: moves sent, rejected, and timed out, and the last reject reason. The counters start again at each MAKCU connection. After 8 rejects in a row, the UI warns to select Standard move or to lower Max delta.
 - The UI shows timing statistics for each stage of a frame. The Cold run is shown apart and is not part of the statistics.
 
 ## Settings file
