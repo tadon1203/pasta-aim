@@ -52,5 +52,6 @@ The language of nice-aimassist. Use these terms in code, docs, and tickets. Do n
 
 ## Diagnostics
 
-- **Frame trace**: a file that records every processed frame of one Run.
+- **Frame record**: the data of one processed frame: its times, its Candidate detections, its Selected target, and its Movement.
+- **Frame trace**: a file that holds the Frame records of one Run.
 - **Loop metrics**: measurements of how well the output follows the target, such as the error and the time to reach the target.
