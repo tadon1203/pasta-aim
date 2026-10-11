@@ -7,6 +7,12 @@
 # Local models
 /models/
 
+# Local logs and frame traces
+/logs/
+
+# Skill working notes (specs and tickets)
+/.scratch/
+
 # OS
 .DS_Store
 Thumbs.db
