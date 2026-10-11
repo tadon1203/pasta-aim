@@ -16,7 +16,7 @@ Put the files next to the executable:
 nice-aimassist.exe
 settings.json
 models/
-  yolo26n.onnx
+  {A model you want to use}.onnx
 logs/
 ```
 
