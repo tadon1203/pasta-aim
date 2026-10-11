@@ -8,8 +8,21 @@ use makxd::{CommandApi, ConnectionState, Device, DeviceKinds, crossbeam_channel:
 
 use crate::settings::InjectionApi;
 
-#[expect(dead_code, reason = "the session uses this in ticket 03")]
+#[expect(
+    dead_code,
+    reason = "nothing outside src/makcu calls the port until ticket 04"
+)]
+mod port;
+#[expect(
+    dead_code,
+    reason = "nothing outside src/makcu calls the protocol until ticket 04"
+)]
 mod protocol;
+#[expect(
+    dead_code,
+    reason = "nothing outside src/makcu calls the session until ticket 04"
+)]
+mod session;
 
 const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const RECONNECT_RETRY_WINDOW: Duration = Duration::from_millis(500);

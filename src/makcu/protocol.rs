@@ -52,29 +52,44 @@ pub(super) enum Request {
         y: i16,
         timeout_uf: u16,
     },
+    /// The result of one Raw move. `id` is at least 1; `id` 0 is `RawMetadata`.
     RawStatus {
         id: u32,
         consume: bool,
     },
+    /// The metadata query: `RAW_STATUS` with id 0 and no consume.
+    RawMetadata,
     SetBaud(u32),
 }
 
 impl Request {
+    /// The command byte of the packet. See "Opcodes" in `docs/makcu-protocol.md`.
+    pub(super) fn command(&self) -> u8 {
+        match self {
+            Self::Device => CMD_DEVICE,
+            Self::FirmwareVersion => CMD_FIRMWARE_VERSION,
+            Self::Move { .. } => CMD_MOVE,
+            Self::Interpolate(_) => CMD_INTERPOLATE,
+            Self::RawMove { .. } => CMD_RAW_MOVE,
+            Self::RawStatus { .. } | Self::RawMetadata => CMD_RAW_STATUS,
+            Self::SetBaud(_) => CMD_SET_BAUD,
+        }
+    }
+
     /// Appends the packet of the request to `out`.
     pub(super) fn encode(&self, out: &mut Vec<u8>) {
-        let (cmd, len) = match self {
-            Self::Device => (CMD_DEVICE, 0),
-            Self::FirmwareVersion => (CMD_FIRMWARE_VERSION, 0),
-            Self::Move { .. } => (CMD_MOVE, 4),
-            Self::Interpolate(_) => (CMD_INTERPOLATE, 1),
-            Self::RawMove { .. } => (CMD_RAW_MOVE, 10),
-            Self::RawStatus { .. } => (CMD_RAW_STATUS, 5),
+        let len = match self {
+            Self::Device | Self::FirmwareVersion => 0,
+            Self::Move { .. } => 4,
+            Self::Interpolate(_) => 1,
+            Self::RawMove { .. } => 10,
+            Self::RawStatus { .. } | Self::RawMetadata => 5,
             // This one packet has its own length rule. See "Baud switch" in `docs/makcu-protocol.md`.
-            Self::SetBaud(_) => (CMD_SET_BAUD, 5),
+            Self::SetBaud(_) => 5,
         };
         out.extend_from_slice(&HEADER);
         out.extend_from_slice(&u16::to_le_bytes(len));
-        out.push(cmd);
+        out.push(self.command());
         match *self {
             Self::Device | Self::FirmwareVersion => {}
             Self::Move { x, y } => {
@@ -97,6 +112,7 @@ impl Request {
                 out.extend_from_slice(&id.to_le_bytes());
                 out.push(u8::from(consume));
             }
+            Self::RawMetadata => out.extend_from_slice(&[0; 5]),
             Self::SetBaud(baud) => out.extend_from_slice(&baud.to_le_bytes()),
         }
     }
@@ -107,6 +123,17 @@ impl Request {
 pub(super) struct Packet {
     pub cmd: u8,
     pub payload: Vec<u8>,
+}
+
+/// A reject has the command of the request and the payload `FF`. See "Reject form" in `docs/makcu-protocol.md`.
+/// `INTERPOLATE 255` is the exception: its accepted echo has the same bytes, so it is never a reject.
+pub(super) fn is_reject(request: &Request, packet: &Packet) -> bool {
+    packet.payload == [0xFF] && *request != Request::Interpolate(255)
+}
+
+/// The replies of the Raw moves go to the ledger, not to a request. See "Reply payload" in `docs/makcu-protocol.md`.
+pub(super) fn is_raw_reply(cmd: u8) -> bool {
+    matches!(cmd, CMD_RAW_MOVE | CMD_RAW_STATUS)
 }
 
 /// Splits a byte stream into packets. Keeps the partial packet between calls.
@@ -449,10 +476,7 @@ mod tests {
                 vec![0xDE, 0xAD, 5, 0, 0x6A, 1, 0, 0, 0, 1],
             ),
             (
-                Request::RawStatus {
-                    id: 0,
-                    consume: false,
-                },
+                Request::RawMetadata,
                 vec![0xDE, 0xAD, 5, 0, 0x6A, 0, 0, 0, 0, 0],
             ),
             (
