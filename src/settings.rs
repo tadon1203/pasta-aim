@@ -209,28 +209,6 @@ impl Default for FpsLimit {
     }
 }
 
-/// How the Output sends a movement to MAKCU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum MoveMethod {
-    /// The V4 `MOVE` command.
-    #[default]
-    Standard,
-    /// The V4 `RAW_MOVE` command: one USB report per move, with a result read later.
-    Raw,
-}
-
-impl MoveMethod {
-    pub const ALL: [Self; 2] = [Self::Standard, Self::Raw];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Standard => "Standard move",
-            Self::Raw => "Raw move",
-        }
-    }
-}
-
 /// The fixed Move interpolation, in percent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -253,7 +231,7 @@ impl InterpolationPercent {
     }
 }
 
-/// The Move interpolation of a Standard move. It has no effect on a Raw move.
+/// The Move interpolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Interpolation {
@@ -278,21 +256,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn move_method_defaults_to_standard_and_has_labels() {
-        assert_eq!(MoveMethod::default(), MoveMethod::Standard);
-        assert_eq!(MoveMethod::Standard.label(), "Standard move");
-        assert_eq!(MoveMethod::Raw.label(), "Raw move");
-    }
-
-    #[test]
-    fn move_method_and_interpolation_round_trip_through_json() {
-        let json = serde_json::to_string(&MoveMethod::Raw).unwrap();
-        assert_eq!(json, r#""raw""#);
-        assert_eq!(
-            serde_json::from_str::<MoveMethod>(&json).unwrap(),
-            MoveMethod::Raw
-        );
-
+    fn interpolation_round_trips_through_json() {
         let percent = Interpolation::Percent(InterpolationPercent::new(40));
         assert_eq!(
             serde_json::to_string(&percent).unwrap(),

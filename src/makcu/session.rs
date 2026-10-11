@@ -18,8 +18,8 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounde
 use super::{
     port::{Connector, Port},
     protocol::{
-        FIRMWARE_FLOOR, Packet, PacketDecoder, RawMetadata, Request, format_firmware,
-        is_interpolate_echo, is_raw_reply, is_reject, parse_raw_metadata,
+        FIRMWARE_FLOOR, Packet, PacketDecoder, Request, format_firmware, is_interpolate_echo,
+        is_reject,
     },
 };
 
@@ -34,7 +34,6 @@ pub(super) struct SessionInfo {
     pub port: String,
     pub firmware: u32,
     pub kinds: u8,
-    pub raw: Option<RawMetadata>,
     pub baud: u32,
     /// The stored Move interpolation could not be sent on this connect. The connect still succeeds.
     pub interpolation_error: Option<String>,
@@ -117,7 +116,6 @@ pub(super) struct Session {
     /// A timeout on a connection sends a fault here. Dropping the sender stops the I/O thread.
     faults: Sender<()>,
     events: Receiver<SessionEvent>,
-    raw_replies: Receiver<Packet>,
     io: Option<JoinHandle<()>>,
 }
 
@@ -156,13 +154,11 @@ impl Session {
         });
         let (faults, fault_receiver) = unbounded();
         let (event_sender, events) = unbounded();
-        let (raw_sender, raw_replies) = unbounded();
         let io = IoThread {
             connector,
             shared: Arc::clone(&shared),
             faults: fault_receiver,
             events: event_sender,
-            raw: raw_sender,
             preferred,
             interpolation,
         };
@@ -174,7 +170,6 @@ impl Session {
             requests: Mutex::new(()),
             faults,
             events,
-            raw_replies,
             io: Some(io),
         })
     }
@@ -214,10 +209,6 @@ impl Session {
             return Err(SessionError::NotConnected);
         }
         self.write(requests)
-    }
-
-    pub(super) fn raw_replies(&self) -> &Receiver<Packet> {
-        &self.raw_replies
     }
 
     pub(super) fn poll_event(&self) -> Option<SessionEvent> {
@@ -261,7 +252,6 @@ struct IoThread {
     shared: Arc<Shared>,
     faults: Receiver<()>,
     events: Sender<SessionEvent>,
-    raw: Sender<Packet>,
     /// The port that was used last. It is tried first.
     preferred: String,
     /// The Move interpolation to send on each connect. The client changes it.
@@ -298,8 +288,7 @@ impl IoThread {
         }
     }
 
-    /// A reply goes to the waiting request when its command matches. Otherwise a Raw reply goes to
-    /// the ledger, and any other reply is dropped.
+    /// A reply goes to the waiting request when its command matches. Any other reply is dropped.
     fn route(&self, packet: Packet) {
         let waiting = lock(&self.shared.slot).take_if(|slot| slot.request.command() == packet.cmd);
         if let Some(slot) = waiting {
@@ -309,8 +298,6 @@ impl IoThread {
                 Ok(packet)
             };
             let _ = slot.reply.send(answer);
-        } else if is_raw_reply(packet.cmd) {
-            let _ = self.raw.send(packet);
         }
     }
 
@@ -401,7 +388,7 @@ fn connect_any(
 }
 
 /// The connect sequence on one port: probe both rates, check the firmware floor, switch to 4,000,000
-/// baud when the port is at 115,200, then read the routes and the Raw metadata, and send the Move interpolation.
+/// baud when the port is at 115,200, then read the routes, and send the Move interpolation.
 fn connect_port(
     connector: &dyn Connector,
     name: &str,
@@ -435,9 +422,6 @@ fn connect_port(
         };
     }
     let kinds = kinds_of(port.as_mut())?;
-    let raw = exchange(port.as_mut(), &Request::RawMetadata)
-        .ok()
-        .and_then(|packet| parse_raw_metadata(packet.payload()));
     // The device can lose the value when it restarts, so it is sent on every connect. A failure
     // does not fail the connect: the caller reports it.
     let interpolation_error = send_interpolation(port.as_mut(), interpolation)
@@ -447,7 +431,6 @@ fn connect_port(
         port: name.to_owned(),
         firmware,
         kinds,
-        raw,
         baud,
         interpolation_error,
     };
@@ -573,7 +556,6 @@ mod tests {
         let fake = FakeMakcu::new();
         let (session, info) = connect(&fake).unwrap();
         assert_eq!(info.baud, HIGH_BAUD);
-        assert!(info.raw.is_some());
         assert!(fake.frames().contains(&SET_BAUD_4M.to_vec()));
         assert!(session.is_connected());
     }

@@ -19,7 +19,7 @@ use super::{
 use crate::{
     engine::{RunGeneration, RunMode},
     graphics::GpuDropReason,
-    makcu::{Movement, RawStats},
+    makcu::Movement,
     timing::QpcClock,
 };
 
@@ -40,7 +40,6 @@ pub(super) struct Aggregator {
     trace: Option<FrameTraceWriter>,
     dropped_at_start: u64,
     window: RateWindow,
-    raw: RawStats,
     last_target: Option<(f32, f32, f32, i32)>,
     last_movement: Option<Movement>,
     last_total_ms: Option<f64>,
@@ -133,7 +132,6 @@ impl Aggregator {
             trace: None,
             dropped_at_start: 0,
             window: RateWindow::new(now, RunCounters::default()),
-            raw: RawStats::default(),
             last_target: None,
             last_movement: None,
             last_total_ms: None,
@@ -145,7 +143,6 @@ impl Aggregator {
             TelemetryMessage::RunStarted(start) => self.run_started(start, now),
             TelemetryMessage::Frame(record) => self.frame(record, now),
             TelemetryMessage::Counters(counters) => self.counters(counters, now),
-            TelemetryMessage::RawStats(raw) => self.raw = raw,
             TelemetryMessage::FrameDropped(reason) => self.metrics.record_gpu_drop(reason),
             TelemetryMessage::PipelineChanged => self.metrics.mark_cold_next(),
             TelemetryMessage::RunStopped(generation) => self.run_stopped(generation),
@@ -161,7 +158,6 @@ impl Aggregator {
             last_total_ms: self.last_total_ms,
             performance: self.metrics.snapshot(),
             tracking: self.loop_metrics.snapshot(),
-            raw: self.raw,
         }
     }
 

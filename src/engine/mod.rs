@@ -34,8 +34,8 @@ use eframe::egui;
 use crate::{
     config::Config,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, MoveMethod,
-        Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity,
+        TargetYOffset,
     },
     telemetry::{LiveTelemetry, Telemetry},
     timing::QpcClock,
@@ -71,7 +71,6 @@ pub enum Command {
     SetConfidenceThreshold(ConfidenceThreshold),
     SetTargetYOffset(TargetYOffset),
     SetMaxDelta(MaxDelta),
-    SetMoveMethod(MoveMethod),
     SetInterpolation(Interpolation),
     SetFpsLimit(FpsLimit),
     SetCaptureSettings(CaptureSettings),

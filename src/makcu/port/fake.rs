@@ -4,7 +4,7 @@
 //! that the session needs, and it can be made to fail the way the device fails.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     io,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
@@ -14,9 +14,6 @@ use std::{
 use super::{Connector, Port};
 
 const PORT_NAME: &str = "COM3";
-
-/// The state that a Raw move reply gives: `(state, reason)`. See "Reply payload" in `docs/makcu-protocol.md`.
-type RawAnswer = (u8, u8);
 
 #[derive(Clone)]
 pub(crate) struct FakeMakcu {
@@ -33,22 +30,12 @@ struct State {
     connected: bool,
     /// Every request that the device received, in order. One port write can hold several.
     frames: Vec<Vec<u8>>,
-    /// Every port write, in order, as the bytes of that write.
-    writes: Vec<Vec<u8>>,
     /// The bytes that wait for the host.
     replies: VecDeque<u8>,
     /// The command whose next request gets no reply.
     mute: Option<u8>,
     /// The command whose next request gets a reject.
     reject: Option<u8>,
-    /// The answer to a `RawMove` of each id. An id without one is queued.
-    raw_submit: BTreeMap<u32, RawAnswer>,
-    /// The answer to a `RawStatus` of each id. An id without one is submitted.
-    raw_status: BTreeMap<u32, RawAnswer>,
-    /// The `last_accepted_id` of the metadata reply.
-    raw_last_accepted: u32,
-    /// Whether the firmware answers the metadata query. When `false`, it rejects it.
-    raw_metadata: bool,
     /// The value that `INTERPOLATE` echoes instead of its own. `None` echoes the value sent.
     interpolate_echo: Option<u8>,
 }
@@ -64,14 +51,9 @@ impl FakeMakcu {
                 kinds: 0x01,
                 connected: true,
                 frames: Vec::new(),
-                writes: Vec::new(),
                 replies: VecDeque::new(),
                 mute: None,
                 reject: None,
-                raw_submit: BTreeMap::new(),
-                raw_status: BTreeMap::new(),
-                raw_last_accepted: 0,
-                raw_metadata: true,
                 interpolate_echo: None,
             })),
         }
@@ -80,11 +62,6 @@ impl FakeMakcu {
     /// Every request that the device received, in order. One port write can hold several.
     pub(crate) fn frames(&self) -> Vec<Vec<u8>> {
         lock(&self.state).frames.clone()
-    }
-
-    /// Every port write, in order, as the bytes of that write.
-    pub(crate) fn writes(&self) -> Vec<Vec<u8>> {
-        lock(&self.state).writes.clone()
     }
 
     /// The cable is pulled. Reads and writes fail until `reconnect`.
@@ -130,28 +107,9 @@ impl FakeMakcu {
         lock(&self.state).replies.extend(bytes);
     }
 
-    /// The reply of `RawMove` for `id`: `state` and `reason`.
-    pub(crate) fn set_raw_submit(&self, id: u32, state: u8, reason: u8) {
-        lock(&self.state).raw_submit.insert(id, (state, reason));
-    }
-
-    /// The reply of `RawStatus` for `id`: `state` and `reason`.
-    pub(crate) fn set_raw_status(&self, id: u32, state: u8, reason: u8) {
-        lock(&self.state).raw_status.insert(id, (state, reason));
-    }
-
-    pub(crate) fn set_raw_last_accepted(&self, id: u32) {
-        lock(&self.state).raw_last_accepted = id;
-    }
-
     /// `INTERPOLATE` echoes `value` instead of the value it was sent.
     pub(crate) fn set_interpolate_echo(&self, value: u8) {
         lock(&self.state).interpolate_echo = Some(value);
-    }
-
-    /// `false` makes the firmware reject the metadata query.
-    pub(crate) fn set_raw_metadata(&self, answered: bool) {
-        lock(&self.state).raw_metadata = answered;
     }
 }
 
@@ -217,7 +175,6 @@ impl Port for FakePort {
                 "MAKCU is unplugged",
             ));
         }
-        state.writes.push(bytes.to_vec());
         for request in split_requests(bytes) {
             state.frames.push(request.to_vec());
             // A device does not hear a host at another rate.
@@ -263,27 +220,6 @@ impl State {
                     .map_or_else(|| payload.to_vec(), |value| vec![value]);
                 self.reply(cmd, &echo);
             }
-            // `RAW_MOVE` replies with the state of its id.
-            0x69 => {
-                let id = id_of(payload);
-                let (state, reason) = self.raw_submit.get(&id).copied().unwrap_or((1, 0));
-                self.raw_reply(cmd, state, reason, id);
-            }
-            // The metadata is for id 0. Its reply is `last_accepted_id`, then 16 free records of 16.
-            0x6A if id_of(payload) == 0 => {
-                if self.raw_metadata {
-                    let last = self.raw_last_accepted.to_le_bytes();
-                    self.reply(cmd, &[0, 1, last[0], last[1], last[2], last[3], 16, 16]);
-                } else {
-                    self.reject_with(cmd);
-                }
-            }
-            // `RAW_STATUS` with an id replies with the state of that id.
-            0x6A => {
-                let id = id_of(payload);
-                let (state, reason) = self.raw_status.get(&id).copied().unwrap_or((2, 0));
-                self.raw_reply(cmd, state, reason, id);
-            }
             0xA5 => {
                 let baud = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 if self.accepted.contains(&baud) {
@@ -302,12 +238,6 @@ impl State {
         let len = payload.len() as u8;
         self.replies
             .extend([0xDE, 0xAD, len, 0, cmd].iter().chain(payload));
-    }
-
-    /// A reply of a Raw move: the state, the reason, and the id.
-    fn raw_reply(&mut self, cmd: u8, state: u8, reason: u8, id: u32) {
-        let id = id.to_le_bytes();
-        self.reply(cmd, &[state, reason, id[0], id[1], id[2], id[3]]);
     }
 
     fn reject_with(&mut self, cmd: u8) {
@@ -331,11 +261,6 @@ fn split_requests(mut bytes: &[u8]) -> Vec<&[u8]> {
         bytes = &bytes[total..];
     }
     requests
-}
-
-/// The id at the start of a Raw request payload.
-fn id_of(payload: &[u8]) -> u32 {
-    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {

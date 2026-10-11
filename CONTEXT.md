@@ -41,9 +41,7 @@ The language of nice-aimassist. Use these terms in code, docs, and tickets. Do n
 
 - **MAKCU**: the hardware device that sends the mouse movement to the computer.
 - **Mouse route**: the ability of the connected MAKCU to send mouse movement.
-- **Move method**: the way the app sends a Movement to MAKCU. It is a Standard move or a Raw move.
-- **Standard move**: a Move method that MAKCU spreads over several USB reports with the Move interpolation.
-- **Raw move**: a Move method that MAKCU sends as one USB report and acknowledges with a result. It skips the Move interpolation.
+- **Standard move**: the way the app sends a Movement to MAKCU. MAKCU spreads it over several USB reports with the Move interpolation.
 - **Move interpolation**: the setting that decides how MAKCU spreads a Standard move over time. It is Auto or a fixed percent.
 - **Movement**: the mouse movement that the engine sends for one frame, in whole counts.
 - **Sensitivity**: the gain from the distance to the Aim point to the Movement.

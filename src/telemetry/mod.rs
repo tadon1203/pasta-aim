@@ -31,7 +31,7 @@ use self::aggregator::Aggregator;
 use crate::{
     engine::{RunGeneration, RunMode},
     graphics::GpuDropReason,
-    makcu::{Movement, RawStats},
+    makcu::Movement,
     paths,
     sync::MutexExt,
     timing::QpcClock,
@@ -63,7 +63,6 @@ pub(crate) enum TelemetryMessage {
     RunStarted(RunStart),
     Frame(FrameRecord),
     Counters(RunCounters),
-    RawStats(RawStats),
     /// A frame result that was not sent to the output.
     FrameDropped(GpuDropReason),
     /// The next Frame record is the Cold run, and the statistics start again.
@@ -89,11 +88,6 @@ impl TelemetrySink {
     /// Never blocks. A message that does not fit is dropped and counted.
     pub(crate) fn counters(&self, counters: RunCounters) {
         self.try_send(TelemetryMessage::Counters(counters));
-    }
-
-    /// Never blocks. A message that does not fit is dropped and counted.
-    pub(crate) fn raw_stats(&self, stats: RawStats) {
-        self.try_send(TelemetryMessage::RawStats(stats));
     }
 
     /// Never blocks. A message that does not fit is dropped and counted.
@@ -145,7 +139,6 @@ pub struct LiveTelemetry {
     pub last_total_ms: Option<f64>,
     pub performance: PerformanceSnapshot,
     pub tracking: LoopSnapshot,
-    pub raw: RawStats,
 }
 
 /// The Telemetry thread and the values it publishes. It lives as long as the engine.

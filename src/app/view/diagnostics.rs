@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::{
-    labels::{capture_phase_label, makcu_phase_label, model_phase_label, raw_reason_label},
+    labels::{capture_phase_label, makcu_phase_label, model_phase_label},
     widgets::{error_label, warn_label},
 };
 use crate::{
@@ -12,9 +12,6 @@ use crate::{
     inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
     telemetry::{LiveTelemetry, LoopSnapshot, MetricSummary, PerformanceSnapshot},
 };
-
-/// The number of Raw move rejects in a row at which the warning shows.
-const RAW_REJECT_WARNING: u32 = 8;
 
 fn draw_tracking(ui: &mut egui::Ui, tracking: &LoopSnapshot) {
     ui.strong("Tracking loop");
@@ -195,22 +192,6 @@ impl App {
                             ui.end_row();
                         }
 
-                        ui.label("Raw moves sent");
-                        ui.label(live.raw.submitted.to_string());
-                        ui.end_row();
-
-                        ui.label("Raw moves rejected");
-                        ui.label(live.raw.rejected.to_string());
-                        ui.end_row();
-
-                        ui.label("Raw moves timed out");
-                        ui.label(live.raw.timed_out.to_string());
-                        ui.end_row();
-
-                        ui.label("Last Raw reject");
-                        ui.label(raw_reason_label(live.raw.last_reason));
-                        ui.end_row();
-
                         ui.label("XInput hotkey pad");
                         ui.label(
                             self.hotkeys
@@ -253,13 +234,6 @@ impl App {
                             ui.end_row();
                         }
                     });
-
-                if live.raw.consecutive_rejected >= RAW_REJECT_WARNING {
-                    warn_label(
-                        ui,
-                        "MAKCU rejects Raw moves. Select Standard move, or lower Max delta.",
-                    );
-                }
 
                 draw_ep_assignment_diagnostics(ui, status);
 
@@ -322,7 +296,7 @@ impl App {
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {} · port={} · firmware={}\nmakcu routes: {makcu_routes}\nraw moves: sent={} rejected={} timed_out={} last_reject={}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {} · port={} · firmware={}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             status
                 .capture
@@ -338,10 +312,6 @@ impl App {
                 .firmware
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_owned()),
-            live.raw.submitted,
-            live.raw.rejected,
-            live.raw.timed_out,
-            raw_reason_label(live.raw.last_reason),
             keyboard_release.p50_ms,
             keyboard_release.p95_ms,
             keyboard_release.samples,

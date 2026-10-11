@@ -26,7 +26,7 @@ use crate::{
     config::Config,
     graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
-    makcu::{MakcuClient, RawStats},
+    makcu::MakcuClient,
     models,
     pipeline::Pipeline,
     repaint,
@@ -129,7 +129,6 @@ struct Worker {
     /// The counters of the current Run, and the last values sent to the Telemetry thread.
     run_counters: RunCounters,
     sent_counters: RunCounters,
-    sent_raw: RawStats,
     active_model: Option<(String, PathBuf)>,
     auto_reprepare_attempted: bool,
     next_pipeline_id: u64,
@@ -201,7 +200,6 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         frame_trace: config.diagnostics.frame_trace,
     };
     let mut makcu = MakcuClient::new();
-    makcu.set_move_method(config.move_method);
     // Before the first connect, so this sends nothing: the value is sent when the connect succeeds.
     if let Err(error) = makcu.set_interpolation(config.interpolation) {
         tracing::warn!(error = %format!("{error:#}"), "move interpolation could not be applied");
@@ -221,7 +219,6 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         capture_deadline: frame::CaptureDeadline::new(),
         run_counters: RunCounters::default(),
         sent_counters: RunCounters::default(),
-        sent_raw: RawStats::default(),
         active_model: None,
         auto_reprepare_attempted: false,
         next_pipeline_id: 1,
@@ -252,15 +249,10 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
 }
 
 impl Worker {
-    /// Periodic work that no event triggers: MAKCU connection changes, and the Raw and Run counters
+    /// Periodic work that no event triggers: MAKCU connection changes, and the Run counters
     /// that the Telemetry thread shows. Each value is sent only when it changed.
     fn housekeeping(&mut self) {
         self.poll_makcu_events();
-        let raw = self.makcu.raw_stats();
-        if raw != self.sent_raw {
-            self.sent_raw = raw;
-            self.telemetry.raw_stats(raw);
-        }
         if self.run_counters != self.sent_counters {
             self.sent_counters = self.run_counters;
             self.telemetry.counters(self.run_counters);
@@ -349,7 +341,6 @@ impl Worker {
                     pipeline.set_confidence_threshold(value);
                 }
             }
-            Command::SetMoveMethod(method) => self.makcu.set_move_method(method),
             Command::SetInterpolation(interpolation) => {
                 if let Err(error) = self.makcu.set_interpolation(interpolation) {
                     tracing::warn!(error = %format!("{error:#}"), "move interpolation failed");

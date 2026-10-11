@@ -7,7 +7,7 @@ use crate::{
     models::ModelCatalog,
     settings::{
         ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation, MaxDelta,
-        MoveMethod, Sensitivity, TargetYOffset,
+        Sensitivity, TargetYOffset,
     },
 };
 
@@ -212,13 +212,6 @@ impl App {
         tracing::debug!(value = value.value(), "max delta changed");
         self.config.max_delta = value;
         self.engine.send(Command::SetMaxDelta(value));
-    }
-
-    fn set_move_method(&mut self, method: MoveMethod) {
-        tracing::debug!(?method, "move method changed");
-        self.config.move_method = method;
-        self.engine.send(Command::SetMoveMethod(method));
-        self.persist();
     }
 
     /// Only stores and sends the value. The caller saves it with `persist`, after the drag or click ends.
