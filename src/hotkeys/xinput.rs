@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_DPAD_DOWN,
@@ -11,8 +8,7 @@ use windows_sys::Win32::UI::Input::XboxController::{
     XINPUT_STATE, XInputGetState,
 };
 
-pub(super) const SLOT_NONE: usize = usize::MAX;
-pub(super) const CONNECTED_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const CONNECTED_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
 const SLOT_COUNT: u32 = 4;
 const TRIGGER_PRESS_THRESHOLD: u8 = 128;
@@ -135,6 +131,34 @@ pub(super) struct Sample {
     right_trigger: u8,
 }
 
+/// The XInput controls that are down. One bit for each control, in `XInputControl::ALL` order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ControlSet(u16);
+
+impl ControlSet {
+    fn bit(control: XInputControl) -> u16 {
+        1 << (control as u16)
+    }
+
+    pub fn contains(self, control: XInputControl) -> bool {
+        self.0 & Self::bit(control) != 0
+    }
+
+    pub fn insert(&mut self, control: XInputControl) {
+        self.0 |= Self::bit(control);
+    }
+
+    pub fn remove(&mut self, control: XInputControl) {
+        self.0 &= !Self::bit(control);
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = XInputControl> {
+        XInputControl::ALL
+            .into_iter()
+            .filter(move |control| self.contains(*control))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EdgeState {
     Pressed,
@@ -151,7 +175,7 @@ pub(super) struct Edge {
 struct Tracker {
     slot: Option<u32>,
     packet_number: Option<u32>,
-    pressed: HashSet<XInputControl>,
+    pressed: ControlSet,
 }
 
 impl Tracker {
@@ -177,45 +201,55 @@ impl Tracker {
         }
         self.packet_number = Some(sample.packet_number);
 
-        let mut events = Vec::new();
-        for control in XInputControl::ALL {
-            let was_pressed = self.pressed.contains(&control);
-            let is_pressed = control_is_pressed(sample, control, was_pressed);
-            match (was_pressed, is_pressed) {
-                (false, true) => {
-                    self.pressed.insert(control);
-                    events.push(Edge {
-                        control,
-                        state: EdgeState::Pressed,
-                    });
-                }
-                (true, false) => {
-                    self.pressed.remove(&control);
-                    events.push(Edge {
-                        control,
-                        state: EdgeState::Released,
-                    });
-                }
-                _ => {}
-            }
-        }
+        let next = pressed_controls(sample, self.pressed);
+        let events = edges(self.pressed, next);
+        self.pressed = next;
         events
     }
 
     fn release_all(&mut self) -> Vec<Edge> {
-        self.pressed
-            .drain()
-            .map(|control| Edge {
-                control,
-                state: EdgeState::Released,
-            })
-            .collect()
+        let events = edges(self.pressed, ControlSet::default());
+        self.pressed = ControlSet::default();
+        events
     }
+}
+
+/// The edges from `before` to `after`, in button order.
+fn edges(before: ControlSet, after: ControlSet) -> Vec<Edge> {
+    XInputControl::ALL
+        .into_iter()
+        .filter_map(
+            |control| match (before.contains(control), after.contains(control)) {
+                (false, true) => Some(Edge {
+                    control,
+                    state: EdgeState::Pressed,
+                }),
+                (true, false) => Some(Edge {
+                    control,
+                    state: EdgeState::Released,
+                }),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// The controls that are down in `sample`. A trigger keeps its hysteresis from `was_pressed`.
+fn pressed_controls(sample: Sample, was_pressed: ControlSet) -> ControlSet {
+    let mut pressed = ControlSet::default();
+    for control in XInputControl::ALL {
+        if control_is_pressed(sample, control, was_pressed.contains(control)) {
+            pressed.insert(control);
+        }
+    }
+    pressed
 }
 
 pub(super) struct Poller {
     tracker: Tracker,
     next_poll: Instant,
+    /// True while an XInput Shortcut is bound or a recording is active.
+    fast: bool,
 }
 
 impl Poller {
@@ -223,6 +257,7 @@ impl Poller {
         Self {
             tracker: Tracker::default(),
             next_poll: Instant::now(),
+            fast: false,
         }
     }
 
@@ -230,59 +265,58 @@ impl Poller {
         self.tracker.slot
     }
 
-    pub fn pressed(&self) -> &HashSet<XInputControl> {
-        &self.tracker.pressed
+    pub fn pressed(&self) -> ControlSet {
+        self.tracker.pressed
     }
 
-    pub fn wait_duration(&self, now: Instant) -> Duration {
-        self.next_poll.saturating_duration_since(now)
+    pub fn next_poll(&self) -> Instant {
+        self.next_poll
+    }
+
+    /// Sets whether a connected controller is polled at the fast rate. Turning it on polls at once.
+    pub fn set_fast(&mut self, fast: bool, now: Instant) {
+        if fast && !self.fast {
+            self.next_poll = self.next_poll.min(now);
+        }
+        self.fast = fast;
+    }
+
+    fn interval(&self, connected: bool) -> Duration {
+        if connected && self.fast {
+            CONNECTED_POLL_INTERVAL
+        } else {
+            DISCOVERY_INTERVAL
+        }
     }
 
     pub fn poll_if_due(&mut self, now: Instant) -> Option<Vec<Edge>> {
         if now < self.next_poll {
             return None;
         }
+        Some(self.poll_now(now))
+    }
 
-        let (slot, sample) = match self.tracker.slot {
-            Some(slot) => match read_slot(slot) {
-                Some(sample) => (Some(slot), Some(sample)),
-                None => {
-                    let releases = self.tracker.update(None, None);
-                    if let Some((new_slot, new_sample)) = first_available_slot() {
-                        let mut events = releases;
-                        events.extend(self.tracker.update(Some(new_slot), Some(new_sample)));
-                        self.next_poll = now + CONNECTED_POLL_INTERVAL;
-                        return Some(events);
-                    }
-                    self.next_poll = now + DISCOVERY_INTERVAL;
-                    return Some(releases);
-                }
-            },
-            None => match first_available_slot() {
-                Some((slot, sample)) => (Some(slot), Some(sample)),
-                None => {
-                    self.next_poll = now + DISCOVERY_INTERVAL;
-                    return Some(Vec::new());
-                }
-            },
+    /// Reads the controller at once, whether or not a poll is due. Its edges come from the last snapshot.
+    pub fn poll_now(&mut self, now: Instant) -> Vec<Edge> {
+        // A slot that stops answering is released by `update`, and the first slot that answers takes over.
+        let found = self
+            .tracker
+            .slot
+            .and_then(|slot| read_slot(slot).map(|sample| (slot, sample)))
+            .or_else(first_available_slot);
+        let (slot, sample) = match found {
+            Some((slot, sample)) => (Some(slot), Some(sample)),
+            None => (None, None),
         };
 
         let events = self.tracker.update(slot, sample);
-        self.next_poll = now
-            + if slot.is_some() {
-                CONNECTED_POLL_INTERVAL
-            } else {
-                DISCOVERY_INTERVAL
-            };
-        Some(events)
+        self.next_poll = now + self.interval(slot.is_some());
+        events
     }
 }
 
-pub(super) fn baseline_pressed_controls(sample: Sample) -> HashSet<XInputControl> {
-    XInputControl::ALL
-        .into_iter()
-        .filter(|control| control_is_pressed(sample, *control, false))
-        .collect()
+pub(super) fn baseline_pressed_controls(sample: Sample) -> ControlSet {
+    pressed_controls(sample, ControlSet::default())
 }
 
 fn first_available_slot() -> Option<(u32, Sample)> {
@@ -419,9 +453,22 @@ mod tests {
     }
 
     #[test]
+    fn poll_interval_is_fast_only_with_a_controller_and_a_wanted_input() {
+        let mut poller = Poller::new();
+        assert_eq!(poller.interval(true), Duration::from_secs(1));
+
+        poller.set_fast(true, Instant::now());
+        assert_eq!(poller.interval(true), Duration::from_millis(5));
+        assert_eq!(poller.interval(false), Duration::from_secs(1));
+
+        poller.set_fast(false, Instant::now());
+        assert_eq!(poller.interval(true), Duration::from_secs(1));
+    }
+
+    #[test]
     fn preheld_inputs_are_baselined() {
         let held = baseline_pressed_controls(sample(1, XINPUT_GAMEPAD_A, 255, 0));
-        assert!(held.contains(&XInputControl::A));
-        assert!(held.contains(&XInputControl::LeftTrigger));
+        assert!(held.contains(XInputControl::A));
+        assert!(held.contains(XInputControl::LeftTrigger));
     }
 }

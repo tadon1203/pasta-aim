@@ -107,6 +107,16 @@ impl EngineControl {
     }
 }
 
+#[cfg(test)]
+impl EngineControl {
+    /// A control for tests. The commands that it sends are read from the returned receiver.
+    pub(crate) fn detached() -> (Self, crossbeam::Receiver<Command>) {
+        let (tx, rx) = crossbeam::unbounded();
+        let (_wait, waker) = DeadlineWait::new().expect("failed to create the test wait");
+        (Self { tx, waker }, rx)
+    }
+}
+
 pub struct Engine {
     control: EngineControl,
     events: Receiver<EngineEvent>,
