@@ -74,6 +74,43 @@ impl App {
                     });
                     ui.end_row();
 
+                    ui.label("MAKCU port");
+                    ui.horizontal(|ui| {
+                        let chosen = self.config.makcu_port.clone();
+                        let selected_text = chosen.clone().unwrap_or_else(|| "Auto".to_owned());
+                        let busy = matches!(
+                            status.makcu.phase,
+                            MakcuPhase::Connecting | MakcuPhase::Reconnecting
+                        );
+                        ui.add_enabled_ui(!busy, |ui| {
+                            egui::ComboBox::from_id_salt("makcu_port_selector")
+                                .selected_text(selected_text)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(chosen.is_none(), "Auto").clicked() {
+                                        self.set_makcu_port(None);
+                                    }
+                                    for entry in &status.makcu.ports {
+                                        let label = if entry.makcu {
+                                            format!("{} · MAKCU", entry.name)
+                                        } else {
+                                            entry.name.clone()
+                                        };
+                                        let active = chosen.as_deref() == Some(entry.name.as_str());
+                                        if ui.selectable_label(active, label).clicked() {
+                                            self.set_makcu_port(Some(entry.name.clone()));
+                                        }
+                                    }
+                                });
+                        });
+                        if let Some(port) = &chosen
+                            && !status.makcu.ports.iter().any(|entry| &entry.name == port)
+                        {
+                            ui.weak("not found");
+                        }
+                    });
+                    ui.end_row();
+
                     ui.label("Mouse route");
                     ui.label(route_label(status.makcu.routes.mouse));
                     ui.end_row();

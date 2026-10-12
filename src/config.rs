@@ -32,6 +32,8 @@ pub struct Config {
     /// Busy-waits on DirectML completion for lower tail latency at the cost of one CPU core.
     pub low_latency: bool,
     pub interpolation: Interpolation,
+    /// The serial port of MAKCU, such as `COM4`. `None` detects it automatically.
+    pub makcu_port: Option<String>,
     pub diagnostics: DiagnosticsConfig,
 }
 
@@ -72,6 +74,7 @@ impl Default for Config {
             capture_output: 0,
             low_latency: false,
             interpolation: Interpolation::default(),
+            makcu_port: None,
             diagnostics: DiagnosticsConfig::default(),
         }
     }
@@ -208,6 +211,13 @@ impl Config {
                 InterpolationPercent::MIN,
                 InterpolationPercent::MAX
             );
+        }
+        if self
+            .makcu_port
+            .as_ref()
+            .is_some_and(|port| port.trim().is_empty())
+        {
+            bail!("makcu_port cannot be empty");
         }
 
         if let Some(model) = &self.model {
@@ -544,6 +554,26 @@ mod tests {
         let restored: Config =
             serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert!(restored.low_latency);
+    }
+
+    #[test]
+    fn the_makcu_port_defaults_to_auto_and_round_trips() {
+        assert_eq!(Config::default().makcu_port, None);
+        let config = Config {
+            makcu_port: Some("COM4".to_owned()),
+            ..Config::default()
+        };
+        let restored = Config::parse(&serde_json::to_vec(&config).unwrap());
+        assert_eq!(restored.config.makcu_port.as_deref(), Some("COM4"));
+        assert!(restored.warning.is_none());
+    }
+
+    #[test]
+    fn an_empty_makcu_port_falls_back_to_auto_and_the_rest_is_kept() {
+        let loaded = Config::parse(br#"{"makcu_port": " ", "fps_limit": 120}"#);
+        assert_eq!(loaded.config.makcu_port, None);
+        assert_eq!(loaded.config.fps_limit.value(), 120);
+        assert!(loaded.warning.unwrap().contains("makcu_port"));
     }
 
     #[test]

@@ -15,9 +15,20 @@ impl Worker {
             status.makcu.phase = MakcuPhase::Connecting;
             status.makcu.error = None;
         });
+        self.refresh_makcu_ports();
         self.status.flush();
         let result = self.makcu.connect_initial();
         self.apply_makcu_result(result);
+    }
+
+    /// Lists the serial ports for the port selector. A failure leaves the list empty, which only
+    /// hides the choices: the connect does not need it.
+    fn refresh_makcu_ports(&mut self) {
+        let ports = MakcuClient::available_ports().unwrap_or_else(|error| {
+            tracing::warn!(error = %format!("{error:#}"), "serial ports could not be listed");
+            Vec::new()
+        });
+        self.status.edit(|status| status.makcu.ports = ports);
     }
 
     /// Drops the current connection state and reconnects with `connect`.
@@ -28,6 +39,7 @@ impl Worker {
     ) {
         tracing::info!(action, "reconnecting MAKCU in engine");
         self.stop_run();
+        self.refresh_makcu_ports();
         self.status.edit(|status| {
             status.makcu.phase = MakcuPhase::Connecting;
             status.makcu.routes = MakcuRoutes::default();

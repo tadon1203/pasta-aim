@@ -221,6 +221,14 @@ impl App {
         self.engine.send(Command::SetInterpolation(interpolation));
     }
 
+    /// `None` is auto-detect. The engine connects again, and the choice is saved.
+    fn set_makcu_port(&mut self, port: Option<String>) {
+        tracing::debug!(?port, "MAKCU port selected from UI");
+        self.config.makcu_port = port.clone();
+        self.engine.send(Command::SetMakcuPort(port));
+        self.persist();
+    }
+
     fn set_fps_limit(&mut self, fps_limit: FpsLimit) {
         tracing::debug!(value = fps_limit.value(), "FPS limit changed");
         self.config.fps_limit = fps_limit;

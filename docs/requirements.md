@@ -55,8 +55,9 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 - **Move interpolation** is Auto or a fixed percent. A change is sent to MAKCU at once and again after each connect. If MAKCU does not confirm it, the error line shows the reason, and the Run still starts.
 - The Rounding remainder goes to the next frame of the same Target track. A Target switch, a lost target, and the start of a Run clear it.
 - The output is mouse movement only, through MAKCU. There is no controller output.
-- MAKCU needs firmware V4.085 or newer. An older device is refused, and the Devices panel shows the error, such as `MAKCU firmware V4.084 is older than V4.085`.
+- MAKCU needs firmware V4.076 or newer. An older device is refused, and the Devices panel shows the error, such as `MAKCU firmware V4.075 is older than V4.076`.
 - The UI shows the MAKCU connection, the firmware, and the Mouse route. The user can refresh the routes, rescan for the device, and connect again.
+- The MAKCU port is Auto or a port that the user chooses from the list of serial ports. Auto tries the ports of the MAKCU chips. A chosen port is the only one that is tried, also after a disconnect, even when its chip is not a MAKCU chip. A change connects again at once and is saved. If the chosen port is not present, the Devices panel shows the connect error and `not found`, and the choice is kept.
 
 ## Runs
 

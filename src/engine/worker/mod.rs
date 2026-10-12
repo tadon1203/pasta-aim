@@ -200,6 +200,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         frame_trace: config.diagnostics.frame_trace,
     };
     let mut makcu = MakcuClient::new();
+    makcu.set_port(config.makcu_port.clone());
     // Before the first connect, so this sends nothing: the value is sent when the connect succeeds.
     if let Err(error) = makcu.set_interpolation(config.interpolation) {
         tracing::warn!(error = %format!("{error:#}"), "move interpolation could not be applied");
@@ -371,6 +372,10 @@ impl Worker {
                 self.reconnect_makcu("refreshing", MakcuClient::refresh_routes)
             }
             Command::RescanMakcu => self.reconnect_makcu("rescanning", MakcuClient::rescan),
+            Command::SetMakcuPort(port) => {
+                self.makcu.set_port(port);
+                self.reconnect_makcu("selecting the port", MakcuClient::rescan)
+            }
             Command::RetryCapture => {
                 self.auto_reprepare_attempted = false;
                 self.retry_suspended_pipeline();

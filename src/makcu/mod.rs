@@ -10,7 +10,10 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 
 use self::{
-    port::{Connector, windows::WindowsConnector},
+    port::{
+        Connector, ManualConnector,
+        windows::{WindowsConnector, available_ports},
+    },
     protocol::{Request, is_interpolate_echo, routes},
     session::{Session, SessionEvent, SessionInfo},
 };
@@ -20,6 +23,7 @@ mod port;
 mod protocol;
 mod session;
 
+pub use port::PortEntry;
 #[cfg(test)]
 pub(crate) use port::fake::FakeMakcu;
 pub(crate) use protocol::format_firmware;
@@ -61,6 +65,8 @@ pub struct MakcuClient {
     session: Option<Session>,
     routes: MakcuRoutes,
     port: Option<String>,
+    /// The port that the user chose. `None` is auto-detect.
+    selected_port: Option<String>,
     /// The wire value of the Move interpolation. Each connect sends it, so it is kept across reconnects.
     interpolation: Arc<AtomicU8>,
 }
@@ -95,25 +101,47 @@ impl MakcuClient {
             session: None,
             routes: MakcuRoutes::default(),
             port: None,
+            selected_port: None,
             interpolation: Arc::new(AtomicU8::new(INTERPOLATE_AUTO)),
         }
     }
 
+    /// Chooses the port of the next connect. `None` is auto-detect. A chosen port is the only one
+    /// that is tried, also by the reconnects of the session.
+    pub fn set_port(&mut self, port: Option<String>) {
+        self.selected_port = port;
+    }
+
+    /// Every serial port of the system, for the port selector.
+    pub fn available_ports() -> Result<Vec<PortEntry>> {
+        Ok(available_ports()?)
+    }
+
+    fn connector(&self) -> Arc<dyn Connector> {
+        match &self.selected_port {
+            Some(port) => Arc::new(ManualConnector::new(
+                Arc::new(WindowsConnector),
+                port.clone(),
+            )),
+            None => Arc::new(WindowsConnector),
+        }
+    }
+
     pub fn connect_initial(&mut self) -> Result<MakcuMetadata> {
-        tracing::info!("connecting to MAKCU device");
-        self.connect(Arc::new(WindowsConnector), None)
+        tracing::info!(selected_port = ?self.selected_port, "connecting to MAKCU device");
+        self.connect(self.connector(), None)
     }
 
     pub fn refresh_routes(&mut self) -> Result<MakcuMetadata> {
         tracing::info!(preferred_port = ?self.port, "refreshing MAKCU routes");
         let preferred = self.port.clone();
         self.close();
-        self.connect_within_window(Arc::new(WindowsConnector), preferred.as_deref())
+        self.connect_within_window(self.connector(), preferred.as_deref())
     }
 
     pub fn rescan(&mut self) -> Result<MakcuMetadata> {
-        tracing::info!("rescanning MAKCU devices");
-        self.connect(Arc::new(WindowsConnector), None)
+        tracing::info!(selected_port = ?self.selected_port, "rescanning MAKCU devices");
+        self.connect(self.connector(), None)
     }
 
     pub fn poll_connection_event(&mut self) -> Option<MakcuConnectionEvent> {
@@ -305,12 +333,12 @@ mod tests {
     #[test]
     fn firmware_under_the_floor_makes_the_connect_fail_with_the_floor_message() {
         let fake = FakeMakcu::new();
-        fake.set_firmware(4084);
+        fake.set_firmware(4075);
         let mut client = MakcuClient::new();
         let error = client.connect(Arc::new(fake), None).unwrap_err();
         assert_eq!(
             format!("{error:#}"),
-            "MAKCU firmware V4.084 is older than V4.085"
+            "MAKCU firmware V4.075 is older than V4.076"
         );
         assert!(!client.is_connected());
     }

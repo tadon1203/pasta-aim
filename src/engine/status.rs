@@ -5,7 +5,7 @@ use eframe::egui;
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
-    makcu::MakcuRoutes,
+    makcu::{MakcuRoutes, PortEntry},
     repaint,
     sync::MutexExt,
 };
@@ -144,6 +144,8 @@ pub struct MakcuStatus {
     pub firmware: Option<u32>,
     pub routes: MakcuRoutes,
     pub error: Option<String>,
+    /// The serial ports of the system, listed at each connect.
+    pub ports: Vec<PortEntry>,
 }
 
 impl Default for MakcuStatus {
@@ -154,6 +156,7 @@ impl Default for MakcuStatus {
             firmware: None,
             routes: MakcuRoutes::default(),
             error: None,
+            ports: Vec::new(),
         }
     }
 }

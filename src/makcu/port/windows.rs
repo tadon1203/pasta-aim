@@ -24,7 +24,7 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 use windows_sys::Win32::System::Registry::{HKEY, KEY_READ, REG_SZ, RegCloseKey, RegQueryValueExW};
 use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, WaitForSingleObject};
 
-use super::{Connector, Port, makcu_ports};
+use super::{Connector, Port, PortEntry, list_ports, makcu_ports};
 
 const READ_WATCHDOG: Duration = Duration::from_millis(100);
 const WRITE_WATCHDOG: Duration = Duration::from_millis(50);
@@ -47,6 +47,16 @@ impl Connector for WindowsConnector {
     fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Port>> {
         Ok(Box::new(WindowsPort::open(port, baud)?))
     }
+}
+
+/// Every serial port that is present, for the port selector.
+pub(in crate::makcu) fn available_ports() -> io::Result<Vec<PortEntry>> {
+    let devices = port_devices()?;
+    let refs: Vec<(&str, &str)> = devices
+        .iter()
+        .map(|(hardware_id, port)| (hardware_id.as_str(), port.as_str()))
+        .collect();
+    Ok(list_ports(&refs))
 }
 
 /// The hardware id and the port name of each device of the ports class.

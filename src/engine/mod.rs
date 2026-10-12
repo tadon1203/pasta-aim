@@ -86,6 +86,8 @@ pub enum Command {
     RunOnce,
     RefreshMakcuRoutes,
     RescanMakcu,
+    /// Chooses the MAKCU port (`None` is auto-detect) and connects again.
+    SetMakcuPort(Option<String>),
     RetryCapture,
     RescanDisplays,
     Shutdown,
