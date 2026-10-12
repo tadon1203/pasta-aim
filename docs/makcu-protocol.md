@@ -40,7 +40,7 @@ There is no success status byte.
 
 The firmware version is `major * 1000 + build`. V4.085 is `4085`. V4.094 is `4094`. It is written as `V{major}.{build:03}`.
 
-The client needs V4.085 or newer (`4085`).
+The client needs V4.076 or newer (`4076`).
 
 ## Byte examples
 

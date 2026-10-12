@@ -583,19 +583,19 @@ mod tests {
     }
 
     #[test]
-    fn firmware_4084_is_refused_with_the_floor_message() {
+    fn firmware_4075_is_refused_with_the_floor_message() {
         let fake = FakeMakcu::new();
-        fake.set_firmware(4084);
+        fake.set_firmware(4075);
         let error = connect(&fake).err().unwrap();
         assert_eq!(
             error.to_string(),
-            "MAKCU firmware V4.084 is older than V4.085"
+            "MAKCU firmware V4.075 is older than V4.076"
         );
     }
 
     #[test]
     fn firmware_at_the_floor_and_above_is_accepted() {
-        for firmware in [4085, 4094] {
+        for firmware in [4076, 4094] {
             let fake = FakeMakcu::new();
             fake.set_firmware(firmware);
             let (_session, info) = connect(&fake).unwrap();

@@ -37,7 +37,7 @@ The checks to run are in [CLAUDE.md](./CLAUDE.md#commands).
 - UI: egui (eframe)
 - Capture: DXGI Desktop Duplication
 - Inference: ONNX Runtime with DirectML
-- Output: the Move interpolation. The MAKCU client is in `src/makcu`, and it needs MAKCU firmware V4.085 or newer
+- Output: the Move interpolation. The MAKCU client is in `src/makcu`, and it needs MAKCU firmware V4.076 or newer
 
 ## Agent skills
 

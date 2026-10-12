@@ -6,7 +6,7 @@ use super::MakcuRoutes;
 
 /// The oldest firmware that the client accepts.
 /// See "Firmware version" in `docs/makcu-protocol.md`.
-pub(super) const FIRMWARE_FLOOR: u32 = 4085;
+pub(super) const FIRMWARE_FLOOR: u32 = 4076;
 
 const HEADER: [u8; 2] = [0xDE, 0xAD];
 /// A packet that declares more payload than this is not a MAKCU packet.
