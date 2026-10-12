@@ -34,6 +34,11 @@ impl Candidates {
         self.total += 1;
     }
 
+    #[cfg(test)]
+    pub(crate) fn push_for_test(&mut self, detection: Detection) {
+        self.push(detection);
+    }
+
     /// The first `MAX_CANDIDATES` detections.
     pub fn as_slice(&self) -> &[Detection] {
         &self.items[..self.len]

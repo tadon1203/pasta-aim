@@ -10,7 +10,7 @@ pub mod shared_frame;
 pub(crate) use capture::AcquiredDesktopFrame;
 pub use capture::DxgiCapture;
 pub(crate) use capture::{CapturePoll, NoDesktopUpdateReason};
-pub use gpu_diagnostics::{GpuDropCounts, GpuDropReason, GpuFaultReport};
+pub use gpu_diagnostics::{GpuDropReason, GpuFaultReport};
 
 use std::{marker::PhantomData, rc::Rc};
 

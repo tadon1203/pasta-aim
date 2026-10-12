@@ -58,27 +58,12 @@ pub enum GpuDropReason {
 }
 
 impl GpuDropReason {
-    pub const COUNT: usize = 2;
-
-    pub const fn index(self) -> usize {
+    /// The name of the reason in the Frame trace.
+    pub const fn name(self) -> &'static str {
         match self {
-            Self::StaleGeneration => 0,
-            Self::PipelinePoisoned => 1,
+            Self::StaleGeneration => "stale_generation",
+            Self::PipelinePoisoned => "pipeline_poisoned",
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct GpuDropCounts(pub [u64; GpuDropReason::COUNT]);
-
-impl GpuDropCounts {
-    pub fn increment(&mut self, reason: GpuDropReason) {
-        let value = &mut self.0[reason.index()];
-        *value = value.saturating_add(1);
-    }
-
-    pub fn get(self, reason: GpuDropReason) -> u64 {
-        self.0[reason.index()]
     }
 }
 

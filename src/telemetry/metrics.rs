@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 
-use crate::graphics::{GpuDropCounts, GpuDropReason};
 use crate::timing::QpcClock;
 
 const MAX_SAMPLES: usize = 256;
@@ -53,7 +52,6 @@ pub struct PerformanceSnapshot {
     pub makcu_write: MetricSummary,
     pub total: MetricSummary,
     pub capture_source: CaptureSourceMetrics,
-    pub gpu_drop_counts: GpuDropCounts,
     pub cold_run: Option<StageTimings>,
 }
 
@@ -68,7 +66,6 @@ pub struct Metrics {
     samples: VecDeque<Sample>,
     gpu_copy_samples: VecDeque<f64>,
     capture_source: CaptureSourceMetrics,
-    gpu_drop_counts: GpuDropCounts,
     cold_run: Option<StageTimings>,
     cold_next: bool,
     previous_started_qpc: Option<i64>,
@@ -80,7 +77,6 @@ impl Metrics {
             samples: VecDeque::with_capacity(MAX_SAMPLES),
             gpu_copy_samples: VecDeque::with_capacity(MAX_SAMPLES),
             capture_source: CaptureSourceMetrics::default(),
-            gpu_drop_counts: GpuDropCounts::default(),
             cold_run: None,
             cold_next: true,
             previous_started_qpc: None,
@@ -119,10 +115,6 @@ impl Metrics {
 
     pub fn update_capture_source(&mut self, value: CaptureSourceMetrics) {
         self.capture_source = value;
-    }
-
-    pub fn record_gpu_drop(&mut self, reason: GpuDropReason) {
-        self.gpu_drop_counts.increment(reason);
     }
 
     pub fn record_gpu_copy(&mut self, gpu_copy_ms: f64) {
@@ -185,7 +177,6 @@ impl Metrics {
                 Some(sample.timings.total_ms)
             }),
             capture_source: self.capture_source,
-            gpu_drop_counts: self.gpu_drop_counts,
             cold_run: self.cold_run,
         }
     }

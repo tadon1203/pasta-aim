@@ -98,7 +98,7 @@ impl Worker {
                 tracing::info!("selected capture initialized");
             }
             Err(error) => {
-                tracing::error!(error = %format!("{error:#}"), "selected capture initialization failed");
+                tracing::error!(error = %crate::logging::chain(&error), "selected capture initialization failed");
                 self.status.edit(|status| {
                     status.capture.phase = CapturePhase::Failed;
                     status.capture.selected = None;

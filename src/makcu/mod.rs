@@ -17,7 +17,7 @@ use self::{
     protocol::{Request, is_interpolate_echo, routes},
     session::{Session, SessionEvent, SessionInfo},
 };
-use crate::settings::Interpolation;
+use crate::settings::{Interpolation, InterpolationPercent};
 
 mod port;
 mod protocol;
@@ -49,6 +49,7 @@ pub struct Movement {
 pub struct MakcuMetadata {
     pub port: String,
     pub firmware: u32,
+    pub baud: u32,
     pub routes: MakcuRoutes,
     /// The stored Move interpolation could not be sent on this connect. The connect still succeeded.
     pub interpolation_error: Option<String>,
@@ -165,6 +166,14 @@ impl MakcuClient {
         })
     }
 
+    /// The Move interpolation that the client sends on each connect.
+    pub fn interpolation(&self) -> Interpolation {
+        match self.interpolation.load(Ordering::Acquire) {
+            INTERPOLATE_AUTO => Interpolation::Auto,
+            percent => Interpolation::Percent(InterpolationPercent::new(percent)),
+        }
+    }
+
     pub fn mouse_available(&self) -> bool {
         self.routes.mouse
     }
@@ -201,17 +210,7 @@ impl MakcuClient {
         if !self.mouse_available() {
             bail!("MAKCU reports no mouse route");
         }
-        let started = Instant::now();
-        self.write_move(movement)?;
-        if crate::logging::makcu_command_trace_enabled() {
-            tracing::trace!(
-                x = movement.x,
-                y = movement.y,
-                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-                "MAKCU mouse command completed"
-            );
-        }
-        Ok(())
+        self.write_move(movement)
     }
 
     /// Writes one move as one port write.
@@ -283,6 +282,7 @@ impl MakcuClient {
         MakcuMetadata {
             port: info.port,
             firmware: info.firmware,
+            baud: info.baud,
             routes,
             interpolation_error: info.interpolation_error,
         }
@@ -301,6 +301,15 @@ mod tests {
 
     fn step(x: i16, y: i16) -> Movement {
         Movement { x, y }
+    }
+
+    #[test]
+    fn the_client_reports_the_interpolation_that_it_sends_on_connect() {
+        let mut client = MakcuClient::new();
+        assert_eq!(client.interpolation(), Interpolation::Auto);
+        let percent = Interpolation::Percent(InterpolationPercent::new(40));
+        client.set_interpolation(percent).unwrap();
+        assert_eq!(client.interpolation(), percent);
     }
 
     #[test]

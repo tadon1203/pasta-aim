@@ -52,7 +52,7 @@ impl App {
         let (models, model_catalog_error) = match ModelCatalog::scan() {
             Ok(catalog) => (catalog, None),
             Err(error) => {
-                tracing::error!(error = %format!("{error:#}"), "initial model scan failed");
+                tracing::error!(error = %crate::logging::chain(&error), "initial model scan failed");
                 (ModelCatalog::default(), Some(format!("{error:#}")))
             }
         };
@@ -99,7 +99,7 @@ impl App {
                 self.config_file_unusable = false;
             }
             Err(error) => {
-                tracing::error!(error = %format!("{error:#}"), "settings persistence failed");
+                tracing::error!(error = %crate::logging::chain(&error), "settings persistence failed");
                 self.config_save_error = Some(format!("Settings save failed: {error:#}"));
             }
         }
@@ -148,7 +148,7 @@ impl App {
                 self.request_sole_model_load();
             }
             Err(error) => {
-                tracing::error!(error = %format!("{error:#}"), "model rescan failed");
+                tracing::error!(error = %crate::logging::chain(&error), "model rescan failed");
                 self.model_catalog_error = Some(format!("{error:#}"));
             }
         }

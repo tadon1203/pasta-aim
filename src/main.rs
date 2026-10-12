@@ -47,7 +47,7 @@ fn main() -> eframe::Result {
     if let Err(error) =
         graphics::bootstrap::initialize_graphics_diagnostics(loaded.config.diagnostics.gpu_debug)
     {
-        tracing::error!(error = %format!("{error:#}"), "graphics diagnostics initialization failed");
+        tracing::error!(error = %crate::logging::chain(&error), "graphics diagnostics initialization failed");
         return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
     }
     use windows::Win32::UI::HiDpi::{

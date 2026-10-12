@@ -86,10 +86,13 @@ The terms are defined in [CONTEXT.md](../CONTEXT.md).
 
 - **Log level**: `off`, `error`, `warn`, `info` (default), `debug`, `trace`. Each session writes `logs/session-<unix_ms>-<pid>.log`.
 - **GPU debug** (default off) applies only at the start of the app. It makes inference slower.
-- **Frame trace** (default off): each Run writes `logs/trace-<unix_ms>.jsonl`. The file has a header line, one `frame` line for each processed frame, and a footer line. A change of this setting applies to the next Run.
-  - The trace never slows a Run. A Frame record that cannot be taken in time is dropped.
-    It is then missing from the trace, the statistics, and the Loop metrics. The footer has the count of dropped records.
-  - A trace file that cannot be opened does not stop the Run.
+- **Frame trace** (default off): each Run writes `logs/trace-<unix_ms>.jsonl`. A change of this setting applies to the next Run.
+  - The file has a `header` line, a `frame` line for each processed frame, an `event` line for each Trace event, and a `footer` line. The file has no version: the header names the version of the app.
+  - The header has what a reader needs to read the file alone: the app version and build, the clock (the QPC frequency, and the QPC value and the wall clock at the start of the Run), the Run, MAKCU (port, firmware, baud, and the Move interpolation), the model, and the settings of the Run.
+  - Every time in a line is in microseconds from the start of the Run. A `frame` line has the time of each stage, `total_us` (from the present time to the end of the output), the Candidate detections with the highest confidence first (at most 8, and `candidate_total` has the full count), the Selected target, the Target track, the Aim point error, the Movement before rounding, and the Movement that was sent.
+  - A Trace event is one of: MAKCU disconnected, MAKCU connected (port, firmware, baud), the Move interpolation failed, the Pipeline changed (the next frame is the Cold run), a frame result dropped (with the reason), and messages that the Telemetry queue refused.
+  - The trace never slows a Run. A message that cannot be taken in time is dropped and counted. A dropped Frame record is then missing from the trace, the statistics, and the Loop metrics. The footer has the count of frames and the count of dropped messages.
+  - A trace file that cannot be opened or written does not stop the Run.
 - The UI shows the Loop metrics: the frame period, the RMS error, the overshoots, and the time to reach the target.
 - The UI updates the statistics and the last target at most 10 times each second. A Run that stops updates them at once.
 - The UI shows timing statistics for each stage of a frame. The Cold run is shown apart and is not part of the statistics.

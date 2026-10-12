@@ -31,7 +31,7 @@ use crate::{
     pipeline::Pipeline,
     repaint,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
-    telemetry::{RunCounters, TelemetrySink},
+    telemetry::{RunCounters, TelemetrySink, TraceEvent},
     timing::QpcClock,
     wait::DeadlineWait,
 };
@@ -175,7 +175,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
     let graphics = match GraphicsThread::initialize() {
         Ok(apartment) => Some(apartment),
         Err(error) => {
-            tracing::error!(error = %format!("{error:#}"), "graphics thread COM initialization failed");
+            tracing::error!(error = %crate::logging::chain(&error), "graphics thread COM initialization failed");
             let message = format!("Graphics thread COM initialization failed: {error:#}");
             status.edit(|status| {
                 status.capture.phase = CapturePhase::Failed;
@@ -203,7 +203,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
     makcu.set_port(config.makcu_port.clone());
     // Before the first connect, so this sends nothing: the value is sent when the connect succeeds.
     if let Err(error) = makcu.set_interpolation(config.interpolation) {
-        tracing::warn!(error = %format!("{error:#}"), "move interpolation could not be applied");
+        tracing::warn!(error = %crate::logging::chain(&error), "move interpolation could not be applied");
     }
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
@@ -238,7 +238,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         match models::resolve_model(&name) {
             Ok(path) => worker.load_model(false, name, path),
             Err(error) => {
-                tracing::error!(model = %name, error = %format!("{error:#}"), "configured model could not be resolved");
+                tracing::error!(model = %name, error = %crate::logging::chain(&error), "configured model could not be resolved");
                 worker
                     .status
                     .edit(|status| status.model.error = Some(format!("{error:#}")));
@@ -344,7 +344,10 @@ impl Worker {
             }
             Command::SetInterpolation(interpolation) => {
                 if let Err(error) = self.makcu.set_interpolation(interpolation) {
-                    tracing::warn!(error = %format!("{error:#}"), "move interpolation failed");
+                    tracing::warn!(error = %crate::logging::chain(&error), "move interpolation failed");
+                    self.telemetry.event(TraceEvent::MakcuInterpolationFailed {
+                        reason: format!("{error:#}"),
+                    });
                     self.set_run_error(format!("{error:#}"));
                 }
             }

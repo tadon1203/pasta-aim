@@ -137,7 +137,7 @@ impl OrtDirectMlBackend {
                 Ok(backend)
             }
             Err(error) => {
-                tracing::error!(prepare_id = %prepare_id, error = %format!("{error:#}"), "directml_prepare_failed");
+                tracing::error!(prepare_id = %prepare_id, error = %crate::logging::chain(&error), "directml_prepare_failed");
                 Err(error)
             }
         }

@@ -142,6 +142,7 @@ pub struct MakcuStatus {
     pub phase: MakcuPhase,
     pub port: Option<String>,
     pub firmware: Option<u32>,
+    pub baud: Option<u32>,
     pub routes: MakcuRoutes,
     pub error: Option<String>,
     /// The serial ports of the system, listed at each connect.
@@ -154,6 +155,7 @@ impl Default for MakcuStatus {
             phase: MakcuPhase::Connecting,
             port: None,
             firmware: None,
+            baud: None,
             routes: MakcuRoutes::default(),
             error: None,
             ports: Vec::new(),

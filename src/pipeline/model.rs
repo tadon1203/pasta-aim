@@ -33,7 +33,7 @@ impl Drop for ModelHalf {
     fn drop(&mut self) {
         // The queue must be idle before any of the fields below are released.
         if let Err(error) = self.gpu.wait_idle() {
-            tracing::warn!(prepare_id = %self.prepare_id, error = %format!("{error:#}"), "inference_pipeline_shutdown_failed");
+            tracing::warn!(prepare_id = %self.prepare_id, error = %crate::logging::chain(&error), "inference_pipeline_shutdown_failed");
         }
     }
 }

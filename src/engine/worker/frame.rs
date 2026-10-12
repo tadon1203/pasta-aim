@@ -213,7 +213,7 @@ mod tests {
         for message in telemetry.try_iter() {
             match message {
                 TelemetryMessage::Frame(record) => records.push(record),
-                TelemetryMessage::FrameDropped(_) => dropped += 1,
+                TelemetryMessage::FrameDropped { .. } => dropped += 1,
                 _ => {}
             }
         }

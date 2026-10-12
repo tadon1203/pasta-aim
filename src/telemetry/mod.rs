@@ -1,19 +1,21 @@
-//! The Telemetry thread. It takes the Frame records from the engine.
+//! The Telemetry thread. It takes the Frame records and the Trace events from the engine.
 //! It makes the statistics and the Loop metrics, writes the Frame trace, and publishes the live values.
 //!
 //! The engine never waits for this thread between a capture and its output. The queue is bounded:
 //! a Frame record that does not fit is dropped and counted.
 
 mod aggregator;
-mod frame_trace;
 mod loop_metrics;
 mod metrics;
 mod record;
+mod trace;
 
-pub(crate) use frame_trace::TraceHeader;
 pub use loop_metrics::LoopSnapshot;
 pub use metrics::{MetricSummary, PerformanceSnapshot};
 pub use record::{FrameRecord, FrameTimes};
+pub(crate) use trace::{
+    AppInfo, ClockInfo, MakcuInfo, ModelInfo, RunInfo, SettingsInfo, TraceEvent, TraceHeader,
+};
 
 use std::{
     sync::{
@@ -29,11 +31,7 @@ use eframe::egui;
 
 use self::aggregator::Aggregator;
 use crate::{
-    engine::{RunGeneration, RunMode},
-    graphics::GpuDropReason,
-    makcu::Movement,
-    paths,
-    sync::MutexExt,
+    engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths, sync::MutexExt,
     timing::QpcClock,
 };
 
@@ -52,7 +50,6 @@ pub(crate) struct RunCounters {
 
 pub(crate) struct RunStart {
     pub generation: RunGeneration,
-    pub mode: RunMode,
     /// `Some` when the Frame trace is on for this Run.
     pub trace: Option<TraceHeader>,
 }
@@ -63,10 +60,20 @@ pub(crate) enum TelemetryMessage {
     RunStarted(RunStart),
     Frame(FrameRecord),
     Counters(RunCounters),
-    /// A frame result that was not sent to the output.
-    FrameDropped(GpuDropReason),
+    /// A frame result that was not sent to the output. `qpc` is the time of the drop.
+    FrameDropped {
+        qpc: i64,
+        reason: GpuDropReason,
+    },
     /// The next Frame record is the Cold run, and the statistics start again.
-    PipelineChanged,
+    PipelineChanged {
+        qpc: i64,
+    },
+    /// Something that happened in the Run and is not a Frame. `qpc` is the time of it.
+    Event {
+        qpc: i64,
+        event: TraceEvent,
+    },
     RunStopped(RunGeneration),
     Shutdown,
 }
@@ -77,6 +84,8 @@ pub(crate) struct TelemetrySink {
     tx: Sender<TelemetryMessage>,
     /// Messages that did not fit in the queue. Shared with the Aggregator, which reports the count of each Run in the Frame trace footer.
     dropped: Arc<AtomicU64>,
+    /// Gives the time of an event at the moment that the engine reports it.
+    qpc: QpcClock,
 }
 
 impl TelemetrySink {
@@ -92,7 +101,18 @@ impl TelemetrySink {
 
     /// Never blocks. A message that does not fit is dropped and counted.
     pub(crate) fn frame_dropped(&self, reason: GpuDropReason) {
-        self.try_send(TelemetryMessage::FrameDropped(reason));
+        self.try_send(TelemetryMessage::FrameDropped {
+            qpc: self.qpc.now(),
+            reason,
+        });
+    }
+
+    /// Never blocks. A message that does not fit is dropped and counted.
+    pub(crate) fn event(&self, event: TraceEvent) {
+        self.try_send(TelemetryMessage::Event {
+            qpc: self.qpc.now(),
+            event,
+        });
     }
 
     fn try_send(&self, message: TelemetryMessage) {
@@ -108,7 +128,9 @@ impl TelemetrySink {
 
     /// Blocks while the queue is full. See the ticket's Comments: the frame path can reach this through a command.
     pub(crate) fn pipeline_changed(&self) {
-        let _ = self.tx.send(TelemetryMessage::PipelineChanged);
+        let _ = self.tx.send(TelemetryMessage::PipelineChanged {
+            qpc: self.qpc.now(),
+        });
     }
 
     /// Blocks while the queue is full. See the ticket's Comments: the frame path can reach this through a command.
@@ -124,6 +146,7 @@ impl TelemetrySink {
             Self {
                 tx,
                 dropped: Arc::new(AtomicU64::new(0)),
+                qpc: QpcClock::test(1_000.0),
             },
             rx,
         )
@@ -162,6 +185,7 @@ impl Telemetry {
         let sink = TelemetrySink {
             tx: tx.clone(),
             dropped,
+            qpc,
         };
         (
             Self {

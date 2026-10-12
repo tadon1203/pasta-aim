@@ -11,34 +11,27 @@ use std::{
 };
 
 use super::{
-    FrameRecord, LiveTelemetry, RunCounters, RunStart, TelemetryMessage,
-    frame_trace::FrameTraceWriter,
+    FrameRecord, LiveTelemetry, RunCounters, RunStart, TelemetryMessage, TraceEvent,
     loop_metrics::{LoopFrame, LoopMetrics},
-    metrics::{CaptureSourceMetrics, Metrics, PerformanceSnapshot, StageTimings},
+    metrics::{CaptureSourceMetrics, Metrics, StageTimings},
+    trace::FrameTrace,
 };
-use crate::{
-    engine::{RunGeneration, RunMode},
-    graphics::GpuDropReason,
-    makcu::Movement,
-    timing::QpcClock,
-};
+use crate::{engine::RunGeneration, makcu::Movement, timing::QpcClock};
 
 /// The capture source rates are made over this window, from the Counters messages.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
-const CONTINUOUS_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(super) struct Aggregator {
     qpc: QpcClock,
-    logs_dir: PathBuf,
-    /// Frame records that the sink could not queue. Shared with the sink.
+    /// Messages that the sink could not queue. Shared with the sink.
     dropped: Arc<AtomicU64>,
     metrics: Metrics,
     loop_metrics: LoopMetrics,
-    summary: RunSummary,
     generation: Option<RunGeneration>,
-    continuous: bool,
-    trace: Option<FrameTraceWriter>,
+    trace: FrameTrace,
+    /// The value of `dropped` when the Run started, and when the last drop event was made.
     dropped_at_start: u64,
+    reported_drops: u64,
     window: RateWindow,
     last_target: Option<(f32, f32, f32, i32)>,
     last_movement: Option<Movement>,
@@ -62,76 +55,18 @@ impl RateWindow {
     }
 }
 
-/// Counters for the once-per-second `continuous inference summary` log line.
-struct RunSummary {
-    started: Instant,
-    frames: usize,
-    detections: usize,
-    last_movement: Option<Movement>,
-}
-
-impl RunSummary {
-    fn new(started: Instant) -> Self {
-        Self {
-            started,
-            frames: 0,
-            detections: 0,
-            last_movement: None,
-        }
-    }
-
-    fn record(&mut self, detected: bool, command: Option<Movement>) {
-        self.frames += 1;
-        self.detections += usize::from(detected);
-        if command.is_some() {
-            self.last_movement = command;
-        }
-    }
-
-    /// Logs and resets once per interval. The snapshot is only built when the line is written.
-    fn log_if_due(&mut self, now: Instant, snapshot: impl FnOnce() -> PerformanceSnapshot) {
-        let elapsed = now.duration_since(self.started);
-        if elapsed < CONTINUOUS_LOG_INTERVAL {
-            return;
-        }
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            let performance = snapshot();
-            let drops = &performance.gpu_drop_counts;
-            tracing::debug!(
-                elapsed_ms = elapsed.as_secs_f64() * 1000.0,
-                frames = self.frames,
-                detections = self.detections,
-                last_movement = ?self.last_movement,
-                fps = performance.fps,
-                capture_p50_ms = performance.capture.p50_ms,
-                inference_p50_ms = performance.inference.p50_ms,
-                makcu_write_p50_ms = performance.makcu_write.p50_ms,
-                pipeline_p50_ms = performance.total.p50_ms,
-                stale_generation = drops.get(GpuDropReason::StaleGeneration),
-                pipeline_poisoned = drops.get(GpuDropReason::PipelinePoisoned),
-                capture_timeouts = performance.capture_source.timeouts,
-                "continuous inference summary"
-            );
-        }
-        *self = Self::new(now);
-    }
-}
-
 impl Aggregator {
     pub(super) fn new(qpc: QpcClock, logs_dir: PathBuf, dropped: Arc<AtomicU64>) -> Self {
-        let now = Instant::now();
         Self {
             qpc,
-            logs_dir,
             dropped,
             metrics: Metrics::new(),
             loop_metrics: LoopMetrics::new(),
-            summary: RunSummary::new(now),
             generation: None,
-            continuous: false,
-            trace: None,
+            trace: FrameTrace::new(logs_dir),
             dropped_at_start: 0,
-            window: RateWindow::new(now, RunCounters::default()),
+            reported_drops: 0,
+            window: RateWindow::new(Instant::now(), RunCounters::default()),
             last_target: None,
             last_movement: None,
             last_total_ms: None,
@@ -139,12 +74,19 @@ impl Aggregator {
     }
 
     pub(super) fn handle(&mut self, message: TelemetryMessage, now: Instant) {
+        self.report_dropped_messages();
         match message {
             TelemetryMessage::RunStarted(start) => self.run_started(start, now),
-            TelemetryMessage::Frame(record) => self.frame(record, now),
+            TelemetryMessage::Frame(record) => self.frame(record),
             TelemetryMessage::Counters(counters) => self.counters(counters, now),
-            TelemetryMessage::FrameDropped(reason) => self.metrics.record_gpu_drop(reason),
-            TelemetryMessage::PipelineChanged => self.metrics.mark_cold_next(),
+            TelemetryMessage::FrameDropped { qpc, reason } => {
+                self.trace.event(qpc, &TraceEvent::FrameDropped(reason));
+            }
+            TelemetryMessage::PipelineChanged { qpc } => {
+                self.metrics.mark_cold_next();
+                self.trace.event(qpc, &TraceEvent::PipelineChanged);
+            }
+            TelemetryMessage::Event { qpc, event } => self.trace.event(qpc, &event),
             TelemetryMessage::RunStopped(generation) => self.run_stopped(generation),
             TelemetryMessage::Shutdown => {}
         }
@@ -161,33 +103,33 @@ impl Aggregator {
         }
     }
 
-    /// Writes the buffered lines of the Frame trace. A failed write ends the trace for this Run.
+    /// Writes the buffered lines of the Frame trace.
     pub(super) fn flush(&mut self) {
-        if let Some(trace) = self.trace.as_mut()
-            && let Err(error) = trace.flush()
-        {
-            tracing::warn!(error = %format!("{error:#}"), "frame trace stopped");
-            self.trace = None;
+        self.trace.flush();
+    }
+
+    /// Makes a Trace event for the messages that the queue refused since the last call.
+    /// The time of the event is the time of the report, not the time of the drop.
+    fn report_dropped_messages(&mut self) {
+        let dropped = self.dropped.load(Ordering::Relaxed);
+        if dropped > self.reported_drops {
+            let count = dropped - self.reported_drops;
+            self.reported_drops = dropped;
+            self.trace
+                .event(self.qpc.now(), &TraceEvent::TelemetryDropped { count });
         }
     }
 
     fn run_started(&mut self, start: RunStart, now: Instant) {
-        self.close_trace();
+        self.stop_trace();
         self.generation = Some(start.generation);
-        self.continuous = start.mode == RunMode::Continuous;
         self.window = RateWindow::new(now, RunCounters::default());
         self.loop_metrics.reset();
-        self.summary = RunSummary::new(now);
         self.dropped_at_start = self.dropped.load(Ordering::Relaxed);
-        self.trace = start
-            .trace
-            .and_then(|header| match FrameTraceWriter::create(&self.logs_dir, &header) {
-                Ok(writer) => Some(writer),
-                Err(error) => {
-                    tracing::warn!(error = %format!("{error:#}"), "frame trace could not be started");
-                    None
-                }
-            });
+        self.reported_drops = self.dropped_at_start;
+        if let Some(header) = start.trace {
+            self.trace.start(&header);
+        }
     }
 
     fn run_stopped(&mut self, generation: RunGeneration) {
@@ -195,24 +137,19 @@ impl Aggregator {
             return;
         }
         self.generation = None;
-        self.close_trace();
+        self.stop_trace();
     }
 
-    /// Writes the footer with the records dropped since this Run started, and closes the file.
-    fn close_trace(&mut self) {
-        let Some(trace) = self.trace.take() else {
-            return;
-        };
+    /// Writes the footer with the messages that the queue refused since the Run started.
+    fn stop_trace(&mut self) {
         let dropped = self
             .dropped
             .load(Ordering::Relaxed)
             .saturating_sub(self.dropped_at_start);
-        if let Err(error) = trace.finish(dropped) {
-            tracing::warn!(error = %format!("{error:#}"), "frame trace footer could not be written");
-        }
+        self.trace.stop(dropped);
     }
 
-    fn frame(&mut self, record: FrameRecord, now: Instant) {
+    fn frame(&mut self, record: FrameRecord) {
         if self.generation != Some(record.generation) {
             return;
         }
@@ -251,16 +188,7 @@ impl Aggregator {
             .map(|((dx, dy), detection)| (dx, dy, detection.confidence, detection.class_id));
         self.last_movement = record.sent;
         self.last_total_ms = Some(timings.total_ms);
-        if let Some(trace) = self.trace.as_mut()
-            && let Err(error) = trace.record(&record)
-        {
-            tracing::warn!(error = %format!("{error:#}"), "frame trace stopped");
-            self.trace = None;
-        }
-        if self.continuous {
-            self.summary.record(record.selected.is_some(), record.sent);
-            self.summary.log_if_due(now, || self.metrics.snapshot());
-        }
+        self.trace.frame(&record);
     }
 
     /// The capture source rates come from two Counters messages that are at least one window apart.
@@ -298,6 +226,7 @@ mod tests {
     use super::*;
     use crate::{
         engine::target_track::Track,
+        graphics::GpuDropReason,
         inference::Candidates,
         telemetry::{FrameTimes, TraceHeader},
     };
@@ -314,11 +243,7 @@ mod tests {
     }
 
     fn run_start(generation: RunGeneration, trace: Option<TraceHeader>) -> RunStart {
-        RunStart {
-            generation,
-            mode: RunMode::Continuous,
-            trace,
-        }
+        RunStart { generation, trace }
     }
 
     /// A processed frame. The stage boundaries follow `present`, and the output completes `total` ticks after it.
@@ -359,6 +284,20 @@ mod tests {
         ))
     }
 
+    fn read_trace(directory: &PathBuf) -> Vec<Value> {
+        let path = fs::read_dir(directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     #[test]
     fn cold_run_stays_apart_after_pipeline_changed() {
         let (mut aggregator, _) = aggregator(scratch_dir("cold"));
@@ -370,7 +309,7 @@ mod tests {
         assert_eq!(performance.sample_count, 1);
         assert_eq!(performance.cold_run.expect("cold run").total_ms, 30.0);
 
-        aggregator.handle(TelemetryMessage::PipelineChanged, now);
+        aggregator.handle(TelemetryMessage::PipelineChanged { qpc: 150 }, now);
         assert_eq!(aggregator.live().performance.sample_count, 0);
         assert!(aggregator.live().performance.cold_run.is_none());
 
@@ -414,41 +353,48 @@ mod tests {
     }
 
     #[test]
-    fn run_stopped_writes_the_footer_with_the_dropped_count() {
+    fn a_run_with_the_trace_on_writes_frames_events_and_the_footer() {
         let directory = scratch_dir("footer");
         let (mut aggregator, dropped) = aggregator(directory.clone());
         let now = Instant::now();
-        let header = TraceHeader {
-            qpc_hz: 1_000,
-            input_size: Some((640, 640)),
-            sensitivity_percent: 100,
-            target_y_offset_percent: 50,
-            max_delta: 0,
-        };
         aggregator.handle(
-            TelemetryMessage::RunStarted(run_start(1, Some(header))),
+            TelemetryMessage::RunStarted(run_start(1, Some(TraceHeader::for_test()))),
             now,
         );
         aggregator.handle(TelemetryMessage::Frame(frame(1, 1, 0, 30)), now);
+        aggregator.handle(
+            TelemetryMessage::FrameDropped {
+                qpc: 40,
+                reason: GpuDropReason::PipelinePoisoned,
+            },
+            now,
+        );
+        aggregator.handle(
+            TelemetryMessage::Event {
+                qpc: 50,
+                event: TraceEvent::MakcuDisconnected,
+            },
+            now,
+        );
         dropped.fetch_add(3, Ordering::Relaxed);
         aggregator.handle(TelemetryMessage::RunStopped(1), now);
 
-        let path = fs::read_dir(&directory)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let lines: Vec<Value> = fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
+        let lines = read_trace(&directory);
+        let kinds: Vec<&str> = lines
+            .iter()
+            .map(|line| line["type"].as_str().unwrap())
             .collect();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0]["type"], "header");
+        // The three refused messages are reported before the stop is handled.
+        assert_eq!(
+            kinds,
+            ["header", "frame", "event", "event", "event", "footer"]
+        );
         assert_eq!(lines[1]["seq"], 1);
-        assert_eq!(lines[2]["type"], "footer");
-        assert_eq!(lines[2]["dropped_records"], 3);
+        assert_eq!(lines[2]["event"], "frame_dropped");
+        assert_eq!(lines[3]["event"], "makcu_disconnected");
+        assert_eq!(lines[4]["event"], "telemetry_dropped");
+        assert_eq!(lines[4]["count"], 3);
+        assert_eq!(lines[5]["dropped_records"], 3);
         let _ = fs::remove_dir_all(&directory);
     }
 

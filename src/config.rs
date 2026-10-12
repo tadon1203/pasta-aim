@@ -118,7 +118,7 @@ impl Config {
         match Self::read_fields(bytes) {
             Ok(loaded) => loaded,
             Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "settings file could not be parsed; using defaults");
+                tracing::warn!(error = %crate::logging::chain(&error), "settings file could not be parsed; using defaults");
                 ConfigLoad {
                     config: Self::default(),
                     warning: Some(format!(

@@ -1,12 +1,18 @@
 //! Starting, stopping, and observing inference runs.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use super::Worker;
 use crate::{
     engine::{
-        RunGeneration, RunMode, RunPhase,
+        MakcuPhase, RunGeneration, RunMode, RunPhase,
         status::{RunReadiness, run_block_reason},
     },
-    telemetry::{RunCounters, RunStart, TraceHeader},
+    makcu::format_firmware,
+    telemetry::{
+        AppInfo, ClockInfo, MakcuInfo, ModelInfo, RunCounters, RunInfo, RunStart, SettingsInfo,
+        TraceHeader,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -87,8 +93,7 @@ impl Worker {
         };
         self.telemetry.run_started(RunStart {
             generation,
-            mode,
-            trace: self.trace_header(),
+            trace: self.trace_header(generation, mode),
         });
         self.status.edit(|status| {
             status.run.phase = phase;
@@ -97,20 +102,61 @@ impl Worker {
     }
 
     /// The header of the Frame trace, when the trace is on for this Run.
-    fn trace_header(&self) -> Option<TraceHeader> {
+    fn trace_header(&self, generation: RunGeneration, mode: RunMode) -> Option<TraceHeader> {
         if !self.tuning.frame_trace {
             return None;
         }
-        let output = self.tuning.output;
+        let tuning = &self.tuning;
+        let makcu = self.status.get().makcu.clone();
+        let makcu = match (makcu.phase, makcu.port, makcu.firmware) {
+            (MakcuPhase::Connected, Some(port), Some(firmware)) => Some(MakcuInfo {
+                port,
+                firmware: format_firmware(firmware),
+                baud: makcu.baud,
+                interpolation: self.makcu.interpolation(),
+            }),
+            _ => None,
+        };
         Some(TraceHeader {
-            qpc_hz: self.qpc.frequency_hz(),
-            input_size: self
-                .capture
-                .pipeline()
-                .map(|pipeline| pipeline.input_size()),
-            sensitivity_percent: output.sensitivity.value(),
-            target_y_offset_percent: output.target_y_offset.value(),
-            max_delta: output.max_delta.value(),
+            app: AppInfo {
+                version: env!("CARGO_PKG_VERSION"),
+                build: if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                },
+            },
+            clock: ClockInfo {
+                qpc_hz: self.qpc.frequency_hz(),
+                run_start_qpc: self.qpc.now(),
+                run_start_unix_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_millis() as u64),
+            },
+            run: RunInfo {
+                generation,
+                mode: match mode {
+                    RunMode::Continuous => "continuous",
+                    RunMode::OneShot => "one_shot",
+                },
+            },
+            makcu,
+            model: ModelInfo {
+                name: self.active_model.as_ref().map(|(name, _)| name.clone()),
+                input_size: self
+                    .capture
+                    .pipeline()
+                    .map(|pipeline| pipeline.input_size()),
+            },
+            settings: SettingsInfo {
+                fps_limit: tuning.fps_limit.value(),
+                capture_wait_ms: tuning.capture.wait_ms,
+                low_latency: tuning.low_latency,
+                confidence_threshold_percent: tuning.confidence_threshold.value(),
+                sensitivity_percent: tuning.output.sensitivity.value(),
+                target_y_offset_percent: tuning.output.target_y_offset.value(),
+                max_delta: tuning.output.max_delta.value(),
+            },
         })
     }
 

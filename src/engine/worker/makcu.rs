@@ -5,7 +5,8 @@ use anyhow::Result;
 use super::Worker;
 use crate::{
     engine::MakcuPhase,
-    makcu::{MakcuClient, MakcuConnectionEvent, MakcuMetadata, MakcuRoutes},
+    makcu::{MakcuClient, MakcuConnectionEvent, MakcuMetadata, MakcuRoutes, format_firmware},
+    telemetry::TraceEvent,
 };
 
 impl Worker {
@@ -25,7 +26,7 @@ impl Worker {
     /// hides the choices: the connect does not need it.
     fn refresh_makcu_ports(&mut self) {
         let ports = MakcuClient::available_ports().unwrap_or_else(|error| {
-            tracing::warn!(error = %format!("{error:#}"), "serial ports could not be listed");
+            tracing::warn!(error = %crate::logging::chain(&error), "serial ports could not be listed");
             Vec::new()
         });
         self.status.edit(|status| status.makcu.ports = ports);
@@ -64,6 +65,9 @@ impl Worker {
             match event {
                 MakcuConnectionEvent::Disconnected | MakcuConnectionEvent::Connecting => {
                     tracing::warn!(?event, "MAKCU connection state changed");
+                    if matches!(event, MakcuConnectionEvent::Disconnected) {
+                        self.telemetry.event(TraceEvent::MakcuDisconnected);
+                    }
                     self.stop_run();
                     self.status.edit(|status| {
                         status.makcu.phase = MakcuPhase::Reconnecting;
@@ -81,15 +85,24 @@ impl Worker {
 
     fn apply_makcu_metadata(&mut self, metadata: MakcuMetadata) {
         tracing::info!(port = %metadata.port, firmware = metadata.firmware, "MAKCU connected in engine");
+        self.telemetry.event(TraceEvent::MakcuConnected {
+            port: metadata.port.clone(),
+            firmware: format_firmware(metadata.firmware),
+            baud: Some(metadata.baud),
+        });
         // The Run still starts: a stored interpolation that the device did not confirm is only reported.
         if let Some(error) = metadata.interpolation_error {
             tracing::warn!(%error, "move interpolation was not applied on connect");
+            self.telemetry.event(TraceEvent::MakcuInterpolationFailed {
+                reason: error.clone(),
+            });
             self.set_run_error(error);
         }
         self.status.edit(|status| {
             status.makcu.phase = MakcuPhase::Connected;
             status.makcu.port = Some(metadata.port);
             status.makcu.firmware = Some(metadata.firmware);
+            status.makcu.baud = Some(metadata.baud);
             status.makcu.routes = metadata.routes;
             status.makcu.error = None;
         });

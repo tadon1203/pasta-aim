@@ -1,11 +1,9 @@
 use std::{
+    fmt::{self as std_fmt, Display},
     fs::{self, File},
     io,
     path::Path,
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::OnceLock,
 };
 
 use tracing_appender::non_blocking::{ErrorCounter, WorkerGuard};
@@ -13,18 +11,23 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, registry::Registry, reload};
 
 use crate::{config::LogLevel, paths};
 
-static MAKCU_COMMAND_TRACE: AtomicBool = AtomicBool::new(false);
 static LEVEL_HANDLE: OnceLock<reload::Handle<tracing_subscriber::filter::LevelFilter, Registry>> =
     OnceLock::new();
 
-pub fn makcu_command_trace_enabled() -> bool {
-    MAKCU_COMMAND_TRACE.load(Ordering::Acquire)
+/// An error with its causes on one line, for a log field: `error = %chain(&error)`.
+pub fn chain<E: Display + ?Sized>(error: &E) -> impl Display + '_ {
+    struct Chain<'a, E: ?Sized>(&'a E);
+
+    impl<E: Display + ?Sized> Display for Chain<'_, E> {
+        fn fmt(&self, formatter: &mut std_fmt::Formatter<'_>) -> std_fmt::Result {
+            write!(formatter, "{:#}", self.0)
+        }
+    }
+
+    Chain(error)
 }
 
 pub fn set_level(level: LogLevel) {
-    let trace = level == LogLevel::Trace;
-    MAKCU_COMMAND_TRACE.store(trace, Ordering::Release);
-
     if let Some(handle) = LEVEL_HANDLE.get()
         && let Err(error) = handle.modify(|filter| *filter = level_filter(level))
     {
@@ -124,6 +127,16 @@ mod tests {
         writeln!(create_session_file(&path).unwrap(), "after").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "after\n");
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn chain_writes_an_error_with_its_causes_on_one_line() {
+        let error = anyhow::anyhow!("port busy").context("MAKCU did not connect");
+        assert_eq!(
+            chain(&error).to_string(),
+            "MAKCU did not connect: port busy"
+        );
+        assert_eq!(chain("plain text").to_string(), "plain text");
     }
 
     #[test]
