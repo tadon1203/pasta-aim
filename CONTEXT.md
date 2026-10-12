@@ -51,5 +51,8 @@ The language of nice-aimassist. Use these terms in code, docs, and tickets. Do n
 ## Diagnostics
 
 - **Frame record**: the data of one processed frame: its times, its Candidate detections, its Selected target, and its Movement.
-- **Frame trace**: a file that holds the Frame records of one Run.
+- **Frame trace**: a file of one Run. It has a header line, a frame line for each Frame record, a line for each Trace event, and a footer line.
+- **Trace event**: something that happened in a Run and is not a Frame, such as a MAKCU reconnect, a failed Move interpolation, a Pipeline change, or a dropped frame result.
+- **Session log**: the text file of one start of the app. It holds the messages of the app at or above the Log level.
+- **Log level**: the lowest severity that the Session log writes.
 - **Loop metrics**: measurements of how well the output follows the target, such as the error and the time to reach the target.
