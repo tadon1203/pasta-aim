@@ -10,7 +10,6 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use eframe::egui;
 use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager,
     hotkey::{Code, HotKey},
@@ -18,6 +17,7 @@ use global_hotkey::{
 
 use crate::{
     engine::{Command, EngineControl},
+    repaint::RepaintSignal,
     settings::{HotkeyAction, HotkeyBinding},
     wait::{DeadlineWait, Waker},
 };
@@ -76,7 +76,7 @@ pub struct HotkeyRegistry {
 }
 
 impl HotkeyRegistry {
-    pub fn new(control: EngineControl, ui_ctx: egui::Context) -> Self {
+    pub fn new(control: EngineControl, repaint: RepaintSignal) -> Self {
         let manager = GlobalHotKeyManager::new().ok();
         if manager.is_some() {
             tracing::debug!("global hotkey manager initialized");
@@ -98,7 +98,7 @@ impl HotkeyRegistry {
             handler_waker.wake();
         }));
 
-        let listener = Listener::new(rx, wait, control.clone(), ui_ctx, Arc::clone(&input));
+        let listener = Listener::new(rx, wait, control.clone(), repaint, Arc::clone(&input));
         let listener = thread::Builder::new()
             .name("nice-aimassist-inputs".to_owned())
             .spawn(move || listener.run())

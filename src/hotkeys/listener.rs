@@ -8,13 +8,13 @@ use std::{
 };
 
 use crossbeam_channel::Receiver;
-use eframe::egui;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState, hotkey::Code};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
 use super::{BindingActions, InputView, KeyboardReleaseLatency, ListenerMessage};
 use crate::{
     engine::{Command, EngineControl},
+    repaint::RepaintSignal,
     settings::HotkeyAction,
     sync::MutexExt,
     wait::DeadlineWait,
@@ -51,7 +51,7 @@ pub(super) struct Listener {
     rx: Receiver<ListenerMessage>,
     wait: DeadlineWait,
     control: EngineControl,
-    ui_ctx: egui::Context,
+    repaint: RepaintSignal,
     view: Arc<Mutex<InputView>>,
     bindings: BindingActions,
     suspended: bool,
@@ -72,14 +72,14 @@ impl Listener {
         rx: Receiver<ListenerMessage>,
         wait: DeadlineWait,
         control: EngineControl,
-        ui_ctx: egui::Context,
+        repaint: RepaintSignal,
         view: Arc<Mutex<InputView>>,
     ) -> Self {
         Self {
             rx,
             wait,
             control,
-            ui_ctx,
+            repaint,
             view,
             bindings: BindingActions::default(),
             suspended: false,
@@ -132,7 +132,7 @@ impl Listener {
                 self.suspended = true;
                 self.active_hold_ids.clear();
                 self.control.send(Command::SetContinuous(false));
-                self.ui_ctx.request_repaint();
+                self.repaint.request();
             }
             ListenerMessage::Resume => self.suspended = false,
             ListenerMessage::BeginCapture => {
@@ -252,7 +252,7 @@ impl Listener {
         {
             tracing::debug!(enabled, "continuous hotkey state reconciled");
             self.control.send(Command::SetContinuous(enabled));
-            self.ui_ctx.request_repaint();
+            self.repaint.request();
         }
 
         for edge in edges {
@@ -294,12 +294,12 @@ impl Listener {
                     tracing::debug!(enabled, "continuous hotkey state changed");
                     self.control.send(Command::SetContinuous(enabled));
                 }
-                self.ui_ctx.request_repaint();
+                self.repaint.request();
             }
             Some(HotkeyAction::RunOnce) if event.state == TriggerState::Pressed => {
                 tracing::debug!("run-once hotkey triggered");
                 self.control.send(Command::RunOnce);
-                self.ui_ctx.request_repaint();
+                self.repaint.request();
             }
             _ => {}
         }
@@ -308,7 +308,7 @@ impl Listener {
     /// Changes the view for the UI and asks for a repaint. Call it only when a value changed.
     fn update_view(&self, update: impl FnOnce(&mut InputView)) {
         update(&mut self.view.lock_recover());
-        self.ui_ctx.request_repaint();
+        self.repaint.request();
     }
 }
 
@@ -623,7 +623,7 @@ mod tests {
             rx,
             wait,
             control,
-            egui::Context::default(),
+            RepaintSignal::detached(),
             Arc::new(Mutex::new(InputView::default())),
         );
         listener.active_hold_ids.insert(TriggerId::Keyboard(1));
@@ -650,7 +650,7 @@ mod tests {
             rx,
             wait,
             control,
-            egui::Context::default(),
+            RepaintSignal::detached(),
             Arc::new(Mutex::new(InputView::default())),
         );
         assert!(!listener.wants_fast());

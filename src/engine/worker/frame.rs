@@ -242,7 +242,7 @@ mod tests {
             frame_trace: false,
         };
         let (makcu, fake) = MakcuClient::fake();
-        let ui_ctx = eframe::egui::Context::default();
+        let repaint = crate::repaint::RepaintSignal::detached();
         let (event_tx, _) = mpsc::channel();
         let (wait, waker) = DeadlineWait::new().unwrap();
         let (telemetry, telemetry_rx) = TelemetrySink::for_test();
@@ -250,9 +250,9 @@ mod tests {
             event_tx,
             status: StatusHub::new(
                 Arc::new(Mutex::new(Arc::new(EngineState::default()))),
-                ui_ctx.clone(),
+                repaint.clone(),
             ),
-            ui_ctx,
+            repaint,
             qpc: QpcClock::new().unwrap(),
             telemetry,
             tuning,

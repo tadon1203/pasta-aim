@@ -1,12 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use eframe::egui;
-
 use crate::{
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
     makcu::{MakcuRoutes, PortEntry},
-    repaint,
+    repaint::RepaintSignal,
     sync::MutexExt,
 };
 
@@ -245,16 +243,16 @@ impl EngineState {
 pub(super) struct StatusHub {
     local: EngineState,
     shared: Arc<Mutex<Arc<EngineState>>>,
-    ui_ctx: egui::Context,
+    repaint: RepaintSignal,
     dirty: bool,
 }
 
 impl StatusHub {
-    pub(super) fn new(shared: Arc<Mutex<Arc<EngineState>>>, ui_ctx: egui::Context) -> Self {
+    pub(super) fn new(shared: Arc<Mutex<Arc<EngineState>>>, repaint: RepaintSignal) -> Self {
         Self {
             local: EngineState::default(),
             shared,
-            ui_ctx,
+            repaint,
             dirty: false,
         }
     }
@@ -275,7 +273,7 @@ impl StatusHub {
         }
         *self.shared.lock_recover() = Arc::new(self.local.clone());
         self.dirty = false;
-        repaint::request_repaint(&self.ui_ctx);
+        self.repaint.request();
     }
 }
 
@@ -359,7 +357,7 @@ mod tests {
     #[test]
     fn flush_publishes_only_a_pending_edit() {
         let shared = Arc::new(Mutex::new(Arc::new(EngineState::default())));
-        let mut hub = StatusHub::new(Arc::clone(&shared), egui::Context::default());
+        let mut hub = StatusHub::new(Arc::clone(&shared), RepaintSignal::detached());
         hub.flush();
         hub.edit(|state| state.run.phase = RunPhase::Continuous);
         assert_eq!(shared.lock_recover().run.phase, RunPhase::Idle);

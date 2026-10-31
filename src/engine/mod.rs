@@ -29,10 +29,9 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use eframe::egui;
-
 use crate::{
     config::Config,
+    repaint::RepaintSignal,
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity,
         TargetYOffset,
@@ -127,19 +126,19 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(config: &Config, ui_ctx: egui::Context) -> Self {
+    pub fn new(config: &Config, repaint: RepaintSignal) -> Self {
         tracing::info!("spawning engine worker");
         let (tx, rx) = crossbeam::unbounded();
         let (wait, waker) = DeadlineWait::new().expect("failed to create the engine wait");
         let (event_tx, events) = mpsc::channel();
         let qpc = QpcClock::new().expect("failed to read the QPC frequency");
-        let (telemetry, sink) = Telemetry::spawn(qpc, ui_ctx.clone());
+        let (telemetry, sink) = Telemetry::spawn(qpc, repaint.clone());
         let state = Arc::new(Mutex::new(Arc::new(EngineState::default())));
         let links = WorkerLinks {
             commands: rx,
             events: event_tx,
             state: Arc::clone(&state),
-            ui_ctx,
+            repaint,
             wait,
             qpc,
             telemetry: sink,

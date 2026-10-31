@@ -5,6 +5,7 @@ use crate::{
     engine::{Command, Engine, EngineEvent},
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
+    repaint::RepaintSignal,
     settings::{
         ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation, MaxDelta,
         Sensitivity, TargetYOffset,
@@ -57,8 +58,9 @@ impl App {
             }
         };
 
-        let engine = Engine::new(&config, cc.egui_ctx.clone());
-        let mut hotkeys = HotkeyRegistry::new(engine.control(), cc.egui_ctx.clone());
+        let repaint = RepaintSignal::new(cc.egui_ctx.clone());
+        let engine = Engine::new(&config, repaint.clone());
+        let mut hotkeys = HotkeyRegistry::new(engine.control(), repaint);
         let hotkey_error = hotkeys.replace_bindings(&config.hotkeys).err();
         if let Some(error) = &hotkey_error {
             tracing::warn!(%error, "initial hotkey registration failed");

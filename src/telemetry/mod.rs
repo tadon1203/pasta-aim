@@ -27,12 +27,11 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
-use eframe::egui;
 
 use self::aggregator::Aggregator;
 use crate::{
-    engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths, sync::MutexExt,
-    timing::QpcClock,
+    engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths, repaint::RepaintSignal,
+    sync::MutexExt, timing::QpcClock,
 };
 
 const QUEUE_CAPACITY: usize = 8192;
@@ -172,7 +171,7 @@ pub(crate) struct Telemetry {
 }
 
 impl Telemetry {
-    pub(crate) fn spawn(qpc: QpcClock, ui_ctx: egui::Context) -> (Self, TelemetrySink) {
+    pub(crate) fn spawn(qpc: QpcClock, repaint: RepaintSignal) -> (Self, TelemetrySink) {
         let (tx, rx) = bounded(QUEUE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         let live = Arc::new(Mutex::new(LiveTelemetry::default()));
@@ -180,7 +179,7 @@ impl Telemetry {
         let thread_live = Arc::clone(&live);
         let join = thread::Builder::new()
             .name("nice-aimassist-telemetry".to_owned())
-            .spawn(move || run_telemetry(rx, aggregator, thread_live, ui_ctx))
+            .spawn(move || run_telemetry(rx, aggregator, thread_live, repaint))
             .expect("failed to spawn the telemetry thread");
         let sink = TelemetrySink {
             tx: tx.clone(),
@@ -215,7 +214,7 @@ fn run_telemetry(
     rx: Receiver<TelemetryMessage>,
     mut aggregator: Aggregator,
     live: Arc<Mutex<LiveTelemetry>>,
-    ui_ctx: egui::Context,
+    repaint: RepaintSignal,
 ) {
     let mut last_publish = Instant::now();
     let mut last_flush = Instant::now();
@@ -233,7 +232,7 @@ fn run_telemetry(
         };
         if pending && (urgent || last_publish.elapsed() >= PUBLISH_INTERVAL) {
             *live.lock_recover() = aggregator.live();
-            crate::repaint::request_repaint(&ui_ctx);
+            repaint.request();
             last_publish = Instant::now();
             pending = false;
         }

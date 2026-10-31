@@ -14,7 +14,6 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, TryRecvError};
-use eframe::egui;
 
 use self::{frame::StepOutcome, run::RunControl};
 use super::{
@@ -29,7 +28,7 @@ use crate::{
     makcu::MakcuClient,
     models,
     pipeline::Pipeline,
-    repaint,
+    repaint::RepaintSignal,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     telemetry::{RunCounters, TelemetrySink, TraceEvent},
     timing::QpcClock,
@@ -57,7 +56,7 @@ pub(super) struct WorkerLinks {
     pub commands: Receiver<Command>,
     pub events: Sender<EngineEvent>,
     pub state: Arc<Mutex<Arc<EngineState>>>,
-    pub ui_ctx: egui::Context,
+    pub repaint: RepaintSignal,
     pub wait: DeadlineWait,
     pub qpc: QpcClock,
     pub telemetry: TelemetrySink,
@@ -112,7 +111,7 @@ impl CaptureState {
 
 struct Worker {
     event_tx: Sender<EngineEvent>,
-    ui_ctx: egui::Context,
+    repaint: RepaintSignal,
     status: StatusHub,
     qpc: QpcClock,
     telemetry: TelemetrySink,
@@ -166,12 +165,12 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         commands,
         events,
         state,
-        ui_ctx,
+        repaint,
         wait,
         qpc,
         telemetry,
     } = links;
-    let mut status = StatusHub::new(state, ui_ctx.clone());
+    let mut status = StatusHub::new(state, repaint.clone());
     let graphics = match GraphicsThread::initialize() {
         Ok(apartment) => Some(apartment),
         Err(error) => {
@@ -208,7 +207,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
         event_tx: events,
-        ui_ctx,
+        repaint,
         status,
         qpc,
         telemetry,
@@ -403,7 +402,7 @@ impl Worker {
 
     fn emit_event(&self, event: EngineEvent) {
         let _ = self.event_tx.send(event);
-        repaint::request_repaint(&self.ui_ctx);
+        self.repaint.request();
     }
 
     fn next_pipeline_id(&mut self) -> u64 {
