@@ -1,7 +1,7 @@
 //! Process and thread scheduling hints.
 //!
 //! While a game is in the foreground this process counts as background work:
-//! Windows may throttle it (EcoQoS, efficiency cores) and its threads compete
+//! Windows may throttle it (`EcoQoS`, efficiency cores) and its threads compete
 //! with the game at normal priority. These calls opt the latency-critical
 //! threads out. All of them are best effort; failures are logged and ignored.
 
@@ -20,7 +20,7 @@ use windows::Win32::{
 };
 use windows::core::w;
 
-/// Opts the whole process out of execution-speed throttling (EcoQoS).
+/// Opts the whole process out of execution-speed throttling (`EcoQoS`).
 pub(crate) fn disable_process_power_throttling() {
     let state = PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,

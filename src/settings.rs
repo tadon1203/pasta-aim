@@ -63,7 +63,7 @@ impl Sensitivity {
     }
 
     pub fn gain(self) -> f32 {
-        self.0 as f32 / Self::DEFAULT as f32
+        f32::from(self.0) / f32::from(Self::DEFAULT)
     }
 
     pub(crate) fn is_valid(self) -> bool {
@@ -95,7 +95,7 @@ impl ConfidenceThreshold {
     }
 
     pub fn ratio(self) -> f32 {
-        self.0 as f32 / Self::MAX as f32
+        f32::from(self.0) / f32::from(Self::MAX)
     }
 
     pub(crate) fn is_valid(self) -> bool {
@@ -156,8 +156,8 @@ impl TargetYOffset {
     /// Bottom edge of the target box.
     pub const MAX: i16 = 100;
 
-    pub fn new(value: i32) -> Self {
-        Self(value.clamp(i32::from(Self::MIN), i32::from(Self::MAX)) as i16)
+    pub fn new(value: i16) -> Self {
+        Self(value.clamp(Self::MIN, Self::MAX))
     }
 
     /// Aim point as a fraction of box height measured from the box center

@@ -34,7 +34,7 @@ pub(crate) unsafe fn append_dml1(
 }
 
 /// # Safety
-/// `tensor` must be a live tensor allocated by this DirectML session's allocator.
+/// `tensor` must be a live tensor allocated by this `DirectML` session's allocator.
 pub(crate) unsafe fn d3d12_resource_from_dml_tensor<T: PrimitiveTensorElementType + Debug>(
     allocator: &Allocator,
     tensor: &mut Tensor<T>,

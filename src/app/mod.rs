@@ -1,5 +1,7 @@
 mod view;
 
+use std::collections::HashSet;
+
 use crate::{
     config::{Config, ConfigLoad},
     engine::{Command, Engine, EngineEvent},
@@ -19,8 +21,7 @@ pub struct App {
     engine: Engine,
     models: ModelCatalog,
     hotkeys: HotkeyRegistry,
-    capturing_hotkey: Option<HotkeyAction>,
-    hotkey_capture_armed: bool,
+    hotkey_capture: Option<HotkeyCapture>,
     hotkey_capture_error: Option<String>,
     hotkey_error: Option<String>,
     model_catalog_error: Option<String>,
@@ -28,19 +29,28 @@ pub struct App {
     /// The settings file could not be read at startup; the next save backs it up first.
     config_file_unusable: bool,
     config_save_error: Option<String>,
-    dirty: UnsavedEdits,
+    /// Value fields edited since they were last saved (see `view::widgets::drag_value`).
+    dirty: HashSet<EditField>,
     model_load_requested: bool,
 }
 
-/// Value fields edited since they were last saved (see `view::widgets::drag_value`).
-#[derive(Default)]
-struct UnsavedEdits {
-    sensitivity: bool,
-    confidence_threshold: bool,
-    target_y_offset: bool,
-    max_delta: bool,
-    interpolation: bool,
-    fps_limit: bool,
+/// A hotkey binding that the user is adding. `armed` is false during the first frame,
+/// so the Enter or Space key that activated `+ Add` is not captured as the shortcut.
+#[derive(Clone, Copy)]
+struct HotkeyCapture {
+    action: HotkeyAction,
+    armed: bool,
+}
+
+/// A numeric setting edited through a widget that saves once the edit ends.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum EditField {
+    Interpolation,
+    Sensitivity,
+    ConfidenceThreshold,
+    TargetYOffset,
+    MaxDelta,
+    FpsLimit,
 }
 
 impl App {
@@ -72,15 +82,14 @@ impl App {
             engine,
             models,
             hotkeys,
-            capturing_hotkey: None,
-            hotkey_capture_armed: false,
+            hotkey_capture: None,
             hotkey_capture_error: None,
             hotkey_error,
             model_catalog_error,
             config_load_warning,
             config_file_unusable,
             config_save_error: None,
-            dirty: UnsavedEdits::default(),
+            dirty: HashSet::new(),
             model_load_requested: false,
         };
 
@@ -226,7 +235,7 @@ impl App {
     /// `None` is auto-detect. The engine connects again, and the choice is saved.
     fn set_makcu_port(&mut self, port: Option<String>) {
         tracing::debug!(?port, "MAKCU port selected from UI");
-        self.config.makcu_port = port.clone();
+        self.config.makcu_port.clone_from(&port);
         self.engine.send(Command::SetMakcuPort(port));
         self.persist();
     }
@@ -239,23 +248,24 @@ impl App {
 
     fn begin_hotkey_capture(&mut self, action: HotkeyAction) {
         tracing::debug!(?action, "hotkey capture started");
-        self.capturing_hotkey = Some(action);
-        self.hotkey_capture_armed = false;
+        self.hotkey_capture = Some(HotkeyCapture {
+            action,
+            armed: false,
+        });
         self.hotkey_capture_error = None;
         self.hotkeys.begin_capture();
     }
 
     fn cancel_hotkey_capture(&mut self) {
         tracing::debug!("hotkey capture cancelled or completed");
-        self.capturing_hotkey = None;
-        self.hotkey_capture_armed = false;
+        self.hotkey_capture = None;
         self.hotkey_capture_error = None;
         self.hotkeys.end_capture();
     }
 
-    fn add_hotkey(&mut self, action: HotkeyAction, shortcut: String) {
+    fn add_hotkey(&mut self, action: HotkeyAction, shortcut: &str) {
         tracing::debug!(?action, shortcut = %shortcut, "adding hotkey binding");
-        let shortcut = match canonical_shortcut(&shortcut) {
+        let shortcut = match canonical_shortcut(shortcut) {
             Ok(shortcut) => shortcut,
             Err(error) => {
                 tracing::warn!(%error, "hotkey shortcut was rejected");

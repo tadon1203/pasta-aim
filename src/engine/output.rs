@@ -51,7 +51,9 @@ fn quantize_with_carry(movement: (f32, f32), carry: (f32, f32)) -> (Option<Movem
 
 /// Whole counts, clamped to the `i16` range of the wire.
 fn quantize(value: f32) -> i16 {
-    value.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+    value
+        .round()
+        .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
 }
 
 fn plan(detection: Detection, input_size: (usize, usize), settings: OutputSettings) -> Plan {
@@ -163,7 +165,7 @@ mod tests {
         }
     }
 
-    fn settings(sensitivity: u16, target_y_offset: i32) -> OutputSettings {
+    fn settings(sensitivity: u16, target_y_offset: i16) -> OutputSettings {
         OutputSettings {
             sensitivity: Sensitivity::new(sensitivity),
             target_y_offset: TargetYOffset::new(target_y_offset),
@@ -176,8 +178,8 @@ mod tests {
         quantize_with_carry(plan.movement, (0.0, 0.0)).0
     }
 
-    fn movement(x: i16, y: i16) -> Option<Movement> {
-        Some(Movement { x, y })
+    fn movement(x: i16, y: i16) -> Movement {
+        Movement { x, y }
     }
 
     #[test]
@@ -193,12 +195,12 @@ mod tests {
         // Center is (50, 50); the box center is 10 px right and 20 px down and
         // the box is 40 px tall, so 75% aims 10 px below its center.
         let plan = plan(detection(70.0, 40.0), (100, 100), settings(50, 75));
-        assert_eq!(step_of(&plan), movement(5, 15));
+        assert_eq!(step_of(&plan), Some(movement(5, 15)));
         // 0% and 100% aim at the top and bottom edges.
         let top = super::plan(detection(70.0, 40.0), (100, 100), settings(100, 0));
-        assert_eq!(step_of(&top), movement(10, 0));
+        assert_eq!(step_of(&top), Some(movement(10, 0)));
         let bottom = super::plan(detection(70.0, 40.0), (100, 100), settings(100, 100));
-        assert_eq!(step_of(&bottom), movement(10, 40));
+        assert_eq!(step_of(&bottom), Some(movement(10, 40)));
     }
 
     #[test]
@@ -210,20 +212,20 @@ mod tests {
         };
         // Scaled to length 10: (4.47, 8.94) -> (4, 9).
         let plan_capped = plan(detection(70.0, 40.0), (100, 100), capped);
-        assert_eq!(step_of(&plan_capped), movement(4, 9));
+        assert_eq!(step_of(&plan_capped), Some(movement(4, 9)));
         // A cap above the movement length changes nothing.
         let loose = OutputSettings {
             max_delta: MaxDelta::new(100),
             ..capped
         };
         let plan_loose = plan(detection(70.0, 40.0), (100, 100), loose);
-        assert_eq!(step_of(&plan_loose), movement(10, 20));
+        assert_eq!(step_of(&plan_loose), Some(movement(10, 20)));
     }
 
     #[test]
     fn zero_movement_produces_no_step() {
         let plan_off_center = plan(detection(50.0, 40.0), (100, 100), settings(100, 50));
-        assert_eq!(step_of(&plan_off_center), movement(10, 0));
+        assert_eq!(step_of(&plan_off_center), Some(movement(10, 0)));
         let centered = Detection {
             center_x: 50.0,
             ..detection(50.0, 40.0)
@@ -242,14 +244,14 @@ mod tests {
             carry = next;
             sent.push(step);
         }
-        assert_eq!(sent, vec![None, movement(1, -1), None, None]);
+        assert_eq!(sent, vec![None, Some(movement(1, -1)), None, None]);
         assert!((carry.0 - 0.2).abs() < 1e-5);
     }
 
     #[test]
     fn saturated_axis_does_not_keep_a_huge_remainder() {
         let (step, carry) = quantize_with_carry((1.0e9, 0.0), (0.0, 0.0));
-        assert_eq!(step, movement(i16::MAX, 0));
+        assert_eq!(step, Some(movement(i16::MAX, 0)));
         assert_eq!(carry, (0.5, 0.0));
     }
 }

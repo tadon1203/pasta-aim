@@ -75,8 +75,7 @@ pub fn select_nearest<T: Copy + Into<f32>>(
     input_height: usize,
     confidence_threshold: f32,
 ) -> Selection {
-    let image_cx = input_width as f32 * 0.5;
-    let image_cy = input_height as f32 * 0.5;
+    let image_center = (input_width as f32 * 0.5, input_height as f32 * 0.5);
     let mut best: Option<(f32, Detection)> = None;
     let mut candidates = Candidates::EMPTY;
 
@@ -101,10 +100,10 @@ pub fn select_nearest<T: Copy + Into<f32>>(
             continue;
         }
 
-        let center_x = (x1 + x2) * 0.5;
-        let center_y = (y1 + y2) * 0.5;
-        let dx = center_x - image_cx;
-        let dy = center_y - image_cy;
+        let center_x = f32::midpoint(x1, x2);
+        let center_y = f32::midpoint(y1, y2);
+        let dx = center_x - image_center.0;
+        let dy = center_y - image_center.1;
         let distance_sq = dx * dx + dy * dy;
         let detection = Detection {
             center_x,

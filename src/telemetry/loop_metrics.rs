@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use crate::engine::target_track::Track;
-use crate::timing::QpcClock;
+use crate::{stats::percentile, timing::QpcClock};
 
 const WINDOW: usize = 256;
 const CONVERGENCE_WINDOW: usize = 64;
@@ -121,13 +121,13 @@ impl LoopMetrics {
         };
         LoopSnapshot {
             samples: self.periods_ms.len(),
-            period_p50_ms: percentile(&mut periods, 0.50).unwrap_or(0.0),
-            period_p95_ms: percentile(&mut periods, 0.95).unwrap_or(0.0),
+            period_p50_ms: percentile(&mut periods, 50).unwrap_or(0.0),
+            period_p95_ms: percentile(&mut periods, 95).unwrap_or(0.0),
             rms_error_px,
             overshoots: self.overshoots,
             locked_frames: self.locked_frames,
             convergence_last_ms: self.convergence_ms.back().copied(),
-            convergence_p50_ms: percentile(&mut convergence, 0.50),
+            convergence_p50_ms: percentile(&mut convergence, 50),
         }
     }
 }
@@ -143,15 +143,6 @@ fn push<T>(queue: &mut VecDeque<T>, value: T, capacity: usize) {
         queue.pop_front();
     }
     queue.push_back(value);
-}
-
-/// The value at `fraction` in sorted order, selected without a full sort.
-fn percentile(values: &mut [f64], fraction: f64) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let index = ((values.len() - 1) as f64 * fraction).round() as usize;
-    Some(*values.select_nth_unstable_by(index, f64::total_cmp).1)
 }
 
 #[cfg(test)]

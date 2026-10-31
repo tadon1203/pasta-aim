@@ -81,8 +81,7 @@ pub fn cpu_fallback_nodes(state: &EpAssignmentState) -> &[EpAssignedNode] {
             .providers
             .iter()
             .find(|provider| provider.name == "CPUExecutionProvider")
-            .map(|provider| provider.nodes.as_slice())
-            .unwrap_or(&[]),
+            .map_or(&[], |provider| provider.nodes.as_slice()),
         EpAssignmentState::Unavailable(_) => &[],
     }
 }
@@ -183,28 +182,16 @@ impl Default for RunStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct RunReadiness {
-    pub model_ready: bool,
-    pub capture_ready: bool,
-    pub makcu_connected: bool,
-    pub mouse_route: bool,
-}
+pub(super) const BLOCK_MODEL: &str = "Model is not ready";
+pub(super) const BLOCK_CAPTURE: &str = "DXGI capture is not ready";
+pub(super) const BLOCK_MAKCU: &str = "MAKCU is not connected";
+pub(super) const BLOCK_MOUSE_ROUTE: &str = "Mouse route is unavailable";
 
-pub(super) fn run_block_reason(readiness: RunReadiness) -> Option<&'static str> {
-    if !readiness.model_ready {
-        return Some("Model is not ready");
-    }
-    if !readiness.capture_ready {
-        return Some("DXGI capture is not ready");
-    }
-    if !readiness.makcu_connected {
-        return Some("MAKCU is not connected");
-    }
-    if !readiness.mouse_route {
-        return Some("Mouse route is unavailable");
-    }
-    None
+/// The first reason that blocks a run. `checks` is `(ready, reason)` in the order to report.
+pub(super) fn run_block_reason(checks: [(bool, &'static str); 4]) -> Option<&'static str> {
+    checks
+        .into_iter()
+        .find_map(|(ready, reason)| (!ready).then_some(reason))
 }
 
 /// The state of the engine that the UI shows. It changes on a command or a fault, not on a frame.
@@ -218,22 +205,20 @@ pub struct EngineState {
 }
 
 impl EngineState {
-    fn readiness(&self) -> RunReadiness {
-        RunReadiness {
-            model_ready: self.model.phase == ModelPhase::Ready,
-            capture_ready: self.capture.phase == CapturePhase::Ready,
-            makcu_connected: self.makcu.phase == MakcuPhase::Connected
-                && self.makcu.error.is_none(),
-            mouse_route: self.makcu.routes.mouse,
-        }
-    }
-
     pub fn ready(&self) -> bool {
         self.block_reason().is_none()
     }
 
     pub fn block_reason(&self) -> Option<&'static str> {
-        run_block_reason(self.readiness())
+        run_block_reason([
+            (self.model.phase == ModelPhase::Ready, BLOCK_MODEL),
+            (self.capture.phase == CapturePhase::Ready, BLOCK_CAPTURE),
+            (
+                self.makcu.phase == MakcuPhase::Connected && self.makcu.error.is_none(),
+                BLOCK_MAKCU,
+            ),
+            (self.makcu.routes.mouse, BLOCK_MOUSE_ROUTE),
+        ])
     }
 }
 

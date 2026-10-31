@@ -29,6 +29,8 @@ mod repaint;
 #[cfg(windows)]
 mod settings;
 #[cfg(windows)]
+mod stats;
+#[cfg(windows)]
 mod sync;
 #[cfg(windows)]
 mod telemetry;
@@ -39,6 +41,9 @@ mod wait;
 
 #[cfg(windows)]
 fn main() -> eframe::Result {
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
     let loaded = config::Config::load();
     let _logging = logging::init();
     logging::set_level(loaded.config.diagnostics.level);
@@ -50,9 +55,6 @@ fn main() -> eframe::Result {
         tracing::error!(error = %crate::logging::chain(&error), "graphics diagnostics initialization failed");
         return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
     }
-    use windows::Win32::UI::HiDpi::{
-        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
-    };
     // SAFETY: this sets process-wide DPI behavior before creating any windows.
     if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.is_err()
     {

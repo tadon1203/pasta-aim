@@ -6,13 +6,14 @@ use super::Worker;
 use crate::{
     engine::{
         MakcuPhase, RunGeneration, RunMode, RunPhase,
-        status::{RunReadiness, run_block_reason},
+        status::{BLOCK_CAPTURE, BLOCK_MAKCU, BLOCK_MODEL, BLOCK_MOUSE_ROUTE, run_block_reason},
     },
     makcu::format_firmware,
     telemetry::{
         AppInfo, ClockInfo, MakcuInfo, ModelInfo, RunCounters, RunInfo, RunStart, SettingsInfo,
         TraceHeader,
     },
+    timing::QpcClock,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -128,7 +129,7 @@ impl Worker {
             },
             clock: ClockInfo {
                 qpc_hz: self.qpc.frequency_hz(),
-                run_start_qpc: self.qpc.now(),
+                run_start_qpc: QpcClock::now(),
                 run_start_unix_ms: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_or(0, |elapsed| elapsed.as_millis() as u64),
@@ -146,7 +147,7 @@ impl Worker {
                 input_size: self
                     .capture
                     .pipeline()
-                    .map(|pipeline| pipeline.input_size()),
+                    .map(crate::pipeline::Pipeline::input_size),
             },
             settings: SettingsInfo {
                 fps_limit: tuning.fps_limit.value(),
@@ -180,12 +181,12 @@ impl Worker {
 
     pub(super) fn run_block_reason(&self) -> Option<String> {
         let makcu = &self.makcu;
-        run_block_reason(RunReadiness {
-            model_ready: self.capture.has_model(),
-            capture_ready: self.capture.is_capture_ready(),
-            makcu_connected: makcu.is_connected(),
-            mouse_route: makcu.mouse_available(),
-        })
+        run_block_reason([
+            (self.capture.has_model(), BLOCK_MODEL),
+            (self.capture.is_capture_ready(), BLOCK_CAPTURE),
+            (makcu.is_connected(), BLOCK_MAKCU),
+            (makcu.mouse_available(), BLOCK_MOUSE_ROUTE),
+        ])
         .map(str::to_owned)
     }
 }

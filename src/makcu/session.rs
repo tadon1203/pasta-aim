@@ -176,17 +176,14 @@ impl Session {
 
     /// Sends a request and waits for its reply. A timeout ends the connection at once, so the
     /// next request fails with `NotConnected` until the reconnect is done.
-    pub(super) fn request(&self, request: &Request) -> Result<Packet, SessionError> {
+    pub(super) fn request(&self, request: Request) -> Result<Packet, SessionError> {
         let _turn = lock(&self.requests);
         if !self.is_connected() {
             return Err(SessionError::NotConnected);
         }
         let (reply, answer) = bounded(1);
-        *lock(&self.shared.slot) = Some(Slot {
-            request: *request,
-            reply,
-        });
-        if let Err(error) = self.write(std::slice::from_ref(request)) {
+        *lock(&self.shared.slot) = Some(Slot { request, reply });
+        if let Err(error) = self.write(std::slice::from_ref(&request)) {
             *lock(&self.shared.slot) = None;
             return Err(error);
         }
@@ -292,7 +289,7 @@ impl IoThread {
     fn route(&self, packet: Packet) {
         let waiting = lock(&self.shared.slot).take_if(|slot| slot.request.command() == packet.cmd);
         if let Some(slot) = waiting {
-            let answer = if is_reject(&slot.request, &packet) {
+            let answer = if is_reject(slot.request, &packet) {
                 Err(SessionError::Rejected)
             } else {
                 Ok(packet)
@@ -329,7 +326,7 @@ impl IoThread {
             interpolation,
         )?;
         let reader = port.try_clone()?;
-        self.preferred = info.port.clone();
+        self.preferred.clone_from(&info.port);
         *lock(&self.shared.writer) = Some(Writer {
             port,
             buffer: Vec::new(),
@@ -439,7 +436,7 @@ fn connect_port(
 
 /// Sends `INTERPOLATE` and checks the echo.
 fn send_interpolation(port: &mut dyn Port, value: u8) -> Result<()> {
-    let packet = exchange(port, &Request::Interpolate(value))?;
+    let packet = exchange(port, Request::Interpolate(value))?;
     if !is_interpolate_echo(value, &packet) {
         bail!(
             "MAKCU answered the move interpolation {value} with {:?}",
@@ -452,12 +449,12 @@ fn send_interpolation(port: &mut dyn Port, value: u8) -> Result<()> {
 /// Opens the port at `baud` and asks for the routes. The port is kept only when the device answers.
 fn probe(connector: &dyn Connector, name: &str, baud: u32) -> Result<Box<dyn Port>> {
     let mut port = connector.open(name, baud)?;
-    exchange(port.as_mut(), &Request::Device)?;
+    exchange(port.as_mut(), Request::Device)?;
     Ok(port)
 }
 
 fn firmware_of(port: &mut dyn Port) -> Result<u32> {
-    let packet = exchange(port, &Request::FirmwareVersion)?;
+    let packet = exchange(port, Request::FirmwareVersion)?;
     let [a, b, c, d] = *packet.payload() else {
         bail!("MAKCU sent a malformed firmware version");
     };
@@ -465,7 +462,7 @@ fn firmware_of(port: &mut dyn Port) -> Result<u32> {
 }
 
 fn kinds_of(port: &mut dyn Port) -> Result<u8> {
-    let packet = exchange(port, &Request::Device)?;
+    let packet = exchange(port, Request::Device)?;
     let [kinds] = *packet.payload() else {
         bail!("MAKCU sent a malformed device reply");
     };
@@ -474,8 +471,8 @@ fn kinds_of(port: &mut dyn Port) -> Result<u8> {
 
 /// Writes a request and reads until its reply. Used only before the I/O thread starts, or on the
 /// I/O thread's own port while it reconnects.
-fn exchange(port: &mut dyn Port, request: &Request) -> Result<Packet> {
-    write_requests(port, &mut Vec::new(), std::slice::from_ref(request))?;
+fn exchange(port: &mut dyn Port, request: Request) -> Result<Packet> {
+    write_requests(port, &mut Vec::new(), std::slice::from_ref(&request))?;
     let mut decoder = PacketDecoder::default();
     let mut buf = [0u8; 256];
     let mut answer = None;
@@ -622,7 +619,7 @@ mod tests {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
         fake.reject_next(0x1F);
-        let error = session.request(&Request::Interpolate(40)).unwrap_err();
+        let error = session.request(Request::Interpolate(40)).unwrap_err();
         assert!(matches!(error, SessionError::Rejected));
         assert_eq!(error.to_string(), "MAKCU rejected the request");
         assert!(
@@ -635,7 +632,7 @@ mod tests {
     fn the_auto_echo_of_interpolate_255_is_an_answer_not_a_reject() {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
-        let reply = session.request(&Request::Interpolate(255)).unwrap();
+        let reply = session.request(Request::Interpolate(255)).unwrap();
         assert_eq!(reply.payload(), [0xFF]);
     }
 
@@ -644,7 +641,7 @@ mod tests {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
         fake.mute_next(0x1F);
-        let error = session.request(&Request::Interpolate(40)).unwrap_err();
+        let error = session.request(Request::Interpolate(40)).unwrap_err();
         assert!(matches!(error, SessionError::TimedOut));
         // The late reply arrives before the reconnect empties the input buffer.
         fake.inject(&[0xDE, 0xAD, 1, 0, 0x1F, 17]);
@@ -655,7 +652,7 @@ mod tests {
             next_event(&session),
             SessionEvent::Connected(Ok(_))
         ));
-        let reply = session.request(&Request::Interpolate(40)).unwrap();
+        let reply = session.request(Request::Interpolate(40)).unwrap();
         assert_eq!(reply.payload(), [40]);
     }
 
@@ -664,11 +661,11 @@ mod tests {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
         fake.mute_next(0x1F);
-        assert!(session.request(&Request::Interpolate(40)).is_err());
+        assert!(session.request(Request::Interpolate(40)).is_err());
         fake.inject(&[0xDE, 0xAD, 1, 0, 0x1F, 17]);
         // No event is read first: the next request starts at once, as the caller can do.
         // The link went down in the timed-out call, so the request fails before it is written.
-        let error = session.request(&Request::Interpolate(40)).unwrap_err();
+        let error = session.request(Request::Interpolate(40)).unwrap_err();
         assert!(matches!(error, SessionError::NotConnected));
         assert!(fake.frames().last().is_some_and(|frame| frame[4] == 0x1F));
     }

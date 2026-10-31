@@ -61,7 +61,7 @@ pub struct KeyboardReleaseLatency {
 struct InputView {
     xinput_slot: Option<u32>,
     release_latency: KeyboardReleaseLatency,
-    /// XInput controls recorded during a capture and not yet taken by `poll_captured_xinput`.
+    /// `XInput` controls recorded during a capture and not yet taken by `poll_captured_xinput`.
     captured: VecDeque<XInputControl>,
 }
 

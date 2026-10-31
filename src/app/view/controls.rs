@@ -5,7 +5,7 @@ use super::{
     widgets::{drag_value, error_label, percent_row, warn_label},
 };
 use crate::{
-    app::App,
+    app::{App, EditField},
     engine::{CapturePhase, Command, EngineState, ModelPhase, RunPhase},
     hotkeys::{CaptureResult, capture_from_events, display_shortcut},
     settings::{
@@ -42,14 +42,12 @@ impl App {
                 let edit = percent_row(
                     ui,
                     "Fixed",
-                    i32::from(percent.value()),
-                    i32::from(InterpolationPercent::MIN)..=i32::from(InterpolationPercent::MAX),
-                    &mut self.dirty.interpolation,
+                    percent.value(),
+                    InterpolationPercent::MIN..=InterpolationPercent::MAX,
+                    self.dirty.contains(&EditField::Interpolation),
                 );
-                self.apply_edit(edit, |app, value| {
-                    app.set_interpolation(Interpolation::Percent(InterpolationPercent::new(
-                        value as u8,
-                    )))
+                self.apply_edit(EditField::Interpolation, edit, |app, value| {
+                    app.set_interpolation(Interpolation::Percent(InterpolationPercent::new(value)));
                 });
             }
         });
@@ -66,36 +64,36 @@ impl App {
             let edit = percent_row(
                 ui,
                 "Sensitivity",
-                i32::from(self.config.sensitivity.value()),
-                i32::from(Sensitivity::MIN)..=i32::from(Sensitivity::MAX),
-                &mut self.dirty.sensitivity,
+                self.config.sensitivity.value(),
+                Sensitivity::MIN..=Sensitivity::MAX,
+                self.dirty.contains(&EditField::Sensitivity),
             );
-            self.apply_edit(edit, |app, value| {
-                app.set_sensitivity(Sensitivity::new(value as u16))
+            self.apply_edit(EditField::Sensitivity, edit, |app, value| {
+                app.set_sensitivity(Sensitivity::new(value));
             });
             ui.small("100% = 1× command scale");
 
             let edit = percent_row(
                 ui,
                 "Confidence",
-                i32::from(self.config.confidence_threshold.value()),
-                i32::from(ConfidenceThreshold::MIN)..=i32::from(ConfidenceThreshold::MAX),
-                &mut self.dirty.confidence_threshold,
+                self.config.confidence_threshold.value(),
+                ConfidenceThreshold::MIN..=ConfidenceThreshold::MAX,
+                self.dirty.contains(&EditField::ConfidenceThreshold),
             );
-            self.apply_edit(edit, |app, value| {
-                app.set_confidence_threshold(ConfidenceThreshold::new(value as u8))
+            self.apply_edit(EditField::ConfidenceThreshold, edit, |app, value| {
+                app.set_confidence_threshold(ConfidenceThreshold::new(value));
             });
             ui.small("Minimum confidence required to accept a detection.");
 
             let edit = percent_row(
                 ui,
                 "Target Y offset",
-                i32::from(self.config.target_y_offset.value()),
-                i32::from(TargetYOffset::MIN)..=i32::from(TargetYOffset::MAX),
-                &mut self.dirty.target_y_offset,
+                self.config.target_y_offset.value(),
+                TargetYOffset::MIN..=TargetYOffset::MAX,
+                self.dirty.contains(&EditField::TargetYOffset),
             );
-            self.apply_edit(edit, |app, value| {
-                app.set_target_y_offset(TargetYOffset::new(value))
+            self.apply_edit(EditField::TargetYOffset, edit, |app, value| {
+                app.set_target_y_offset(TargetYOffset::new(value));
             });
             ui.small("Aim point inside the target box: 0% = top, 50% = center, 100% = bottom.");
 
@@ -103,12 +101,12 @@ impl App {
                 ui.label("Max delta");
                 let edit = drag_value(
                     ui,
-                    i32::from(self.config.max_delta.value()),
-                    0..=i32::from(MaxDelta::MAX),
-                    &mut self.dirty.max_delta,
+                    self.config.max_delta.value(),
+                    0..=MaxDelta::MAX,
+                    self.dirty.contains(&EditField::MaxDelta),
                 );
-                self.apply_edit(edit, |app, value| {
-                    app.set_max_delta(MaxDelta::new(value as u16))
+                self.apply_edit(EditField::MaxDelta, edit, |app, value| {
+                    app.set_max_delta(MaxDelta::new(value));
                 });
             });
             ui.small("Per-frame cap on movement length after sensitivity; 0 = unlimited.");
@@ -183,12 +181,12 @@ impl App {
                 ui.label("FPS limit");
                 let edit = drag_value(
                     ui,
-                    i32::from(self.config.fps_limit.value()),
-                    i32::from(FpsLimit::MIN)..=i32::from(FpsLimit::MAX),
-                    &mut self.dirty.fps_limit,
+                    self.config.fps_limit.value(),
+                    FpsLimit::MIN..=FpsLimit::MAX,
+                    self.dirty.contains(&EditField::FpsLimit),
                 );
-                self.apply_edit(edit, |app, value| {
-                    app.set_fps_limit(FpsLimit::new(value as u16))
+                self.apply_edit(EditField::FpsLimit, edit, |app, value| {
+                    app.set_fps_limit(FpsLimit::new(value));
                 });
                 ui.small("Continuous only");
             });
@@ -239,10 +237,10 @@ impl App {
                     "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
                     live.performance.fps,
                     self.config.fps_limit.value(),
-                    live.performance.total.p50_ms,
-                    live.performance.total.p95_ms,
-                    live.performance.inference.p50_ms,
-                    live.performance.inference.p95_ms,
+                    live.performance.total.p50,
+                    live.performance.total.p95,
+                    live.performance.inference.p50,
+                    live.performance.inference.p95,
                 ));
             }
         });
@@ -273,7 +271,7 @@ impl App {
                         }
                     }
                     let can_add =
-                        self.capturing_hotkey.is_none() && status.run.phase == RunPhase::Idle;
+                        self.hotkey_capture.is_none() && status.run.phase == RunPhase::Idle;
                     if ui
                         .add_enabled(can_add, egui::Button::new("+ Add"))
                         .clicked()
@@ -292,17 +290,18 @@ impl App {
 
 impl App {
     pub(super) fn draw_hotkey_capture(&mut self, ctx: &egui::Context) {
-        let Some(action) = self.capturing_hotkey else {
+        let Some(capture) = self.hotkey_capture.as_mut() else {
             return;
         };
+        let action = capture.action;
 
-        if !self.hotkey_capture_armed {
+        if !capture.armed {
             // Do not capture the Enter/Space key that may have activated `+ Add`
             // with keyboard navigation. Capture begins on the next egui pass.
-            self.hotkey_capture_armed = true;
+            capture.armed = true;
             ctx.request_repaint();
         } else if let Some(shortcut) = self.hotkeys.poll_captured_xinput() {
-            self.add_hotkey(action, shortcut);
+            self.add_hotkey(action, &shortcut);
         } else {
             let super_down = ctx.input(|input| {
                 input.key_down(egui::Key::SuperLeft) || input.key_down(egui::Key::SuperRight)
@@ -316,7 +315,7 @@ impl App {
                     match result {
                         Ok(CaptureResult::Cancelled) => self.cancel_hotkey_capture(),
                         Ok(CaptureResult::Captured(hotkey)) => {
-                            self.add_hotkey(action, hotkey.to_string());
+                            self.add_hotkey(action, &hotkey.to_string());
                         }
                         Err(error) => self.hotkey_capture_error = Some(error),
                     }
@@ -324,7 +323,7 @@ impl App {
             }
         }
 
-        if self.capturing_hotkey.is_none() {
+        if self.hotkey_capture.is_none() {
             return;
         }
 
@@ -349,7 +348,7 @@ impl App {
                     self.cancel_hotkey_capture();
                 }
             });
-        if !open && self.capturing_hotkey.is_some() {
+        if !open && self.hotkey_capture.is_some() {
             self.cancel_hotkey_capture();
         }
     }

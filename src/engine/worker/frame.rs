@@ -11,6 +11,7 @@ use crate::{
     pipeline::{FaultKind, FrameOutcome, PipelineFault, ProcessedFrame},
     settings::FpsLimit,
     telemetry::FrameRecord,
+    timing::QpcClock,
 };
 
 /// The earliest time of the next capture in a Continuous run.
@@ -71,12 +72,11 @@ impl Worker {
         };
         let attempt_start = Instant::now();
         let wait_ms = self.tuning.capture.wait_ms;
-        let result = match self.capture.pipeline_mut() {
-            Some(pipeline) => pipeline.process_next(wait_ms),
-            None => {
-                self.fail_run("inference pipeline is not prepared".to_owned());
-                return StepOutcome::NoDesktopUpdate;
-            }
+        let result = if let Some(pipeline) = self.capture.pipeline_mut() {
+            pipeline.process_next(wait_ms)
+        } else {
+            self.fail_run("inference pipeline is not prepared".to_owned());
+            return StepOutcome::NoDesktopUpdate;
         };
         match result {
             Ok(FrameOutcome::NoDesktopUpdate(reason)) => {
@@ -88,7 +88,7 @@ impl Worker {
             Ok(FrameOutcome::NewFrame(frame)) => {
                 self.run_counters.new_frames += 1;
                 self.run_counters.accumulated_frames += u64::from(frame.accumulated_frames);
-                if self.finish_frame(commands, run, frame) {
+                if self.finish_frame(commands, run, &frame) {
                     StepOutcome::NewFrame { attempt_start }
                 } else {
                     StepOutcome::Shutdown
@@ -107,7 +107,7 @@ impl Worker {
         &mut self,
         commands: &Receiver<Command>,
         run: ActiveRun,
-        frame: ProcessedFrame,
+        frame: &ProcessedFrame,
     ) -> bool {
         if !self.drain_commands(commands) {
             return false;
@@ -116,7 +116,7 @@ impl Worker {
             self.telemetry.frame_dropped(GpuDropReason::StaleGeneration);
             return true;
         }
-        let output_start_qpc = self.qpc.now();
+        let output_start_qpc = QpcClock::now();
         let outcome = match self.output_stage.emit(&mut self.makcu, frame.selected) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -124,8 +124,8 @@ impl Worker {
                 return true;
             }
         };
-        let output_complete_qpc = self.qpc.now();
-        self.telemetry.frame(FrameRecord {
+        let output_complete_qpc = QpcClock::now();
+        self.telemetry.frame(&FrameRecord {
             generation: run.generation,
             frame_seq: frame.frame_seq,
             times: frame.times,
@@ -160,9 +160,9 @@ impl Worker {
         });
         match kind {
             FaultKind::Poisoned { device_lost } => {
-                self.recover_poisoned_pipeline(message, device_lost, report);
+                self.recover_poisoned_pipeline(&message, device_lost, report);
             }
-            FaultKind::Invalid => self.suspend_invalid_pipeline(message),
+            FaultKind::Invalid => self.suspend_invalid_pipeline(&message),
         }
     }
 
@@ -322,7 +322,7 @@ mod tests {
         }
     }
 
-    fn finish(worker: &mut Worker, commands: &Receiver<Command>, frame: ProcessedFrame) -> bool {
+    fn finish(worker: &mut Worker, commands: &Receiver<Command>, frame: &ProcessedFrame) -> bool {
         let run = worker.run.active.unwrap();
         worker.finish_frame(commands, run, frame)
     }
@@ -345,11 +345,11 @@ mod tests {
         ] {
             let shutdown = matches!(command, Command::Shutdown);
             let (mut worker, fake, telemetry) = worker();
-            let frame = processed(worker.qpc.now());
+            let frame = processed(QpcClock::now());
             let (tx, rx) = crossbeam_channel::unbounded();
             tx.send(command).unwrap();
-            assert_eq!(finish(&mut worker, &rx, frame), !shutdown);
-            assert!(moves(&fake).is_empty());
+            assert_eq!(finish(&mut worker, &rx, &frame), !shutdown);
+            assert_eq!(moves(&fake).len(), 0);
             let (records, dropped) = output_messages(&telemetry);
             assert!(records.is_empty());
             // A stale frame is reported as dropped. A shutdown ends before the output stage.
@@ -361,9 +361,9 @@ mod tests {
     fn valid_result_outputs() {
         let (mut worker, fake, telemetry) = worker();
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let frame = processed(worker.qpc.now());
-        assert!(finish(&mut worker, &rx, frame));
-        assert!(!moves(&fake).is_empty());
+        let frame = processed(QpcClock::now());
+        assert!(finish(&mut worker, &rx, &frame));
+        assert_ne!(moves(&fake).len(), 0);
         let (records, dropped) = output_messages(&telemetry);
         assert_eq!(dropped, 0);
         assert_eq!(records.len(), 1);
@@ -400,9 +400,9 @@ mod tests {
             Some(now + Duration::from_secs(1))
         );
         let (_tx, rx) = crossbeam_channel::unbounded();
-        let frame = processed(worker.qpc.now());
-        assert!(finish(&mut worker, &rx, frame));
-        assert!(!moves(&fake).is_empty());
+        let frame = processed(QpcClock::now());
+        assert!(finish(&mut worker, &rx, &frame));
+        assert_ne!(moves(&fake).len(), 0);
         assert!(worker.run.active.is_none());
         assert_eq!(worker.status.get().run.phase, RunPhase::Idle);
         let (records, _) = output_messages(&telemetry);

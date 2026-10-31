@@ -32,7 +32,7 @@ impl Worker {
             low_latency: self.tuning.low_latency,
             qpc: self.qpc,
         };
-        match self.capture.load_model(config) {
+        match self.capture.load_model(&config) {
             Ok(()) => {
                 self.active_model = Some((name.clone(), path));
                 self.telemetry.pipeline_changed();

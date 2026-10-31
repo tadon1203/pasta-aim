@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn no_makcu_chip_gives_no_port() {
-        assert!(makcu_ports(&[(r"USB\VID_046D&PID_C52B", "COM9")]).is_empty());
-        assert!(makcu_ports(&[]).is_empty());
+        assert_eq!(makcu_ports(&[(r"USB\VID_046D&PID_C52B", "COM9")]).len(), 0);
+        assert_eq!(makcu_ports(&[]).len(), 0);
     }
 }

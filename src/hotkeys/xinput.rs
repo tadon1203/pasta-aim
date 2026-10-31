@@ -131,7 +131,7 @@ pub(super) struct Sample {
     right_trigger: u8,
 }
 
-/// The XInput controls that are down. One bit for each control, in `XInputControl::ALL` order.
+/// The `XInput` controls that are down. One bit for each control, in `XInputControl::ALL` order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ControlSet(u16);
 
@@ -248,7 +248,7 @@ fn pressed_controls(sample: Sample, was_pressed: ControlSet) -> ControlSet {
 pub(super) struct Poller {
     tracker: Tracker,
     next_poll: Instant,
-    /// True while an XInput Shortcut is bound or a recording is active.
+    /// True while an `XInput` Shortcut is bound or a recording is active.
     fast: bool,
 }
 
@@ -401,10 +401,11 @@ mod tests {
     fn unchanged_packet_skips_edge_work() {
         let mut tracker = Tracker::default();
         tracker.update(Some(0), Some(sample(1, 0, 0, 0)));
-        assert!(
+        assert_eq!(
             tracker
                 .update(Some(0), Some(sample(1, XINPUT_GAMEPAD_A, 0, 0)))
-                .is_empty()
+                .len(),
+            0
         );
     }
 

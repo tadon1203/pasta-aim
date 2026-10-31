@@ -9,12 +9,17 @@ use eframe::egui;
 
 use self::widgets::{Edit, error_label, warn_label};
 use super::App;
-use crate::{config::Config, hotkeys::display_shortcut, settings::HotkeyAction};
+use crate::{app::EditField, config::Config, hotkeys::display_shortcut, settings::HotkeyAction};
 
 impl App {
-    fn apply_edit(&mut self, edit: Edit, set: impl FnOnce(&mut Self, i32)) {
+    fn apply_edit<T>(&mut self, field: EditField, edit: Edit<T>, set: impl FnOnce(&mut Self, T)) {
         if let Some(value) = edit.value {
             set(self, value);
+        }
+        if edit.dirty {
+            self.dirty.insert(field);
+        } else {
+            self.dirty.remove(&field);
         }
         if edit.persist {
             self.persist();

@@ -56,7 +56,7 @@ impl InferenceFrame {
 /// `D3D11_FENCE_FLAG_SHARED`) and only *opened* on the D3D12 device through
 /// `ID3D12Device::OpenSharedHandle`. The producer keeps the native resource and the
 /// consumer imports it, so the D3D11 runtime never has to accept a D3D12-authored
-/// resource description (the previous direction failed with E_INVALIDARG).
+/// resource description (the previous direction failed with `E_INVALIDARG`).
 pub fn create_shared_frame(
     gpu: &GpuDeviceContext,
     capture_device: &ID3D11Device4,
@@ -115,7 +115,7 @@ pub fn create_shared_frame(
                 super::gpu_diagnostics::log_d3d12_messages(gpu.device(), true);
                 super::gpu_diagnostics::log_dred_report(gpu.device());
                 tracing::error!(
-                    hresult = format_args!("0x{:08X}", error.code().0 as u32),
+                    hresult = format_args!("0x{:08X}", error.code().0.cast_unsigned()),
                     width = width_u32,
                     height = height_u32,
                     format = "B8G8R8A8_UNORM",

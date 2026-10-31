@@ -72,7 +72,7 @@ pub(crate) struct Pipeline {
     capture_frame: CaptureFrame,
     capture: DxgiCapture,
     qpc: QpcClock,
-    pipeline_id: u64,
+    id: u64,
     /// The New frames of this Pipeline. Each frame uses its count as the fence value.
     frame_seq: u64,
     /// The fence value of the last submitted frame. The shared frame is free once it completes.
@@ -86,13 +86,13 @@ impl Pipeline {
     #[allow(clippy::result_large_err)]
     pub(crate) fn build(
         mut capture: DxgiCapture,
-        config: PipelineConfig<'_>,
+        config: &PipelineConfig<'_>,
     ) -> Result<Self, (DxgiCapture, anyhow::Error)> {
-        let (model, capture_frame) = match model::build(&capture, &config) {
+        let (model, capture_frame) = match model::build(&capture, config) {
             Ok(built) => built,
             Err(error) => return Err((capture, error)),
         };
-        if let Err(error) = capture.bind_copy_target(&capture_frame, model.input_size, config.qpc) {
+        if let Err(error) = capture.bind_copy_target(&capture_frame, model.input_size) {
             return Err((capture, error));
         }
         Ok(Self {
@@ -100,7 +100,7 @@ impl Pipeline {
             capture_frame,
             capture,
             qpc: config.qpc,
-            pipeline_id: config.pipeline_id,
+            id: config.pipeline_id,
             frame_seq: 0,
             last_submitted: 0,
             sampler: ProfileSampler::default(),
@@ -108,17 +108,17 @@ impl Pipeline {
     }
 
     /// Builds the model half again on the same capture. On failure the Pipeline is not changed.
-    pub(crate) fn replace_model(&mut self, config: PipelineConfig<'_>) -> Result<()> {
-        let (model, capture_frame) = model::build(&self.capture, &config)?;
+    pub(crate) fn replace_model(&mut self, config: &PipelineConfig<'_>) -> Result<()> {
+        let (model, capture_frame) = model::build(&self.capture, config)?;
         self.capture
-            .bind_copy_target(&capture_frame, model.input_size, config.qpc)?;
+            .bind_copy_target(&capture_frame, model.input_size)?;
         // Dropping the old model waits for its GPU queue.
         let old_model = std::mem::replace(&mut self.model, model);
         let old_frame = std::mem::replace(&mut self.capture_frame, capture_frame);
         drop(old_model);
         drop(old_frame);
         self.qpc = config.qpc;
-        self.pipeline_id = config.pipeline_id;
+        self.id = config.pipeline_id;
         // The new shared frame has new fences, so the frame count starts again.
         self.frame_seq = 0;
         self.last_submitted = 0;
@@ -127,29 +127,17 @@ impl Pipeline {
 
     /// One capture attempt and, for a New frame, the copy, the preprocess, the inference, and the postprocess.
     pub(crate) fn process_next(&mut self, wait_ms: u32) -> Result<FrameOutcome, PipelineFault> {
-        // The one read of the reuse fence for this frame.
-        let reuse_completed = self.model.frame.reuse_completed();
-        if reuse_completed == u64::MAX {
-            return Err(self.reuse_fault(anyhow::anyhow!(
-                "D3D12 completion fence reports device removed"
-            )));
-        }
-        if reuse_completed < self.last_submitted {
-            return Err(self.reuse_fault(anyhow::anyhow!(
-                "shared frame is still being read by GPU: required={} completed={reuse_completed}",
-                self.last_submitted
-            )));
-        }
+        let reuse_completed = self.check_reuse_fence()?;
 
-        let attempt_start = self.qpc.now();
+        let attempt_start = QpcClock::now();
         let frame = match self.capture.acquire(wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => frame,
             Ok(CapturePoll::NoDesktopUpdate(reason)) => {
                 return Ok(FrameOutcome::NoDesktopUpdate(reason));
             }
-            Err(error) => return Err(self.capture_fault(error)),
+            Err(error) => return Err(self.capture_fault(&error)),
         };
-        let acquired_qpc = self.qpc.now();
+        let acquired_qpc = QpcClock::now();
         let frame_seq = self
             .frame_seq
             .checked_add(1)
@@ -159,7 +147,7 @@ impl Pipeline {
         let measure = self.sampler.should_measure();
         let copy = match self.capture.copy_to_target(&frame, frame_seq, measure) {
             Ok(copy) => copy,
-            Err(error) => return Err(self.copy_fault(frame_seq, error)),
+            Err(error) => return Err(self.copy_fault(frame_seq, &error)),
         };
         // One GPU copy time per New frame. A sample that is not ready yet waits for the next frame.
         let gpu_copy_ms = self
@@ -167,7 +155,7 @@ impl Pipeline {
             .try_take_gpu_copy_sample()
             .map(|sample| sample.gpu_copy_ms);
 
-        let inference_start = self.qpc.now();
+        let inference_start = QpcClock::now();
         let ticket = match self.model.preprocess.submit(
             frame_seq,
             &self.model.frame.capture_ready_fence,
@@ -178,7 +166,7 @@ impl Pipeline {
             Ok(ticket) => ticket,
             Err(error) => {
                 let stage = self.model.preprocess.fault_stage();
-                return Err(self.gpu_fault(stage, frame_seq, frame_seq, error));
+                return Err(self.gpu_fault(stage, frame_seq, frame_seq, &error));
             }
         };
         self.last_submitted = frame_seq;
@@ -196,7 +184,7 @@ impl Pipeline {
                     GpuFaultStage::PreprocessCollect,
                     frame_seq,
                     ticket.completion_value,
-                    error,
+                    &error,
                 ));
             }
         };
@@ -207,7 +195,7 @@ impl Pipeline {
                     GpuFaultStage::BackendRun,
                     frame_seq,
                     ticket.completion_value,
-                    error,
+                    &error,
                 ));
             }
             Err(error) => {
@@ -251,7 +239,7 @@ impl Pipeline {
     }
 
     pub(crate) fn id(&self) -> u64 {
-        self.pipeline_id
+        self.id
     }
 
     pub(crate) fn prepare_id(&self) -> &str {
@@ -274,8 +262,25 @@ impl Pipeline {
         &self.model.ep_assignment
     }
 
-    /// The reuse fence is busy or removed. No capture was made for the frame.
-    fn reuse_fault(&self, error: anyhow::Error) -> PipelineFault {
+    /// Reads the reuse fence once for a frame. Fails when the GPU is still reading the shared
+    /// frame or the device is removed. No capture was made for the frame.
+    fn check_reuse_fence(&self) -> Result<u64, PipelineFault> {
+        let reuse_completed = self.model.frame.reuse_completed();
+        if reuse_completed == u64::MAX {
+            return Err(self.reuse_fault(&anyhow::anyhow!(
+                "D3D12 completion fence reports device removed"
+            )));
+        }
+        if reuse_completed < self.last_submitted {
+            return Err(self.reuse_fault(&anyhow::anyhow!(
+                "shared frame is still being read by GPU: required={} completed={reuse_completed}",
+                self.last_submitted
+            )));
+        }
+        Ok(reuse_completed)
+    }
+
+    fn reuse_fault(&self, error: &anyhow::Error) -> PipelineFault {
         PipelineFault {
             kind: FaultKind::Poisoned {
                 device_lost: self.model.gpu.device_lost(),
@@ -286,7 +291,7 @@ impl Pipeline {
     }
 
     /// The capture failed. A lost device poisons the transport; anything else suspends the Pipeline.
-    fn capture_fault(&self, error: anyhow::Error) -> PipelineFault {
+    fn capture_fault(&self, error: &anyhow::Error) -> PipelineFault {
         let device_lost = self.capture.device_lost();
         PipelineFault {
             kind: if device_lost {
@@ -299,12 +304,12 @@ impl Pipeline {
         }
     }
 
-    fn copy_fault(&self, frame_seq: u64, error: anyhow::Error) -> PipelineFault {
+    fn copy_fault(&self, frame_seq: u64, error: &anyhow::Error) -> PipelineFault {
         let mut report = self.report(
             self.capture.last_fault_stage(),
             frame_seq,
             Some(self.last_submitted),
-            &error,
+            error,
         );
         report.d3d11_removed_reason = self.capture.device_removed_reason();
         PipelineFault {
@@ -322,9 +327,9 @@ impl Pipeline {
         stage: GpuFaultStage,
         frame_seq: u64,
         reuse_value: u64,
-        error: anyhow::Error,
+        error: &anyhow::Error,
     ) -> PipelineFault {
-        let report = self.report(stage, frame_seq, Some(reuse_value), &error);
+        let report = self.report(stage, frame_seq, Some(reuse_value), error);
         PipelineFault {
             kind: FaultKind::Poisoned {
                 device_lost: self.model.gpu.device_lost(),
@@ -343,8 +348,8 @@ impl Pipeline {
     ) -> GpuFaultReport {
         collect_gpu_fault_report(
             &self.model.gpu,
-            FaultSite {
-                pipeline_id: self.pipeline_id,
+            &FaultSite {
+                pipeline_id: self.id,
                 prepare_id: &self.model.prepare_id,
                 frame_seq: Some(frame_seq),
                 ready_value: Some(frame_seq),

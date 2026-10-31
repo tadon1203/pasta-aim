@@ -154,7 +154,7 @@ pub struct FaultSite<'a> {
 
 pub fn collect_gpu_fault_report(
     gpu: &GpuDeviceContext,
-    site: FaultSite<'_>,
+    site: &FaultSite<'_>,
     fences: FenceProgress,
     error: &Error,
 ) -> GpuFaultReport {
@@ -256,7 +256,7 @@ pub fn log_d3d12_messages(device: &ID3D12Device, failed: bool) {
         let fetched =
             unsafe { queue.GetMessage(index, Some(buffer.as_ptr().cast()), &mut actual_len) };
         if fetched.is_ok() && actual_len >= size_of::<D3D12_MESSAGE>() {
-            let message = unsafe { &*buffer.as_ptr().cast::<D3D12_MESSAGE>() };
+            let message = unsafe { &*buffer.cast::<D3D12_MESSAGE>().as_ptr() };
             let description = if message.pDescription.is_null()
                 || message.DescriptionByteLength == 0
             {
@@ -298,7 +298,7 @@ fn normalize_message(description: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '0' && chars.peek() == Some(&'x') {
             chars.next();
-            while chars.peek().is_some_and(|next| next.is_ascii_hexdigit()) {
+            while chars.peek().is_some_and(char::is_ascii_hexdigit) {
                 chars.next();
             }
             normalized.push_str("0x*");
@@ -392,15 +392,14 @@ fn append_allocation_names(
 }
 
 fn optional<T: std::fmt::Display>(value: Option<T>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unknown".to_owned())
+    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
 }
 
 pub(crate) fn hex(value: Option<i32>) -> String {
-    value
-        .map(|value| format!("0x{:08X}", value as u32))
-        .unwrap_or_else(|| "0x00000000".to_owned())
+    value.map_or_else(
+        || "0x00000000".to_owned(),
+        |value| format!("0x{:08X}", value.cast_unsigned()),
+    )
 }
 
 #[cfg(test)]
@@ -429,9 +428,9 @@ mod tests {
             ready_completed: Some(0),
             reuse_value: Some(0),
             reuse_completed: Some(0),
-            hr: Some(0x80004005_u32 as i32),
-            d3d11_removed_reason: Some(0x887A0006_u32 as i32),
-            d3d12_removed_reason: Some(0x887A0005_u32 as i32),
+            hr: Some(0x8000_4005_u32.cast_signed()),
+            d3d11_removed_reason: Some(0x887A_0006_u32.cast_signed()),
+            d3d12_removed_reason: Some(0x887A_0005_u32.cast_signed()),
             error: "signal failed".to_owned(),
             dred: None,
         };

@@ -31,7 +31,7 @@ pub(super) enum Request {
 
 impl Request {
     /// The command byte of the packet. See "Opcodes" in `docs/makcu-protocol.md`.
-    pub(super) fn command(&self) -> u8 {
+    pub(super) fn command(self) -> u8 {
         match self {
             Self::Device => CMD_DEVICE,
             Self::FirmwareVersion => CMD_FIRMWARE_VERSION,
@@ -42,7 +42,7 @@ impl Request {
     }
 
     /// Appends the packet of the request to `out`.
-    pub(super) fn encode(&self, out: &mut Vec<u8>) {
+    pub(super) fn encode(self, out: &mut Vec<u8>) {
         let len = match self {
             Self::Device | Self::FirmwareVersion => 0,
             Self::Move { .. } => 4,
@@ -53,7 +53,7 @@ impl Request {
         out.extend_from_slice(&HEADER);
         out.extend_from_slice(&u16::to_le_bytes(len));
         out.push(self.command());
-        match *self {
+        match self {
             Self::Device | Self::FirmwareVersion => {}
             Self::Move { x, y } => {
                 out.extend_from_slice(&x.to_le_bytes());
@@ -93,8 +93,8 @@ impl Packet {
 
 /// A reject has the command of the request and the payload `FF`. See "Reject form" in `docs/makcu-protocol.md`.
 /// `INTERPOLATE 255` is the exception: its accepted echo has the same bytes, so it is never a reject.
-pub(super) fn is_reject(request: &Request, packet: &Packet) -> bool {
-    packet.payload() == [0xFF] && *request != Request::Interpolate(255)
+pub(super) fn is_reject(request: Request, packet: &Packet) -> bool {
+    packet.payload() == [0xFF] && request != Request::Interpolate(255)
 }
 
 /// Whether the reply to `INTERPOLATE value` confirms the value. Auto (255) is never checked,

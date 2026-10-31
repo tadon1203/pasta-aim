@@ -20,7 +20,7 @@ impl QpcClock {
         })
     }
 
-    pub(crate) fn now(self) -> i64 {
+    pub(crate) fn now() -> i64 {
         let mut counter = 0i64;
         // SAFETY: Windows writes the current performance counter to valid storage.
         let ok = unsafe { QueryPerformanceCounter(&mut counter) };

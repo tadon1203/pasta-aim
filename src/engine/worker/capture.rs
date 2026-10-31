@@ -3,7 +3,7 @@
 use super::{CaptureState, Worker};
 use crate::{
     engine::{CapturePhase, EngineEvent, ModelPhase, RunMode},
-    graphics::{DisplayInfo, DxgiCapture},
+    graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     pipeline::{Pipeline, PipelineConfig},
 };
 use anyhow::Result;
@@ -11,7 +11,7 @@ use anyhow::Result;
 impl CaptureState {
     /// Loads a model on this state. A bare capture gets a Pipeline; a Pipeline gets its model replaced.
     /// On failure the state keeps the capture, or the Pipeline with the model it had.
-    pub(super) fn load_model(&mut self, config: PipelineConfig<'_>) -> Result<()> {
+    pub(super) fn load_model(&mut self, config: &PipelineConfig<'_>) -> Result<()> {
         match std::mem::replace(self, CaptureState::None) {
             CaptureState::None => Err(anyhow::anyhow!("capture is not configured")),
             CaptureState::CaptureOnly(capture) => match Pipeline::build(*capture, config) {
@@ -35,12 +35,12 @@ impl CaptureState {
 
 impl Worker {
     pub(super) fn refresh_capture_catalog(&mut self) {
-        let Some(graphics) = self.graphics.as_ref() else {
+        if self.graphics.is_none() {
             return;
-        };
-        match graphics.enumerate_displays() {
+        }
+        match GraphicsThread::enumerate_displays() {
             Ok(displays) => {
-                self.displays = displays.clone();
+                self.displays.clone_from(&displays);
                 self.status.edit(|status| {
                     status.graphics.displays = displays;
                     status.graphics.catalog_error = None;
@@ -146,8 +146,7 @@ impl Worker {
                     output,
                     adapter_luid: current
                         .as_ref()
-                        .map(|display| display.adapter_luid)
-                        .unwrap_or(self.selected_adapter_luid),
+                        .map_or(self.selected_adapter_luid, |display| display.adapter_luid),
                     result: Err(message.clone()),
                 });
                 tracing::error!(adapter, output, %message, "display prepare failed; active pipeline retained");
@@ -196,10 +195,11 @@ impl Worker {
     }
 
     fn create_capture(&self, adapter: u32, output: u32) -> Result<DxgiCapture> {
-        self.graphics
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("graphics COM initialization unavailable"))?
-            .create_capture(adapter, output)
+        anyhow::ensure!(
+            self.graphics.is_some(),
+            "graphics COM initialization unavailable"
+        );
+        GraphicsThread::create_capture(adapter, output)
     }
 
     /// The state for a new display: a Pipeline when a model is active, otherwise a bare capture.
@@ -215,7 +215,7 @@ impl Worker {
             low_latency: self.tuning.low_latency,
             qpc: self.qpc,
         };
-        match Pipeline::build(capture, config) {
+        match Pipeline::build(capture, &config) {
             Ok(pipeline) => Ok(CaptureState::Ready(Box::new(pipeline))),
             Err((_, error)) => Err(error),
         }

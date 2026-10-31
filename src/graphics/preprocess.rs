@@ -8,7 +8,38 @@ use windows::{
     Win32::Graphics::{
         Direct3D::Fxc::D3DCompile,
         Direct3D::ID3DBlob,
-        Direct3D12::*,
+        Direct3D12::{
+            D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE,
+            D3D12_CACHED_PIPELINE_STATE, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+            D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
+            D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_RANGE,
+            D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FEATURE_DATA_FORMAT_SUPPORT,
+            D3D12_FEATURE_FORMAT_SUPPORT, D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
+            D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
+            D3D12_HEAP_TYPE_READBACK, D3D12_MEMORY_POOL_UNKNOWN, D3D12_PIPELINE_STATE_FLAG_NONE,
+            D3D12_QUERY_HEAP_DESC, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, D3D12_QUERY_TYPE_TIMESTAMP,
+            D3D12_RANGE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_TYPE_UAV,
+            D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATES,
+            D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS,
+            D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+            D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_SHADER_BYTECODE,
+            D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+            D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
+            D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_UAV_DIMENSION_BUFFER,
+            D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0,
+            D3D12SerializeRootSignature, ID3D12CommandAllocator, ID3D12CommandList,
+            ID3D12CommandQueue, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence,
+            ID3D12GraphicsCommandList, ID3D12PipelineState, ID3D12QueryHeap, ID3D12Resource,
+            ID3D12RootSignature,
+        },
         Dxgi::Common::{
             DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32_FLOAT,
         },
@@ -18,7 +49,7 @@ use windows::{
 
 /// BGRA texture -> planar RGB (NCHW) buffer. One thread writes the three channels of one pixel.
 /// The destination is a typed buffer, so the GPU converts each store to the format of the view.
-const SHADER: &str = r#"
+const SHADER: &str = r"
 Texture2D<float4> source_image : register(t0);
 RWBuffer<float> destination : register(u0);
 cbuffer Params : register(b0) { uint width; uint height; uint pixels; };
@@ -31,7 +62,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     destination[pixels + pixel] = color.g;
     destination[2 * pixels + pixel] = color.b;
 }
-"#;
+";
 const COLOR_CHANNELS: usize = 3;
 const PREPROCESS_PARAMETER_COUNT: u32 = 3;
 const THREADS_PER_GROUP: usize = 8;
@@ -121,60 +152,18 @@ impl GpuPreprocessor {
         let frequency = unsafe { gpu.queue().GetTimestampFrequency() }
             .context("failed to query compute timestamp frequency")?;
         let timestamps = PreprocessTimestamps::new(device, frequency)?;
-        name_d3d12(&pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
-        name_d3d12(
-            &root_signature,
-            &format!("{OWN_OBJECT_PREFIX}preprocess-root"),
-        );
-        name_d3d12(
-            &descriptor_heap,
-            &format!("{OWN_OBJECT_PREFIX}preprocess-heap"),
-        );
-        name_d3d12(
-            &allocator,
-            &format!("{OWN_OBJECT_PREFIX}preprocess-allocator"),
-        );
+        name_preprocess_objects(&pipeline, &root_signature, &descriptor_heap, &allocator);
 
-        let cpu_base = unsafe { descriptor_heap.GetCPUDescriptorHandleForHeapStart() };
-        {
-            let cpu = cpu_base;
-            let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                    Texture2D: D3D12_TEX2D_SRV {
-                        MostDetailedMip: 0,
-                        MipLevels: 1,
-                        PlaneSlice: 0,
-                        ResourceMinLODClamp: 0.0,
-                    },
-                },
-            };
-            unsafe { device.CreateShaderResourceView(source, Some(&srv), cpu) };
-        }
-        let output_cpu = offset_cpu(cpu_base, descriptor_stride);
-        let uav = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-            Format: format,
-            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-                Buffer: D3D12_BUFFER_UAV {
-                    FirstElement: 0,
-                    NumElements: elements as u32,
-                    StructureByteStride: 0,
-                    CounterOffsetInBytes: 0,
-                    Flags: D3D12_BUFFER_UAV_FLAG_NONE,
-                },
-            },
-        };
-        unsafe {
-            device.CreateUnorderedAccessView(
-                destination,
-                None::<&ID3D12Resource>,
-                Some(&uav),
-                output_cpu,
-            )
-        };
+        let cpu_start = unsafe { descriptor_heap.GetCPUDescriptorHandleForHeapStart() };
+        write_descriptors(
+            device,
+            source,
+            destination,
+            format,
+            elements,
+            cpu_start,
+            descriptor_stride,
+        );
 
         let gpu_base = unsafe { descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
         let output_gpu = offset_gpu(gpu_base, descriptor_stride);
@@ -317,7 +306,7 @@ fn ensure_typed_uav_store(
     unsafe {
         device.CheckFeatureSupport(
             D3D12_FEATURE_FORMAT_SUPPORT,
-            (&mut support as *mut D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
+            std::ptr::from_mut::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>(&mut support).cast(),
             size_of::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>() as u32,
         )
     }
@@ -506,7 +495,7 @@ impl Drop for PreprocessTimestamps {
     }
 }
 
-fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
     let ranges = [
         D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -580,10 +569,12 @@ fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12
             serialized.GetBufferSize(),
         )
     };
-    let root_signature: ID3D12RootSignature =
-        unsafe { device.CreateRootSignature(0, signature_bytes) }
-            .context("failed to create preprocess root signature")?;
+    unsafe { device.CreateRootSignature(0, signature_bytes) }
+        .context("failed to create preprocess root signature")
+}
 
+/// Compiles the BGRA to NCHW compute shader.
+fn compile_shader() -> Result<ID3DBlob> {
     let source = SHADER.as_bytes();
     let entry = PCSTR(c"main".as_ptr().cast());
     let target = PCSTR(c"cs_5_1".as_ptr().cast());
@@ -605,7 +596,12 @@ fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12
         )
     }
     .context("failed to compile BGRA to NCHW compute shader")?;
-    let bytecode = bytecode.context("shader compiler returned no bytecode")?;
+    bytecode.context("shader compiler returned no bytecode")
+}
+
+fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+    let root_signature = create_root_signature(device)?;
+    let bytecode = compile_shader()?;
     let shader = D3D12_SHADER_BYTECODE {
         pShaderBytecode: unsafe { bytecode.GetBufferPointer() },
         BytecodeLength: unsafe { bytecode.GetBufferSize() },
@@ -641,6 +637,76 @@ fn transition(
     }
 }
 
+/// Names the preprocess objects for PIX and the D3D12 debug layer.
+fn name_preprocess_objects(
+    pipeline: &ID3D12PipelineState,
+    root_signature: &ID3D12RootSignature,
+    descriptor_heap: &ID3D12DescriptorHeap,
+    allocator: &ID3D12CommandAllocator,
+) {
+    name_d3d12(pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
+    name_d3d12(
+        root_signature,
+        &format!("{OWN_OBJECT_PREFIX}preprocess-root"),
+    );
+    name_d3d12(
+        descriptor_heap,
+        &format!("{OWN_OBJECT_PREFIX}preprocess-heap"),
+    );
+    name_d3d12(
+        allocator,
+        &format!("{OWN_OBJECT_PREFIX}preprocess-allocator"),
+    );
+}
+
+/// Writes the source SRV in slot 0 and the output UAV in slot 1 of the descriptor heap.
+fn write_descriptors(
+    device: &ID3D12Device,
+    source: &ID3D12Resource,
+    destination: &ID3D12Resource,
+    format: DXGI_FORMAT,
+    elements: usize,
+    cpu_start: D3D12_CPU_DESCRIPTOR_HANDLE,
+    descriptor_stride: u32,
+) {
+    let srv = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+            Texture2D: D3D12_TEX2D_SRV {
+                MostDetailedMip: 0,
+                MipLevels: 1,
+                PlaneSlice: 0,
+                ResourceMinLODClamp: 0.0,
+            },
+        },
+    };
+    unsafe { device.CreateShaderResourceView(source, Some(&srv), cpu_start) };
+
+    let uav = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+        Format: format,
+        ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+        Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+            Buffer: D3D12_BUFFER_UAV {
+                FirstElement: 0,
+                NumElements: elements as u32,
+                StructureByteStride: 0,
+                CounterOffsetInBytes: 0,
+                Flags: D3D12_BUFFER_UAV_FLAG_NONE,
+            },
+        },
+    };
+    unsafe {
+        device.CreateUnorderedAccessView(
+            destination,
+            None::<&ID3D12Resource>,
+            Some(&uav),
+            offset_cpu(cpu_start, descriptor_stride),
+        );
+    }
+}
+
 fn offset_cpu(mut handle: D3D12_CPU_DESCRIPTOR_HANDLE, offset: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
     handle.ptr += offset as usize;
     handle
@@ -665,9 +731,9 @@ pub(crate) fn preprocess_bgra_into(
         bail!("reference preprocess buffers do not match {width}x{height}");
     }
     for (index, pixel) in bgra.as_chunks::<4>().0.iter().enumerate() {
-        output[index] = pixel[2] as f32 / 255.0;
-        output[pixels + index] = pixel[1] as f32 / 255.0;
-        output[pixels * 2 + index] = pixel[0] as f32 / 255.0;
+        output[index] = f32::from(pixel[2]) / 255.0;
+        output[pixels + index] = f32::from(pixel[1]) / 255.0;
+        output[pixels * 2 + index] = f32::from(pixel[0]) / 255.0;
     }
     Ok(())
 }
@@ -679,7 +745,11 @@ mod tests {
         AcquiredDesktopFrame, CapturePoll, DxgiCapture, GraphicsThread,
         shared_frame::create_shared_frame,
     };
-    use crate::{sync::MutexExt, timing::QpcClock};
+    use crate::sync::MutexExt;
+    use windows::Win32::Graphics::Direct3D12::{
+        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    };
 
     /// The GPU tests open the same desktop output, so they run one at a time.
     static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -810,21 +880,20 @@ mod tests {
     #[ignore = "needs an interactive desktop session and a GPU"]
     fn single_frame_gpu_transport_can_be_reused() -> Result<()> {
         let _serial = GPU_TESTS.lock_recover();
-        let graphics = GraphicsThread::initialize()?;
-        let display = graphics
-            .enumerate_displays()?
+        let _graphics = GraphicsThread::initialize()?;
+        let display = GraphicsThread::enumerate_displays()?
             .into_iter()
             .next()
             .context("no desktop display available")?;
-        let mut capture = graphics.create_capture(display.adapter_index, display.output_index)?;
+        let mut capture =
+            GraphicsThread::create_capture(display.adapter_index, display.output_index)?;
         let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
-        let qpc = QpcClock::new()?;
         let size = (32, 32);
 
         for precision in [TensorPrecision::Fp32, TensorPrecision::Fp16] {
             let (capture_frame, inference_frame) =
                 create_shared_frame(&gpu, &capture.transport_device(), size.0, size.1)?;
-            capture.bind_copy_target(&capture_frame, size, qpc)?;
+            capture.bind_copy_target(&capture_frame, size)?;
             let image = acquire_fresh_image(&mut capture)?;
             let destination =
                 create_tensor_buffer(&gpu, precision, size.0 * size.1 * COLOR_CHANNELS)?;
@@ -877,13 +946,12 @@ mod tests {
     #[ignore = "needs an interactive desktop session and a GPU"]
     fn gpu_preprocess_matches_the_reference_for_fp32_and_fp16_with_an_odd_width() -> Result<()> {
         let _serial = GPU_TESTS.lock_recover();
-        let graphics = GraphicsThread::initialize()?;
-        let display = graphics
-            .enumerate_displays()?
+        let _graphics = GraphicsThread::initialize()?;
+        let display = GraphicsThread::enumerate_displays()?
             .into_iter()
             .next()
             .context("no desktop display available")?;
-        let capture = graphics.create_capture(display.adapter_index, display.output_index)?;
+        let capture = GraphicsThread::create_capture(display.adapter_index, display.output_index)?;
         let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
         let (width, height) = (33, 9);
         let pixels = width * height;

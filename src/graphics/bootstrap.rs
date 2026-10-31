@@ -37,8 +37,5 @@ pub fn initialize_graphics_diagnostics(gpu_debug: bool) -> Result<()> {
         Ok(())
     });
 
-    initialized
-        .as_ref()
-        .map(|_| ())
-        .map_err(|error| anyhow!(error.clone()))
+    initialized.clone().map_err(|error| anyhow!(error))
 }

@@ -73,7 +73,7 @@ pub enum Command {
     SetInterpolation(Interpolation),
     SetFpsLimit(FpsLimit),
     SetCaptureSettings(CaptureSettings),
-    /// Reloads the active model, since the DirectML wait mode is a session option.
+    /// Reloads the active model, since the `DirectML` wait mode is a session option.
     SetLowLatency(bool),
     /// Applies to the next run.
     SetFrameTrace(bool),

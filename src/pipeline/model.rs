@@ -46,8 +46,7 @@ pub(super) fn build(
 ) -> Result<(ModelHalf, CaptureFrame)> {
     let display = capture.info();
     let gpu = GpuDeviceContext::new(display.adapter_luid)?;
-    let mut backend =
-        OrtDirectMlBackend::prepare(config.model, &gpu, config.low_latency, config.qpc)?;
+    let mut backend = OrtDirectMlBackend::prepare(config.model, &gpu, config.low_latency)?;
     backend.set_confidence_threshold(config.confidence_threshold);
     let spec = backend.input_spec();
     if spec.width > display.width as usize || spec.height > display.height as usize {

@@ -1,4 +1,4 @@
-//! The input thread. It turns hotkey events and XInput polls into commands for the engine.
+//! The input thread. It turns hotkey events and `XInput` polls into commands for the engine.
 //! It sleeps on a `DeadlineWait` until the UI sends a message or the next poll or release probe is due.
 
 use std::{
@@ -56,7 +56,7 @@ pub(super) struct Listener {
     bindings: BindingActions,
     suspended: bool,
     xinput: Poller,
-    /// Some while a recording is active. It holds the XInput controls that were down at its start.
+    /// Some while a recording is active. It holds the `XInput` controls that were down at its start.
     /// They are ignored until they are released.
     capture: Option<ControlSet>,
     published_slot: Option<u32>,
@@ -151,7 +151,7 @@ impl Listener {
         true
     }
 
-    /// The earlier of the next XInput poll and the next key release probe.
+    /// The earlier of the next `XInput` poll and the next key release probe.
     fn next_deadline(&self) -> Instant {
         let poll = self.xinput.next_poll();
         if self.has_keyboard_hold() {
@@ -167,7 +167,7 @@ impl Listener {
             .any(|id| matches!(id, TriggerId::Keyboard(_)))
     }
 
-    /// XInput is polled at the fast rate while a bound XInput Shortcut or a recording needs it.
+    /// `XInput` is polled at the fast rate while a bound `XInput` Shortcut or a recording needs it.
     fn wants_fast(&self) -> bool {
         !self.bindings.xinput.is_empty() || self.capture.is_some()
     }
@@ -333,7 +333,7 @@ fn probe_keyboard_releases(
             continue;
         };
         // SAFETY: GetAsyncKeyState accepts any virtual-key code and has no pointer arguments.
-        let down = unsafe { GetAsyncKeyState(vkey) } as u16 & 0x8000 != 0;
+        let down = unsafe { GetAsyncKeyState(vkey) }.cast_unsigned() & 0x8000 != 0;
         if !down {
             seen.insert(id, now);
             released.push(id);
@@ -441,14 +441,11 @@ fn summarize_release_latency(samples: &VecDeque<f64>) -> KeyboardReleaseLatency 
     }
     let mut sorted = samples.iter().copied().collect::<Vec<_>>();
     sorted.sort_by(f64::total_cmp);
-    let percentile = |fraction: f64| {
-        let index = ((sorted.len() - 1) as f64 * fraction).round() as usize;
-        sorted[index]
-    };
-    let p95_ms = percentile(0.95);
+    let percentile = |percent: usize| sorted[crate::stats::percentile_index(sorted.len(), percent)];
+    let p95_ms = percentile(95);
     KeyboardReleaseLatency {
         samples: sorted.len(),
-        p50_ms: percentile(0.50),
+        p50_ms: percentile(50),
         p95_ms,
         assist_active: sorted.len() >= RELEASE_ASSIST_MIN_SAMPLES
             && p95_ms > RELEASE_ASSIST_P95_THRESHOLD_MS,

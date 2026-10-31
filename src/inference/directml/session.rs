@@ -69,7 +69,7 @@ impl InputTensor {
         match self {
             Self::Fp16(tensor) => binding.bind_input(name, tensor)?,
             Self::Fp32(tensor) => binding.bind_input(name, tensor)?,
-        };
+        }
         Ok(())
     }
 }
@@ -93,10 +93,10 @@ fn allocate_input<T: PrimitiveTensorElementType + std::fmt::Debug>(
     Ok((tensor, resource))
 }
 
-/// ONNX Runtime / DirectML session state. Device, queue, shared frames, and
+/// ONNX Runtime / `DirectML` session state. Device, queue, shared frames, and
 /// preprocessing are owned by the enclosing Pipeline.
 ///
-/// Field order is drop order: tensors must disappear before their DirectML
+/// Field order is drop order: tensors must disappear before their `DirectML`
 /// allocator and session.
 pub struct OrtDirectMlBackend {
     binding: IoBinding,
@@ -113,16 +113,10 @@ pub struct OrtDirectMlBackend {
     output_rows: usize,
     confidence_threshold: ConfidenceThreshold,
     ep_assignment: EpAssignmentState,
-    qpc: QpcClock,
 }
 
 impl OrtDirectMlBackend {
-    pub fn prepare(
-        path: &Path,
-        gpu: &GpuDeviceContext,
-        low_latency: bool,
-        qpc: QpcClock,
-    ) -> Result<Self> {
+    pub fn prepare(path: &Path, gpu: &GpuDeviceContext, low_latency: bool) -> Result<Self> {
         let prepare_id = format!(
             "{}-{}",
             std::process::id(),
@@ -130,7 +124,7 @@ impl OrtDirectMlBackend {
         );
         let total_start = Instant::now();
         tracing::info!(prepare_id = %prepare_id, model = %path.display(), "directml_prepare_begin");
-        let result = Self::prepare_inner(path, gpu, &prepare_id, low_latency, qpc);
+        let result = Self::prepare_inner(path, gpu, &prepare_id, low_latency);
         match result {
             Ok(backend) => {
                 tracing::info!(prepare_id = %prepare_id, total_ms = total_start.elapsed().as_secs_f64() * 1000.0, "directml_prepare_complete");
@@ -148,7 +142,6 @@ impl OrtDirectMlBackend {
         gpu: &GpuDeviceContext,
         prepare_id: &str,
         low_latency: bool,
-        qpc: QpcClock,
     ) -> Result<Self> {
         if !path.is_file() {
             bail!("model does not exist: {}", path.display());
@@ -188,8 +181,8 @@ impl OrtDirectMlBackend {
             bail!("expected static NCHW input [1, 3, H, W], got {dims:?}");
         }
         let input_spec = ModelInputSpec {
-            width: dims[3] as usize,
-            height: dims[2] as usize,
+            width: usize::try_from(dims[3]).context("model input width")?,
+            height: usize::try_from(dims[2]).context("model input height")?,
             precision: io_precision(&session.inputs()[0], "input")?,
         };
         let output_precision = io_precision(&session.outputs()[0], "output")?;
@@ -197,11 +190,10 @@ impl OrtDirectMlBackend {
         validate_metadata(&session, input_spec)?;
         let input_name = session.inputs()[0].name().to_owned();
         let output_name = session.outputs()[0].name().to_owned();
-        let ep_assignment = ep_assignment::read(&session)
-            .map(crate::inference::EpAssignmentState::Available)
-            .unwrap_or_else(|error| {
-                crate::inference::EpAssignmentState::Unavailable(format!("{error:#}"))
-            });
+        let ep_assignment = ep_assignment::read(&session).map_or_else(
+            |error| crate::inference::EpAssignmentState::Unavailable(format!("{error:#}")),
+            crate::inference::EpAssignmentState::Available,
+        );
 
         let allocator = Allocator::new(
             &session,
@@ -239,7 +231,6 @@ impl OrtDirectMlBackend {
             output_rows,
             confidence_threshold: ConfidenceThreshold::default(),
             ep_assignment,
-            qpc,
         })
     }
 
@@ -267,7 +258,7 @@ impl OrtDirectMlBackend {
         // The tensor was bound once during prepare and is populated by the
         // pipeline's D3D12 preprocess dispatch before this call.
         let outputs = self.session.run_binding(&self.binding)?;
-        let inference_done_qpc = self.qpc.now();
+        let inference_done_qpc = QpcClock::now();
         let threshold = self.confidence_threshold.ratio();
         let output = &outputs[self.output_name.as_str()];
         let selection = match self.output_precision {
@@ -281,7 +272,7 @@ impl OrtDirectMlBackend {
         Ok(InferenceOutput {
             selection,
             inference_done_qpc,
-            postprocess_done_qpc: self.qpc.now(),
+            postprocess_done_qpc: QpcClock::now(),
         })
     }
 }
@@ -330,7 +321,9 @@ fn validate_output_shape(outlet: &Outlet) -> Result<usize> {
         .context("model output must be a tensor")?
         .as_ref();
     match dims {
-        [1, rows, 6] | [rows, 6] if *rows > 0 => Ok(*rows as usize),
+        [1, rows, 6] | [rows, 6] if *rows > 0 => {
+            usize::try_from(*rows).context("model output rows")
+        }
         _ => bail!(
             "expected a static end-to-end output [1, N, 6] (x1, y1, x2, y2, score, class), got {dims:?};              export the model with NMS embedded and a fixed input size"
         ),

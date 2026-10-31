@@ -7,54 +7,77 @@ use eframe::egui;
 const STEPS: [(&str, i32); 4] = [("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)];
 
 /// What the user asked for through a value widget this frame.
-#[derive(Debug, Default)]
-pub(super) struct Edit {
+#[derive(Debug)]
+pub(super) struct Edit<T> {
     /// A new value to apply immediately.
-    pub value: Option<i32>,
+    pub value: Option<T>,
     /// The edit is finished and should be saved.
     pub persist: bool,
+    /// The value still has an edit that is not saved yet.
+    pub dirty: bool,
 }
 
-/// A draggable integer field. `dirty` remembers an unsaved edit so the setting
-/// is saved once the drag or text entry ends, not on every intermediate value.
-pub(super) fn drag_value(
+/// A draggable integer field. `dirty` says whether an unsaved edit is pending, so the
+/// setting is saved once the drag or text entry ends, not on every intermediate value.
+pub(super) fn drag_value<T>(
     ui: &mut egui::Ui,
-    value: i32,
-    range: RangeInclusive<i32>,
-    dirty: &mut bool,
-) -> Edit {
-    let mut edited = value;
-    let response = ui.add(egui::DragValue::new(&mut edited).speed(1.0).range(range));
-    let mut edit = Edit::default();
+    value: T,
+    range: RangeInclusive<T>,
+    dirty: bool,
+) -> Edit<T>
+where
+    T: Copy + Into<i32> + TryFrom<i32>,
+{
+    let low: i32 = (*range.start()).into();
+    let high: i32 = (*range.end()).into();
+    let mut edited: i32 = value.into();
+    let response = ui.add(
+        egui::DragValue::new(&mut edited)
+            .speed(1.0)
+            .range(low..=high),
+    );
+    let mut edit = Edit {
+        value: None,
+        persist: false,
+        dirty,
+    };
     if response.changed() {
-        *dirty = true;
-        edit.value = Some(edited);
+        edit.dirty = true;
+        // The drag value is clamped to `range`, so the conversion back succeeds.
+        edit.value = T::try_from(edited).ok();
     }
-    if *dirty && (response.drag_stopped() || response.lost_focus()) {
-        *dirty = false;
+    if edit.dirty && (response.drag_stopped() || response.lost_focus()) {
+        edit.dirty = false;
         edit.persist = true;
     }
     edit
 }
 
 /// A labelled percentage field with −10/−1/+1/+10 buttons.
-pub(super) fn percent_row(
+pub(super) fn percent_row<T>(
     ui: &mut egui::Ui,
     label: &str,
-    value: i32,
-    range: RangeInclusive<i32>,
-    dirty: &mut bool,
-) -> Edit {
+    value: T,
+    range: RangeInclusive<T>,
+    dirty: bool,
+) -> Edit<T>
+where
+    T: Copy + Into<i32> + TryFrom<i32>,
+{
     ui.horizontal(|ui| {
         ui.label(label);
         let mut edit = drag_value(ui, value, range.clone(), dirty);
         ui.label("%");
+        let low: i32 = (*range.start()).into();
+        let high: i32 = (*range.end()).into();
+        let current: i32 = value.into();
         for (text, delta) in STEPS {
             if ui.button(text).clicked() {
-                let stepped = (value + delta).clamp(*range.start(), *range.end());
+                let stepped = (current + delta).clamp(low, high);
                 edit = Edit {
-                    value: Some(stepped),
+                    value: T::try_from(stepped).ok(),
                     persist: true,
+                    dirty: false,
                 };
             }
         }

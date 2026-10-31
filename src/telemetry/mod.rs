@@ -83,14 +83,12 @@ pub(crate) struct TelemetrySink {
     tx: Sender<TelemetryMessage>,
     /// Messages that did not fit in the queue. Shared with the Aggregator, which reports the count of each Run in the Frame trace footer.
     dropped: Arc<AtomicU64>,
-    /// Gives the time of an event at the moment that the engine reports it.
-    qpc: QpcClock,
 }
 
 impl TelemetrySink {
     /// Never blocks. A record that does not fit is dropped and counted.
-    pub(crate) fn frame(&self, record: FrameRecord) {
-        self.try_send(TelemetryMessage::Frame(record));
+    pub(crate) fn frame(&self, record: &FrameRecord) {
+        self.try_send(TelemetryMessage::Frame(*record));
     }
 
     /// Never blocks. A message that does not fit is dropped and counted.
@@ -101,7 +99,7 @@ impl TelemetrySink {
     /// Never blocks. A message that does not fit is dropped and counted.
     pub(crate) fn frame_dropped(&self, reason: GpuDropReason) {
         self.try_send(TelemetryMessage::FrameDropped {
-            qpc: self.qpc.now(),
+            qpc: QpcClock::now(),
             reason,
         });
     }
@@ -109,7 +107,7 @@ impl TelemetrySink {
     /// Never blocks. A message that does not fit is dropped and counted.
     pub(crate) fn event(&self, event: TraceEvent) {
         self.try_send(TelemetryMessage::Event {
-            qpc: self.qpc.now(),
+            qpc: QpcClock::now(),
             event,
         });
     }
@@ -128,7 +126,7 @@ impl TelemetrySink {
     /// Blocks while the queue is full. See the ticket's Comments: the frame path can reach this through a command.
     pub(crate) fn pipeline_changed(&self) {
         let _ = self.tx.send(TelemetryMessage::PipelineChanged {
-            qpc: self.qpc.now(),
+            qpc: QpcClock::now(),
         });
     }
 
@@ -145,7 +143,6 @@ impl TelemetrySink {
             Self {
                 tx,
                 dropped: Arc::new(AtomicU64::new(0)),
-                qpc: QpcClock::test(1_000.0),
             },
             rx,
         )
@@ -175,16 +172,15 @@ impl Telemetry {
         let (tx, rx) = bounded(QUEUE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         let live = Arc::new(Mutex::new(LiveTelemetry::default()));
-        let aggregator = Aggregator::new(qpc, paths::logs_dir(), Arc::clone(&dropped));
+        let mut aggregator = Aggregator::new(qpc, paths::logs_dir(), Arc::clone(&dropped));
         let thread_live = Arc::clone(&live);
         let join = thread::Builder::new()
             .name("nice-aimassist-telemetry".to_owned())
-            .spawn(move || run_telemetry(rx, aggregator, thread_live, repaint))
+            .spawn(move || run_telemetry(&rx, &mut aggregator, &thread_live, &repaint))
             .expect("failed to spawn the telemetry thread");
         let sink = TelemetrySink {
             tx: tx.clone(),
             dropped,
-            qpc,
         };
         (
             Self {
@@ -211,10 +207,10 @@ impl Telemetry {
 
 /// The loop of the Telemetry thread. It publishes at most every `PUBLISH_INTERVAL`, and at once when a Run stops.
 fn run_telemetry(
-    rx: Receiver<TelemetryMessage>,
-    mut aggregator: Aggregator,
-    live: Arc<Mutex<LiveTelemetry>>,
-    repaint: RepaintSignal,
+    rx: &Receiver<TelemetryMessage>,
+    aggregator: &mut Aggregator,
+    live: &Mutex<LiveTelemetry>,
+    repaint: &RepaintSignal,
 ) {
     let mut last_publish = Instant::now();
     let mut last_flush = Instant::now();

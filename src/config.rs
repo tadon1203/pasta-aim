@@ -29,7 +29,7 @@ pub struct Config {
     pub hotkeys: Vec<HotkeyBinding>,
     pub selected_adapter: crate::inference::AdapterLuid,
     pub capture_output: u32,
-    /// Busy-waits on DirectML completion for lower tail latency at the cost of one CPU core.
+    /// Busy-waits on `DirectML` completion for lower tail latency at the cost of one CPU core.
     pub low_latency: bool,
     pub interpolation: Interpolation,
     /// The serial port of MAKCU, such as `COM4`. `None` detects it automatically.

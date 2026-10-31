@@ -10,7 +10,7 @@ impl Worker {
     /// Tears the pipeline down after a poisoned GPU transport and rebuilds it once.
     pub(super) fn recover_poisoned_pipeline(
         &mut self,
-        error: String,
+        error: &str,
         device_lost: bool,
         report: Option<GpuFaultReport>,
     ) {
@@ -23,7 +23,7 @@ impl Worker {
         log_pipeline_state("Poisoned", pipeline_id, prepare_id, None, None);
         let can_attempt_reprepare = should_auto_reprepare(&mut self.auto_reprepare_attempted);
         log_pipeline_state("Teardown", pipeline_id, prepare_id, None, None);
-        self.suspend_invalid_pipeline(error.clone());
+        self.suspend_invalid_pipeline(error);
         if !can_attempt_reprepare {
             let reason = if device_lost {
                 "repeated_device_removed_after_single_reprepare"
@@ -62,13 +62,13 @@ impl Worker {
 
     /// Stops the run and drops the broken GPU resources, leaving capture suspended
     /// until [`Self::retry_suspended_pipeline`] rebuilds the pipeline.
-    pub(super) fn suspend_invalid_pipeline(&mut self, error: String) {
-        self.fail_run(error.clone());
+    pub(super) fn suspend_invalid_pipeline(&mut self, error: &str) {
+        self.fail_run(error.to_owned());
         self.status.edit(|status| {
             status.capture.phase = CapturePhase::Failed;
             status.capture.selected = None;
             status.capture.desktop_size = None;
-            status.capture.error = Some(error.clone());
+            status.capture.error = Some(error.to_owned());
         });
 
         // The Pipeline waits for its GPU queue before its capture and COM objects are released.

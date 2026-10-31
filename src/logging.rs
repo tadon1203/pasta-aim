@@ -114,6 +114,8 @@ fn create_session_file(path: &Path) -> io::Result<File> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     #[test]
@@ -123,7 +125,6 @@ mod tests {
         let path = temp.join("nested").join("nice-aimassist.log");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "before\n").unwrap();
-        use std::io::Write;
         writeln!(create_session_file(&path).unwrap(), "after").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "after\n");
         let _ = fs::remove_dir_all(temp);

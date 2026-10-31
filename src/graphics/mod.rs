@@ -50,17 +50,15 @@ impl GraphicsThread {
         Ok(Self(PhantomData))
     }
 
-    pub(crate) fn enumerate_displays(&self) -> Result<Vec<DisplayInfo>> {
+    /// Lists the displays. Call only after `initialize` on this thread.
+    pub(crate) fn enumerate_displays() -> Result<Vec<DisplayInfo>> {
         let displays = enumerate_displays_impl()?;
         tracing::debug!(count = displays.len(), "enumerated displays");
         Ok(displays)
     }
 
-    pub(crate) fn create_capture(
-        &self,
-        adapter_index: u32,
-        output_index: u32,
-    ) -> Result<DxgiCapture> {
+    /// Creates the capture of one output. Call only after `initialize` on this thread.
+    pub(crate) fn create_capture(adapter_index: u32, output_index: u32) -> Result<DxgiCapture> {
         tracing::debug!(adapter_index, output_index, "creating DXGI capture");
         DxgiCapture::new(adapter_index, output_index)
     }

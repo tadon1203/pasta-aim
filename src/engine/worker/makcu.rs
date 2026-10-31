@@ -76,7 +76,7 @@ impl Worker {
                     });
                 }
                 MakcuConnectionEvent::Connected(Ok(metadata)) => {
-                    self.apply_makcu_metadata(metadata)
+                    self.apply_makcu_metadata(metadata);
                 }
                 MakcuConnectionEvent::Connected(Err(error)) => self.set_makcu_failure(error),
             }

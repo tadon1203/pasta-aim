@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_1},
     Direct3D11::{
-        D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BOX, D3D11_QUERY,
+        D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BOX, D3D11_CREATE_DEVICE_FLAG, D3D11_QUERY,
         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
         D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11CreateDevice,
         ID3D11Device, ID3D11Device4, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Query,
@@ -75,7 +75,6 @@ struct CopyTarget {
     resource: ID3D11Resource,
     ready_fence: windows::Win32::Graphics::Direct3D11::ID3D11Fence,
     input_size: (usize, usize),
-    qpc: QpcClock,
 }
 
 /// The validated layout of the desktop for the bound copy target.
@@ -166,7 +165,12 @@ impl D3d11GpuProfiler {
                 context
                     .GetData(
                         &slot.disjoint,
-                        Some((&mut disjoint as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast()),
+                        Some(
+                            std::ptr::from_mut::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>(
+                                &mut disjoint,
+                            )
+                            .cast(),
+                        ),
                         std::mem::size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() as u32,
                         D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
                     )
@@ -174,7 +178,7 @@ impl D3d11GpuProfiler {
                     && context
                         .GetData(
                             &slot.before,
-                            Some((&mut before as *mut u64).cast()),
+                            Some(std::ptr::from_mut::<u64>(&mut before).cast()),
                             std::mem::size_of::<u64>() as u32,
                             D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
                         )
@@ -182,7 +186,7 @@ impl D3d11GpuProfiler {
                     && context
                         .GetData(
                             &slot.after,
-                            Some((&mut after as *mut u64).cast()),
+                            Some(std::ptr::from_mut::<u64>(&mut after).cast()),
                             std::mem::size_of::<u64>() as u32,
                             D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
                         )
@@ -297,7 +301,6 @@ impl DxgiCapture {
         &mut self,
         target: &CaptureFrame,
         input_size: (usize, usize),
-        qpc: QpcClock,
     ) -> Result<()> {
         if input_size.0 == 0 || input_size.1 == 0 {
             bail!("model input size must be non-zero");
@@ -316,7 +319,6 @@ impl DxgiCapture {
             resource,
             ready_fence: target.capture_ready_fence.clone(),
             input_size,
-            qpc,
         });
         self.layout = None;
         Ok(())
@@ -366,13 +368,12 @@ impl DxgiCapture {
         let texture = resource
             .cast::<ID3D11Texture2D>()
             .context("DXGI desktop resource is not a D3D11 texture")?;
-        let layout = match self.layout {
-            Some(layout) => layout,
-            None => {
-                let layout = self.validate_frame(&texture)?;
-                self.layout = Some(layout);
-                layout
-            }
+        let layout = if let Some(layout) = self.layout {
+            layout
+        } else {
+            let layout = self.validate_frame(&texture)?;
+            self.layout = Some(layout);
+            layout
         };
         Ok(CapturePoll::Fresh(AcquiredDesktopFrame {
             texture,
@@ -450,10 +451,10 @@ impl DxgiCapture {
                 0,
                 &*frame.texture,
                 0,
-                Some(&frame.source_box as *const D3D11_BOX),
+                Some(std::ptr::from_ref::<D3D11_BOX>(&frame.source_box)),
             );
         }
-        let copy_submitted_qpc = target.qpc.now();
+        let copy_submitted_qpc = QpcClock::now();
         tracing::debug!(
             width = target.input_size.0,
             height = target.input_size.1,
@@ -467,7 +468,7 @@ impl DxgiCapture {
             tracing::info!(value = ready_value, "capture_fence_first_signal");
         }
         if let Err(error) = unsafe { self.context.Signal(&target.ready_fence, ready_value) } {
-            let hr = format!("0x{:08X}", error.code().0 as u32);
+            let hr = format!("0x{:08X}", error.code().0.cast_unsigned());
             tracing::error!(value = ready_value, hr, "capture_ready_signal_failed");
             return Err(error).context("failed to signal capture-ready fence");
         }
@@ -481,7 +482,7 @@ impl DxgiCapture {
         }
         Ok(CopyTimes {
             copy_submitted_qpc,
-            ready_qpc: target.qpc.now(),
+            ready_qpc: QpcClock::now(),
         })
     }
 
@@ -524,7 +525,7 @@ impl DxgiCapture {
                 bgra.as_ptr().cast(),
                 (width * 4) as u32,
                 0,
-            )
+            );
         };
         unsafe {
             self.context
@@ -555,7 +556,7 @@ fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device4, ID3D11Device
             adapter,
             D3D_DRIVER_TYPE_UNKNOWN,
             None::<&windows::Win32::Foundation::HMODULE>,
-            Default::default(),
+            D3D11_CREATE_DEVICE_FLAG::default(),
             Some(&[D3D_FEATURE_LEVEL_11_1]),
             D3D11_SDK_VERSION,
             Some(&mut device),

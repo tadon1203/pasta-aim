@@ -272,19 +272,18 @@ impl Worker {
             }
             let mut capture_at = None;
             if let Some(run) = self.run.active {
-                match self.capture_deadline.pending_until(run.mode, now) {
-                    Some(at) => capture_at = Some(at),
-                    None => {
-                        let outcome = self.step_frame(rx);
-                        // The end of each pass publishes the state, if it changed.
-                        self.status.flush();
-                        if outcome == StepOutcome::Shutdown {
-                            return;
-                        }
-                        self.capture_deadline
-                            .after_step(outcome, self.tuning.fps_limit);
-                        continue;
+                if let Some(at) = self.capture_deadline.pending_until(run.mode, now) {
+                    capture_at = Some(at);
+                } else {
+                    let outcome = self.step_frame(rx);
+                    // The end of each pass publishes the state, if it changed.
+                    self.status.flush();
+                    if outcome == StepOutcome::Shutdown {
+                        return;
                     }
+                    self.capture_deadline
+                        .after_step(outcome, self.tuning.fps_limit);
+                    continue;
                 }
             }
             self.status.flush();
@@ -366,17 +365,17 @@ impl Worker {
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetCaptureSelection { adapter, output } => {
                 self.auto_reprepare_attempted = false;
-                self.set_capture_selection(adapter, output)
+                self.set_capture_selection(adapter, output);
             }
             Command::SetContinuous(active) => self.set_continuous(active),
             Command::RunOnce => self.run_once(),
             Command::RefreshMakcuRoutes => {
-                self.reconnect_makcu("refreshing", MakcuClient::refresh_routes)
+                self.reconnect_makcu("refreshing", MakcuClient::refresh_routes);
             }
             Command::RescanMakcu => self.reconnect_makcu("rescanning", MakcuClient::rescan),
             Command::SetMakcuPort(port) => {
                 self.makcu.set_port(port);
-                self.reconnect_makcu("selecting the port", MakcuClient::rescan)
+                self.reconnect_makcu("selecting the port", MakcuClient::rescan);
             }
             Command::RetryCapture => {
                 self.auto_reprepare_attempted = false;

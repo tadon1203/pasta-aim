@@ -1,23 +1,23 @@
 use std::collections::VecDeque;
 
-use crate::timing::QpcClock;
+use crate::{stats::percentile, timing::QpcClock};
 
 const MAX_SAMPLES: usize = 256;
 
 /// The stage times of one frame, in milliseconds.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StageTimings {
-    pub present_to_gpu_submit_ms: f64,
-    pub present_to_inference_start_ms: f64,
-    pub acquire_wait_ms: f64,
-    pub capture_ms: f64,
-    pub copy_submit_ms: f64,
+    pub present_to_gpu_submit: f64,
+    pub present_to_inference_start: f64,
+    pub acquire_wait: f64,
+    pub capture: f64,
+    pub copy_submit: f64,
     /// Only measured on some frames.
-    pub gpu_preprocess_ms: Option<f64>,
-    pub inference_ms: f64,
-    pub postprocess_ms: f64,
-    pub makcu_write_ms: f64,
-    pub total_ms: f64,
+    pub gpu_preprocess: Option<f64>,
+    pub inference: f64,
+    pub postprocess: f64,
+    pub makcu_write: f64,
+    pub total: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,9 +30,9 @@ pub struct CaptureSourceMetrics {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MetricSummary {
-    pub p50_ms: f64,
-    pub p95_ms: f64,
-    pub p99_ms: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -134,7 +134,7 @@ impl Metrics {
         let mean_cadence = if cadence_count == 0 {
             None
         } else {
-            Some(cadence_sum / cadence_count as f64)
+            Some(cadence_sum / f64::from(cadence_count))
         };
         let cadence = summarize_samples(&self.samples, &mut scratch, |sample| sample.cadence_ms);
 
@@ -142,39 +142,38 @@ impl Metrics {
             sample_count: self.samples.len(),
             fps: mean_cadence
                 .filter(|value| *value > 0.0)
-                .map(|value| 1000.0 / value)
-                .unwrap_or(0.0),
+                .map_or(0.0, |value| 1000.0 / value),
             cadence,
             present_to_gpu_submit: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.present_to_gpu_submit_ms)
+                Some(sample.timings.present_to_gpu_submit)
             }),
             present_to_inference_start: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.present_to_inference_start_ms)
+                Some(sample.timings.present_to_inference_start)
             }),
             acquire_wait: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.acquire_wait_ms)
+                Some(sample.timings.acquire_wait)
             }),
             capture: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.capture_ms)
+                Some(sample.timings.capture)
             }),
             copy_submit: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.copy_submit_ms)
+                Some(sample.timings.copy_submit)
             }),
             gpu_copy: summarize_values(&self.gpu_copy_samples, &mut scratch),
             preprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
-                sample.timings.gpu_preprocess_ms
+                sample.timings.gpu_preprocess
             }),
             inference: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.inference_ms)
+                Some(sample.timings.inference)
             }),
             postprocess: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.postprocess_ms)
+                Some(sample.timings.postprocess)
             }),
             makcu_write: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.makcu_write_ms)
+                Some(sample.timings.makcu_write)
             }),
             total: summarize_samples(&self.samples, &mut scratch, |sample| {
-                Some(sample.timings.total_ms)
+                Some(sample.timings.total)
             }),
             capture_source: self.capture_source,
             cold_run: self.cold_run,
@@ -217,16 +216,10 @@ fn summarize_scratch(values: &mut [f64]) -> MetricSummary {
         return MetricSummary::default();
     }
     MetricSummary {
-        p50_ms: percentile(values, 0.50),
-        p95_ms: percentile(values, 0.95),
-        p99_ms: percentile(values, 0.99),
+        p50: percentile(values, 50).unwrap_or_default(),
+        p95: percentile(values, 95).unwrap_or_default(),
+        p99: percentile(values, 99).unwrap_or_default(),
     }
-}
-
-/// The value at `fraction` in sorted order. It selects that value without a full sort.
-fn percentile(values: &mut [f64], fraction: f64) -> f64 {
-    let index = ((values.len() - 1) as f64 * fraction).round() as usize;
-    *values.select_nth_unstable_by(index, f64::total_cmp).1
 }
 
 #[cfg(test)]
@@ -241,14 +234,14 @@ mod tests {
             qpc,
             0,
             StageTimings {
-                total_ms: 12.0,
+                total: 12.0,
                 ..Default::default()
             },
         );
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.sample_count, 0);
-        assert_eq!(snapshot.cold_run.expect("cold run").total_ms, 12.0);
+        assert_eq!(snapshot.cold_run.expect("cold run").total, 12.0);
     }
 
     #[test]
@@ -261,7 +254,7 @@ mod tests {
                 qpc,
                 i * 10,
                 StageTimings {
-                    total_ms: i as f64,
+                    total: i as f64,
                     ..Default::default()
                 },
             );
@@ -269,10 +262,10 @@ mod tests {
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.sample_count, 20);
-        assert_eq!(snapshot.total.p50_ms, 11.0);
-        assert_eq!(snapshot.total.p95_ms, 19.0);
-        assert_eq!(snapshot.cadence.p50_ms, 10.0);
-        assert_eq!(snapshot.cadence.p95_ms, 10.0);
+        assert_eq!(snapshot.total.p50, 11.0);
+        assert_eq!(snapshot.total.p95, 19.0);
+        assert_eq!(snapshot.cadence.p50, 10.0);
+        assert_eq!(snapshot.cadence.p95, 10.0);
         assert_eq!(snapshot.fps, 100.0);
     }
 }

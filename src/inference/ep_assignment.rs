@@ -55,18 +55,17 @@ pub(crate) fn read(session: &Session) -> Result<EpAssignmentReport> {
                 bail!("ORT returned a null EP subgraph");
             }
             let provider_name = get_subgraph_name(subgraph)?;
-            let provider_index = match provider_indices.get(&provider_name) {
-                Some(index) => *index,
-                None => {
-                    let index = providers.len();
-                    provider_indices.insert(provider_name.clone(), index);
-                    providers.push(EpProviderAssignment {
-                        name: provider_name,
-                        subgraph_count: 0,
-                        nodes: Vec::new(),
-                    });
-                    index
-                }
+            let provider_index = if let Some(index) = provider_indices.get(&provider_name) {
+                *index
+            } else {
+                let index = providers.len();
+                provider_indices.insert(provider_name.clone(), index);
+                providers.push(EpProviderAssignment {
+                    name: provider_name,
+                    subgraph_count: 0,
+                    nodes: Vec::new(),
+                });
+                index
             };
 
             let provider = &mut providers[provider_index];

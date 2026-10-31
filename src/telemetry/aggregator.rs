@@ -77,7 +77,7 @@ impl Aggregator {
         self.report_dropped_messages();
         match message {
             TelemetryMessage::RunStarted(start) => self.run_started(start, now),
-            TelemetryMessage::Frame(record) => self.frame(record),
+            TelemetryMessage::Frame(record) => self.frame(&record),
             TelemetryMessage::Counters(counters) => self.counters(counters, now),
             TelemetryMessage::FrameDropped { qpc, reason } => {
                 self.trace.event(qpc, &TraceEvent::FrameDropped(reason));
@@ -116,7 +116,7 @@ impl Aggregator {
             let count = dropped - self.reported_drops;
             self.reported_drops = dropped;
             self.trace
-                .event(self.qpc.now(), &TraceEvent::TelemetryDropped { count });
+                .event(QpcClock::now(), &TraceEvent::TelemetryDropped { count });
         }
     }
 
@@ -149,23 +149,23 @@ impl Aggregator {
         self.trace.stop(dropped);
     }
 
-    fn frame(&mut self, record: FrameRecord) {
+    fn frame(&mut self, record: &FrameRecord) {
         if self.generation != Some(record.generation) {
             return;
         }
         let qpc = self.qpc;
         let times = record.times;
         let timings = StageTimings {
-            present_to_gpu_submit_ms: qpc.elapsed_ms(times.present, times.ready),
-            present_to_inference_start_ms: qpc.elapsed_ms(times.present, times.inference_start),
-            acquire_wait_ms: qpc.elapsed_ms(times.attempt_start, times.acquired),
-            capture_ms: qpc.elapsed_ms(times.acquired, times.ready),
-            copy_submit_ms: qpc.elapsed_ms(times.acquired, times.copy_submitted),
-            gpu_preprocess_ms: record.gpu_preprocess_ms,
-            inference_ms: qpc.elapsed_ms(times.inference_start, times.inference_done),
-            postprocess_ms: qpc.elapsed_ms(times.inference_done, times.postprocess_done),
-            makcu_write_ms: qpc.elapsed_ms(record.output_start_qpc, record.output_complete_qpc),
-            total_ms: qpc.elapsed_ms(times.present, record.output_complete_qpc),
+            present_to_gpu_submit: qpc.elapsed_ms(times.present, times.ready),
+            present_to_inference_start: qpc.elapsed_ms(times.present, times.inference_start),
+            acquire_wait: qpc.elapsed_ms(times.attempt_start, times.acquired),
+            capture: qpc.elapsed_ms(times.acquired, times.ready),
+            copy_submit: qpc.elapsed_ms(times.acquired, times.copy_submitted),
+            gpu_preprocess: record.gpu_preprocess_ms,
+            inference: qpc.elapsed_ms(times.inference_start, times.inference_done),
+            postprocess: qpc.elapsed_ms(times.inference_done, times.postprocess_done),
+            makcu_write: qpc.elapsed_ms(record.output_start_qpc, record.output_complete_qpc),
+            total: qpc.elapsed_ms(times.present, record.output_complete_qpc),
         };
         self.metrics.record_qpc(qpc, times.inference_start, timings);
         if let Some(gpu_copy_ms) = record.gpu_copy_ms {
@@ -187,8 +187,8 @@ impl Aggregator {
             .zip(record.selected)
             .map(|((dx, dy), detection)| (dx, dy, detection.confidence, detection.class_id));
         self.last_movement = record.sent;
-        self.last_total_ms = Some(timings.total_ms);
-        self.trace.frame(&record);
+        self.last_total_ms = Some(timings.total);
+        self.trace.frame(record);
     }
 
     /// The capture source rates come from two Counters messages that are at least one window apart.
@@ -307,7 +307,7 @@ mod tests {
         aggregator.handle(TelemetryMessage::Frame(frame(1, 2, 100, 40)), now);
         let performance = aggregator.live().performance;
         assert_eq!(performance.sample_count, 1);
-        assert_eq!(performance.cold_run.expect("cold run").total_ms, 30.0);
+        assert_eq!(performance.cold_run.expect("cold run").total, 30.0);
 
         aggregator.handle(TelemetryMessage::PipelineChanged { qpc: 150 }, now);
         assert_eq!(aggregator.live().performance.sample_count, 0);
@@ -316,7 +316,7 @@ mod tests {
         aggregator.handle(TelemetryMessage::Frame(frame(1, 3, 200, 50)), now);
         let performance = aggregator.live().performance;
         assert_eq!(performance.sample_count, 0);
-        assert_eq!(performance.cold_run.expect("cold run").total_ms, 50.0);
+        assert_eq!(performance.cold_run.expect("cold run").total, 50.0);
     }
 
     #[test]
@@ -408,15 +408,15 @@ mod tests {
 
         let performance = aggregator.live().performance;
         assert_eq!(performance.sample_count, 1);
-        assert_eq!(performance.acquire_wait.p50_ms, 2.0);
-        assert_eq!(performance.copy_submit.p50_ms, 1.0);
-        assert_eq!(performance.capture.p50_ms, 4.0);
-        assert_eq!(performance.present_to_gpu_submit.p50_ms, 16.0);
-        assert_eq!(performance.present_to_inference_start.p50_ms, 17.0);
-        assert_eq!(performance.inference.p50_ms, 5.0);
-        assert_eq!(performance.postprocess.p50_ms, 2.0);
-        assert_eq!(performance.makcu_write.p50_ms, 2.0);
-        assert_eq!(performance.total.p50_ms, 27.0);
+        assert_eq!(performance.acquire_wait.p50, 2.0);
+        assert_eq!(performance.copy_submit.p50, 1.0);
+        assert_eq!(performance.capture.p50, 4.0);
+        assert_eq!(performance.present_to_gpu_submit.p50, 16.0);
+        assert_eq!(performance.present_to_inference_start.p50, 17.0);
+        assert_eq!(performance.inference.p50, 5.0);
+        assert_eq!(performance.postprocess.p50, 2.0);
+        assert_eq!(performance.makcu_write.p50, 2.0);
+        assert_eq!(performance.total.p50, 27.0);
     }
 
     #[test]
@@ -427,6 +427,6 @@ mod tests {
         aggregator.handle(TelemetryMessage::Frame(frame(1, 1, 0, 30)), now);
         let live = aggregator.live();
         assert!(live.last_total_ms.is_none());
-        assert_eq!(live.performance.cold_run.map(|cold| cold.total_ms), None);
+        assert_eq!(live.performance.cold_run.map(|cold| cold.total), None);
     }
 }

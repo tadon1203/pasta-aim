@@ -137,7 +137,7 @@ impl MakcuClient {
         tracing::info!(preferred_port = ?self.port, "refreshing MAKCU routes");
         let preferred = self.port.clone();
         self.close();
-        self.connect_within_window(self.connector(), preferred.as_deref())
+        self.connect_within_window(&self.connector(), preferred.as_deref())
     }
 
     pub fn rescan(&mut self) -> Result<MakcuMetadata> {
@@ -195,7 +195,7 @@ impl MakcuClient {
             return Ok(());
         };
         let packet = session
-            .request(&Request::Interpolate(value))
+            .request(Request::Interpolate(value))
             .context("MAKCU did not confirm the move interpolation")?;
         ensure!(
             is_interpolate_echo(value, &packet),
@@ -241,13 +241,13 @@ impl MakcuClient {
     /// Tries the preferred port again for the retry window. The session falls back to the other ports on each try.
     fn connect_within_window(
         &mut self,
-        connector: Arc<dyn Connector>,
+        connector: &Arc<dyn Connector>,
         preferred: Option<&str>,
     ) -> Result<MakcuMetadata> {
         let started = Instant::now();
         loop {
             match Session::connect(
-                Arc::clone(&connector),
+                Arc::clone(connector),
                 preferred,
                 Arc::clone(&self.interpolation),
             ) {

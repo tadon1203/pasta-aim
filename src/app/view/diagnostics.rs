@@ -65,176 +65,11 @@ impl App {
         egui::CollapsingHeader::new("Diagnostics")
             .default_open(false)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.strong("Log level");
-                    let mut level = self.config.diagnostics.level;
-                    egui::ComboBox::from_id_salt("log_level_selector")
-                        .selected_text(log_level_label(level))
-                        .show_ui(ui, |ui| {
-                            for option in [
-                                LogLevel::Off,
-                                LogLevel::Error,
-                                LogLevel::Warn,
-                                LogLevel::Info,
-                                LogLevel::Debug,
-                                LogLevel::Trace,
-                            ] {
-                                ui.selectable_value(&mut level, option, log_level_label(option));
-                            }
-                        });
-                    if level != self.config.diagnostics.level {
-                        self.config.diagnostics.level = level;
-                        crate::logging::set_level(level);
-                        self.persist();
-                    }
-                });
-                ui.small("The selected level and more severe logs are written to the log file.");
-                let mut gpu_debug = self.config.diagnostics.gpu_debug;
-                if ui
-                    .checkbox(
-                        &mut gpu_debug,
-                        "D3D12 debug layer + DRED (restart required)",
-                    )
-                    .changed()
-                {
-                    self.config.diagnostics.gpu_debug = gpu_debug;
-                    self.persist();
-                }
-                ui.small("Slows inference by ~1-2 ms. Turn off when measuring performance.");
-                if self.config.diagnostics.gpu_debug != self.gpu_debug_at_startup {
-                    warn_label(ui, "Restart to apply.");
-                }
-                let mut frame_trace = self.config.diagnostics.frame_trace;
-                if ui
-                    .checkbox(&mut frame_trace, "Write a per-frame trace for each run")
-                    .changed()
-                {
-                    self.config.diagnostics.frame_trace = frame_trace;
-                    self.engine.send(Command::SetFrameTrace(frame_trace));
-                    self.persist();
-                }
-                ui.small("JSON Lines in logs/trace-*.jsonl, applied from the next run.");
+                self.draw_log_settings(ui);
                 ui.add_space(6.0);
                 draw_tracking(ui, &live.tracking);
                 ui.add_space(6.0);
-                egui::Grid::new("diagnostics_state")
-                    .num_columns(2)
-                    .spacing([16.0, 5.0])
-                    .show(ui, |ui| {
-                        ui.label("GPU debug");
-                        ui.label(if self.gpu_debug_at_startup {
-                            "On"
-                        } else {
-                            "Off"
-                        });
-                        ui.end_row();
-
-                        ui.label("Model state");
-                        ui.label(model_phase_label(status.model.phase));
-                        ui.end_row();
-
-                        if let Some(model) = &status.model.active_name {
-                            ui.label("Active model");
-                            ui.label(model);
-                            ui.end_row();
-                        }
-
-                        ui.label("Capture");
-                        ui.label(capture_phase_label(status.capture.phase));
-                        ui.end_row();
-
-                        ui.label("Capture source");
-                        ui.label(
-                            status
-                                .capture
-                                .selected
-                                .as_ref()
-                                .map(DisplayInfo::label)
-                                .unwrap_or_else(|| "Unavailable".to_owned()),
-                        );
-                        ui.end_row();
-
-                        ui.label("Inference adapter");
-                        ui.label(
-                            status
-                                .capture
-                                .selected
-                                .as_ref()
-                                .map(|display| display.adapter_name.clone())
-                                .unwrap_or_else(|| "Unavailable".to_owned()),
-                        );
-                        ui.end_row();
-
-                        if let Some(assignment) = &status.model.ep_assignment {
-                            ui.label("Actual assignment");
-                            ui.label(actual_backend_label(assignment));
-                            ui.end_row();
-                        }
-
-                        if let Some((width, height)) = status.capture.desktop_size {
-                            ui.label("Desktop frame");
-                            ui.label(format!("{width}×{height} BGRA8"));
-                            ui.end_row();
-                        }
-
-                        ui.label("MAKCU state");
-                        ui.label(makcu_phase_label(status.makcu.phase));
-                        ui.end_row();
-
-                        if let Some(port) = &status.makcu.port {
-                            ui.label("MAKCU port");
-                            ui.label(port);
-                            ui.end_row();
-                        }
-                        if let Some(firmware) = status.makcu.firmware {
-                            ui.label("MAKCU firmware");
-                            ui.label(firmware.to_string());
-                            ui.end_row();
-                        }
-
-                        ui.label("XInput hotkey pad");
-                        ui.label(
-                            self.hotkeys
-                                .xinput_slot()
-                                .map(|slot| format!("Slot {slot}"))
-                                .unwrap_or_else(|| "Not connected".to_owned()),
-                        );
-                        ui.end_row();
-
-                        let release_latency = self.hotkeys.keyboard_release_latency();
-                        ui.label("Keyboard release lag");
-                        if release_latency.samples == 0 {
-                            ui.label("No measured hold releases");
-                        } else {
-                            ui.label(format!(
-                                "{:.1}/{:.1} ms p50/p95 · {} samples{}",
-                                release_latency.p50_ms,
-                                release_latency.p95_ms,
-                                release_latency.samples,
-                                if release_latency.assist_active {
-                                    " · release assist active"
-                                } else {
-                                    ""
-                                }
-                            ));
-                        }
-                        ui.end_row();
-
-                        ui.label("FPS limit");
-                        ui.label(self.config.fps_limit.value().to_string());
-                        ui.end_row();
-
-                        ui.label("Confidence threshold");
-                        ui.label(format!("{}%", self.config.confidence_threshold.value()));
-                        ui.end_row();
-
-                        if let Some((_, _, confidence, class_id)) = live.last_target {
-                            ui.label("Last detection");
-                            ui.label(format!("conf={confidence:.3}, class={class_id}"));
-                            ui.end_row();
-                        }
-                    });
-
+                self.draw_state_grids(ui, status, live);
                 draw_ep_assignment_diagnostics(ui, status);
 
                 let release_latency = self.hotkeys.keyboard_release_latency();
@@ -266,32 +101,149 @@ impl App {
             });
     }
 
+    fn draw_log_settings(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.strong("Log level");
+            let mut level = self.config.diagnostics.level;
+            egui::ComboBox::from_id_salt("log_level_selector")
+                .selected_text(log_level_label(level))
+                .show_ui(ui, |ui| {
+                    for option in [
+                        LogLevel::Off,
+                        LogLevel::Error,
+                        LogLevel::Warn,
+                        LogLevel::Info,
+                        LogLevel::Debug,
+                        LogLevel::Trace,
+                    ] {
+                        ui.selectable_value(&mut level, option, log_level_label(option));
+                    }
+                });
+            if level != self.config.diagnostics.level {
+                self.config.diagnostics.level = level;
+                crate::logging::set_level(level);
+                self.persist();
+            }
+        });
+        ui.small("The selected level and more severe logs are written to the log file.");
+
+        let mut gpu_debug = self.config.diagnostics.gpu_debug;
+        if ui
+            .checkbox(
+                &mut gpu_debug,
+                "D3D12 debug layer + DRED (restart required)",
+            )
+            .changed()
+        {
+            self.config.diagnostics.gpu_debug = gpu_debug;
+            self.persist();
+        }
+        ui.small("Slows inference by ~1-2 ms. Turn off when measuring performance.");
+        if self.config.diagnostics.gpu_debug != self.gpu_debug_at_startup {
+            warn_label(ui, "Restart to apply.");
+        }
+
+        let mut frame_trace = self.config.diagnostics.frame_trace;
+        if ui
+            .checkbox(&mut frame_trace, "Write a per-frame trace for each run")
+            .changed()
+        {
+            self.config.diagnostics.frame_trace = frame_trace;
+            self.engine.send(Command::SetFrameTrace(frame_trace));
+            self.persist();
+        }
+        ui.small("JSON Lines in logs/trace-*.jsonl, applied from the next run.");
+    }
+
+    /// The engine and input state, as two grids so that each stays a short block.
+    fn draw_state_grids(&self, ui: &mut egui::Ui, status: &EngineState, live: &LiveTelemetry) {
+        egui::Grid::new("diagnostics_engine_state")
+            .num_columns(2)
+            .spacing([16.0, 5.0])
+            .show(ui, |ui| self.draw_engine_rows(ui, status));
+
+        egui::Grid::new("diagnostics_input_state")
+            .num_columns(2)
+            .spacing([16.0, 5.0])
+            .show(ui, |ui| draw_input_rows(ui, self, status, live));
+    }
+
+    fn draw_engine_rows(&self, ui: &mut egui::Ui, status: &EngineState) {
+        ui.label("GPU debug");
+        ui.label(if self.gpu_debug_at_startup {
+            "On"
+        } else {
+            "Off"
+        });
+        ui.end_row();
+
+        ui.label("Model state");
+        ui.label(model_phase_label(status.model.phase));
+        ui.end_row();
+
+        if let Some(model) = &status.model.active_name {
+            ui.label("Active model");
+            ui.label(model);
+            ui.end_row();
+        }
+
+        ui.label("Capture");
+        ui.label(capture_phase_label(status.capture.phase));
+        ui.end_row();
+
+        ui.label("Capture source");
+        ui.label(
+            status
+                .capture
+                .selected
+                .as_ref()
+                .map_or_else(|| "Unavailable".to_owned(), DisplayInfo::label),
+        );
+        ui.end_row();
+
+        ui.label("Inference adapter");
+        ui.label(status.capture.selected.as_ref().map_or_else(
+            || "Unavailable".to_owned(),
+            |display| display.adapter_name.clone(),
+        ));
+        ui.end_row();
+
+        if let Some(assignment) = &status.model.ep_assignment {
+            ui.label("Actual assignment");
+            ui.label(actual_backend_label(assignment));
+            ui.end_row();
+        }
+
+        if let Some((width, height)) = status.capture.desktop_size {
+            ui.label("Desktop frame");
+            ui.label(format!("{width}×{height} BGRA8"));
+            ui.end_row();
+        }
+    }
+
     pub(super) fn diagnostics_text(&self, status: &EngineState, live: &LiveTelemetry) -> String {
         let display = status
             .capture
             .selected
             .as_ref()
-            .map(DisplayInfo::label)
-            .unwrap_or_else(|| "Unavailable".to_owned());
+            .map_or_else(|| "Unavailable".to_owned(), DisplayInfo::label);
         let model = status
             .model
             .active_name
             .clone()
             .unwrap_or_else(|| "None".to_owned());
-        let input = status
-            .model
-            .input_size
-            .map(|(w, h)| match status.model.precision {
+        let input = status.model.input_size.map_or_else(
+            || "Unknown".to_owned(),
+            |(w, h)| match status.model.precision {
                 Some(precision) => format!("{w}x{h} {}", precision.label()),
                 None => format!("{w}x{h}"),
-            })
-            .unwrap_or_else(|| "Unknown".to_owned());
+            },
+        );
         let makcu_routes = format!("mouse={}", status.makcu.routes.mouse);
         let xinput = self
             .hotkeys
             .xinput_slot()
-            .map(|slot| format!("slot {slot}"))
-            .unwrap_or_else(|| "not connected".to_owned());
+            .map_or_else(|| "not connected".to_owned(), |slot| format!("slot {slot}"));
         let warning = self.config_load_warning.as_deref().unwrap_or("none");
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         let keyboard_release = self.hotkeys.keyboard_release_latency();
@@ -302,16 +254,14 @@ impl App {
                 .capture
                 .selected
                 .as_ref()
-                .map(|display| display.adapter_name.as_str())
-                .unwrap_or("Unavailable"),
+                .map_or("Unavailable", |display| display.adapter_name.as_str()),
             ep_assignment_copy_text(status),
             makcu_phase_label(status.makcu.phase),
             status.makcu.port.as_deref().unwrap_or("unknown"),
             status
                 .makcu
                 .firmware
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "unknown".to_owned()),
+                .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
             keyboard_release.p50_ms,
             keyboard_release.p95_ms,
             keyboard_release.samples,
@@ -320,22 +270,79 @@ impl App {
             live.performance.capture_source.fresh_fps,
             live.performance.capture_source.processed_fps,
             live.performance.sample_count,
-            live.performance.total.p50_ms,
-            live.performance.total.p95_ms,
-            live.performance.total.p99_ms,
-            live.performance.acquire_wait.p50_ms,
-            live.performance.acquire_wait.p95_ms,
-            live.performance.capture.p50_ms,
-            live.performance.capture.p95_ms,
-            live.performance.copy_submit.p50_ms,
-            live.performance.copy_submit.p95_ms,
-            live.performance.gpu_copy.p50_ms,
-            live.performance.gpu_copy.p95_ms,
-            live.performance.preprocess.p50_ms,
-            live.performance.preprocess.p95_ms,
-            live.performance.inference.p50_ms,
-            live.performance.inference.p95_ms,
+            live.performance.total.p50,
+            live.performance.total.p95,
+            live.performance.total.p99,
+            live.performance.acquire_wait.p50,
+            live.performance.acquire_wait.p95,
+            live.performance.capture.p50,
+            live.performance.capture.p95,
+            live.performance.copy_submit.p50,
+            live.performance.copy_submit.p95,
+            live.performance.gpu_copy.p50,
+            live.performance.gpu_copy.p95,
+            live.performance.preprocess.p50,
+            live.performance.preprocess.p95,
+            live.performance.inference.p50,
+            live.performance.inference.p95,
         )
+    }
+}
+
+/// The input rows: MAKCU, `XInput`, keyboard release lag, and the value settings in use.
+fn draw_input_rows(ui: &mut egui::Ui, app: &App, status: &EngineState, live: &LiveTelemetry) {
+    ui.label("MAKCU state");
+    ui.label(makcu_phase_label(status.makcu.phase));
+    ui.end_row();
+
+    if let Some(port) = &status.makcu.port {
+        ui.label("MAKCU port");
+        ui.label(port);
+        ui.end_row();
+    }
+    if let Some(firmware) = status.makcu.firmware {
+        ui.label("MAKCU firmware");
+        ui.label(firmware.to_string());
+        ui.end_row();
+    }
+
+    ui.label("XInput hotkey pad");
+    ui.label(
+        app.hotkeys
+            .xinput_slot()
+            .map_or_else(|| "Not connected".to_owned(), |slot| format!("Slot {slot}")),
+    );
+    ui.end_row();
+
+    let release_latency = app.hotkeys.keyboard_release_latency();
+    ui.label("Keyboard release lag");
+    if release_latency.samples == 0 {
+        ui.label("No measured hold releases");
+    } else {
+        let assist = if release_latency.assist_active {
+            " · release assist active"
+        } else {
+            ""
+        };
+        ui.label(format!(
+            "{:.1}/{:.1} ms p50/p95 · {} samples{assist}",
+            release_latency.p50_ms, release_latency.p95_ms, release_latency.samples,
+        ));
+    }
+    ui.end_row();
+
+    ui.label("FPS limit");
+    ui.label(app.config.fps_limit.value().to_string());
+    ui.end_row();
+
+    ui.label("Confidence threshold");
+    ui.label(format!("{}%", app.config.confidence_threshold.value()));
+    ui.end_row();
+
+    if let Some((_, _, confidence, class_id)) = live.last_target {
+        ui.label("Last detection");
+        ui.label(format!("conf={confidence:.3}, class={class_id}"));
+        ui.end_row();
     }
 }
 
@@ -512,7 +519,7 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
     ));
     if performance.sample_count == 0 {
         if let Some(cold) = performance.cold_run {
-            ui.label(format!("Cold run: {:.2} ms total", cold.total_ms));
+            ui.label(format!("Cold run: {:.2} ms total", cold.total));
         } else {
             ui.label("No performance samples yet");
         }
@@ -555,15 +562,15 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
         });
 
     if let Some(cold) = performance.cold_run {
-        ui.small(format!("Cold run total: {:.2} ms", cold.total_ms));
+        ui.small(format!("Cold run total: {:.2} ms", cold.total));
     }
     ui.small("Pipeline: DXGI LastPresentTime → MAKCU write completion");
 }
 
 fn metric_row(ui: &mut egui::Ui, name: &str, metric: MetricSummary) {
     ui.label(name);
-    ui.label(format!("{:.2} ms", metric.p50_ms));
-    ui.label(format!("{:.2} ms", metric.p95_ms));
-    ui.label(format!("{:.2} ms", metric.p99_ms));
+    ui.label(format!("{:.2} ms", metric.p50));
+    ui.label(format!("{:.2} ms", metric.p95));
+    ui.label(format!("{:.2} ms", metric.p99));
     ui.end_row();
 }

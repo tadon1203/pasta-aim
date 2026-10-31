@@ -210,7 +210,7 @@ impl WindowsPort {
         };
         if started == 0 {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            if error.raw_os_error() != Some(ERROR_IO_PENDING.cast_signed()) {
                 return Err(error);
             }
             match unsafe { WaitForSingleObject(self.event, watchdog.as_millis() as u32) } {
@@ -255,7 +255,7 @@ impl Port for WindowsPort {
 
     fn write_all(&mut self, mut bytes: &[u8]) -> io::Result<()> {
         while !bytes.is_empty() {
-            let count = self.transfer(bytes.as_ptr() as *mut u8, bytes.len() as u32, true)?;
+            let count = self.transfer(bytes.as_ptr().cast_mut(), bytes.len() as u32, true)?;
             if count == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
