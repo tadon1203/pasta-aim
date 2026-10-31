@@ -1,6 +1,6 @@
 # Context
 
-The language of nice-aimassist. Use these terms in code, docs, and tickets. Do not invent synonyms. The rules for names are in [GLOSSARY-FORMAT.md](./.claude/skills/domain-modeling/GLOSSARY-FORMAT.md).
+The language of nice-aimassist. Use these terms in code, docs, and tickets. Do not invent synonyms.
 
 ## Run
 

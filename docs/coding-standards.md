@@ -1,6 +1,6 @@
 # Coding standards
 
-These are the rules for code and documentation that lint cannot check. Do not write a rule here if a lint or format tool enforces it. The tool configuration is the source of truth for those rules. When a rule has an ADR, the rule links it.
+These are the rules for code and documentation that lint cannot check. Do not write a rule here if a lint or format tool enforces it. The tool configuration is the source of truth for those rules.
 
 ## All code and documentation
 
