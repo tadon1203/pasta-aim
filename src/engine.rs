@@ -186,7 +186,7 @@ impl Worker {
         }
         if worker.com_ready {
             worker.refresh_catalog();
-            worker.record_display(worker.settings.display);
+            worker.choose_startup_display();
         }
         worker.connect_output();
         if let Some(name) = worker.settings.model.clone() {
@@ -472,6 +472,28 @@ impl Worker {
         }
         self.settings.display = target;
         self.ui.send(Message::DisplayChanged(target));
+    }
+
+    /// Keeps the saved display when it is connected. Otherwise it takes the first display of the
+    /// catalog, which is the primary one, and tells the UI so that the choice is saved.
+    fn choose_startup_display(&mut self) {
+        let saved = self.settings.display;
+        if self.catalog_display(&saved).is_none()
+            && let Some(first) = self.state.graphics.displays.first()
+        {
+            let chosen = settings::Display {
+                adapter: u64::from(first.adapter_luid),
+                output: first.output_index,
+            };
+            tracing::info!(
+                adapter = chosen.adapter,
+                output = chosen.output,
+                "saved display unavailable; selected the first display"
+            );
+            self.settings.display = chosen;
+            self.ui.send(Message::DisplayChanged(chosen));
+        }
+        self.record_display(self.settings.display);
     }
 
     /// Records the display of the settings without a pipeline. A catalog miss is a capture failure.
