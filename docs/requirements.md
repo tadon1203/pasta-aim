@@ -18,12 +18,13 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
   - its metadata says `end2end=False` and does not say `nms=True`, or
   - its metadata `imgsz` is different from its input size.
 - A failed load keeps the model that was active.
+- When no model is saved and `models/` holds only one model, the app loads that model by itself. The engine reports the load, so the choice is saved like a model that the user picks.
 - After a model change, the app is stopped, on success and on failure.
 
 ## Capture
 
 - The user picks the display. The app captures the capture region of that display. The capture region is the rectangle at the center of the display that has the size of the model input.
-- When the display changes, the run pauses and the app prepares a new pipeline. A pipeline is the capture, the GPU preprocess, the inference session, and the model for one display, and it is built and replaced as a unit. On success, the app changes to the new pipeline. On failure, the app keeps the old one. Then a continuous run resumes.
+- When the display changes, the run stops, and the app prepares a new pipeline. A pipeline is the capture, the GPU preprocess, the inference session, and the model for one display, and it is built and replaced as a unit. On success the app changes to the new pipeline. On failure it keeps the old one. A continuous run does not resume by itself.
 
 | Setting        | Range      | Default |
 | -------------- | ---------- | ------- |

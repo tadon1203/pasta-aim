@@ -15,7 +15,7 @@ pub struct ModelState {
     pub phase: ModelPhase,
     pub active_name: Option<String>,
     pub loading_name: Option<String>,
-    pub input_size: Option<(usize, usize)>,
+    pub input_size: Option<(u32, u32)>,
     pub precision: Option<Precision>,
     pub error: Option<String>,
     /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report them.
@@ -141,11 +141,8 @@ pub struct State {
 }
 
 impl State {
-    pub fn ready(&self) -> bool {
-        self.block_reason().is_none()
-    }
-
-    pub fn block_reason(&self) -> Option<&'static str> {
+    /// The first reason that blocks a run: model, capture, output, then mouse route.
+    pub fn blocked(&self) -> Option<&'static str> {
         run_block_reason([
             (self.model.phase == ModelPhase::Ready, BLOCK_MODEL),
             (self.capture.phase == CapturePhase::Ready, BLOCK_CAPTURE),
@@ -187,21 +184,20 @@ mod tests {
     }
 
     #[test]
-    fn ready_when_everything_including_the_mouse_route_is_available() {
-        assert!(ready_state().ready());
-    }
-
-    #[test]
-    fn missing_mouse_route_blocks_output() {
+    fn blocked_reports_model_then_capture_then_output_then_mouse_route() {
         let mut state = ready_state();
+        assert_eq!(state.blocked(), None);
+
         state.output.device = Some(device(false));
-        assert_eq!(state.block_reason(), Some("Mouse route is unavailable"));
-    }
+        assert_eq!(state.blocked(), Some(BLOCK_MOUSE_ROUTE));
 
-    #[test]
-    fn disconnected_makcu_blocks_output() {
-        let mut state = ready_state();
         state.output.phase = OutputPhase::Failed;
-        assert_eq!(state.block_reason(), Some("MAKCU is not connected"));
+        assert_eq!(state.blocked(), Some(BLOCK_OUTPUT));
+
+        state.capture.phase = CapturePhase::Failed;
+        assert_eq!(state.blocked(), Some(BLOCK_CAPTURE));
+
+        state.model.phase = ModelPhase::Empty;
+        assert_eq!(state.blocked(), Some(BLOCK_MODEL));
     }
 }

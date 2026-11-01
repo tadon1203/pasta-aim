@@ -19,7 +19,7 @@ pub struct Move {
 }
 
 /// The settings that shape the aim and the move. The engine applies them directly.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AimSettings {
     pub sensitivity: Sensitivity,
     pub target_y_offset: TargetYOffset,

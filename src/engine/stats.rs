@@ -9,7 +9,7 @@ use std::{
 use crate::{
     aim::{Move, Outcome},
     clock::Clock,
-    pipeline::ProcessedFrame,
+    pipeline::Frame,
 };
 
 /// The most often the UI gets new statistics.
@@ -175,7 +175,7 @@ impl Recorder {
     /// One new frame that reached the output. `output_start` and `output_done` are QPC ticks.
     pub(super) fn frame(
         &mut self,
-        frame: &ProcessedFrame,
+        frame: &Frame,
         outcome: &Outcome,
         output_start: i64,
         output_done: i64,
@@ -313,16 +313,16 @@ fn push_bounded<T>(queue: &mut VecDeque<T>, value: T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{aim::Track, pipeline::FrameTimes};
+    use crate::{aim::Track, pipeline::Times};
 
     /// One tick is one millisecond.
     const QPC: Clock = Clock::test(1_000.0);
 
     /// A new frame. The stage boundaries follow `present`, and the output is done `total` ticks after it.
-    fn frame(present: i64) -> ProcessedFrame {
-        ProcessedFrame {
+    fn frame(present: i64) -> Frame {
+        Frame {
             desktop_size: (100, 100),
-            times: FrameTimes {
+            times: Times {
                 present,
                 attempt_start: present + 10,
                 acquired: present + 12,

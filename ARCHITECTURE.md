@@ -65,8 +65,7 @@ Data flow:
 | Directory           | What it holds                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------- |
 | `src/bin/app`       | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
-| `src/engine`        | The engine thread: commands, the engine state, the statistics, and the frame loop.          |
-| `src/engine/worker` | The frame transaction, the run, model loading, pipeline replacement, and the output lifecycle. |
+| `src/engine`        | The engine thread: the commands, the thread loop, the runs, model and display changes, the output lifecycle, the frame step and pacing, the engine state, and the statistics. |
 | `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. It holds the GPU layer, the capture, the GPU preprocess, and the inference with its postprocess. |
 | `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
 | `src/aim`           | The aim: the target tracker, the move that each frame plans, and the rounding to whole counts. It knows nothing about MAKCU. |
@@ -81,7 +80,7 @@ Data flow:
 - A pipeline checks that the GPU completed its work on the shared texture before the capture can write to it again. A pipeline waits for its GPU work before it releases its resources.
 - The capture adapter is the single GPU identity. Inference runs on the same adapter as the capture.
 - A pipeline is replaced as a unit. The engine commits a new pipeline only when every part of it is ready. If one part fails, the engine keeps the pipeline that it had.
-- After a display change, a continuous run resumes as a new run. After a model change, the engine stays stopped, on success and on failure.
+- After a display change, the run stays stopped, on success and on failure. After a model change, the engine stays stopped, on success and on failure.
 - A failed model load keeps the model that was active. Only a successful load is written to the settings file.
 - A model and a display are validated one time: the model when it loads, the captured image when the duplication is created. The frame path checks no shape, size, or format.
 - A model is a file name in `models/`. The settings hold no path.

@@ -54,7 +54,7 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.heading("nice-aimassist");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let ready = engine.ready();
+                            let ready = engine.blocked().is_none();
                             let label = if ready {
                                 "Ready".to_owned()
                             } else {

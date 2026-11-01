@@ -34,10 +34,14 @@ impl App {
                 ui.label("Move interpolation");
                 let mut auto = self.settings.interpolation == Interpolation::Auto;
                 if ui.checkbox(&mut auto, "Auto").changed() {
-                    self.set_interpolation(if auto {
-                        Interpolation::Auto
-                    } else {
-                        Interpolation::Percent(InterpolationPercent::new(FIXED_INTERPOLATION_START))
+                    self.edit(|settings| {
+                        settings.interpolation = if auto {
+                            Interpolation::Auto
+                        } else {
+                            Interpolation::Percent(InterpolationPercent::new(
+                                FIXED_INTERPOLATION_START,
+                            ))
+                        };
                     });
                     self.persist();
                 }
@@ -51,7 +55,10 @@ impl App {
                     self.dirty.contains(&EditField::Interpolation),
                 );
                 self.apply_edit(EditField::Interpolation, edit, |app, value| {
-                    app.set_interpolation(Interpolation::Percent(InterpolationPercent::new(value)));
+                    app.edit(|settings| {
+                        settings.interpolation =
+                            Interpolation::Percent(InterpolationPercent::new(value));
+                    });
                 });
             }
         });
@@ -68,7 +75,7 @@ impl App {
                 self.dirty.contains(&EditField::Sensitivity),
             );
             self.apply_edit(EditField::Sensitivity, edit, |app, value| {
-                app.set_sensitivity(Sensitivity::new(value));
+                app.edit(|settings| settings.sensitivity = Sensitivity::new(value));
             });
             ui.small("100% = 1× command scale");
 
@@ -80,7 +87,7 @@ impl App {
                 self.dirty.contains(&EditField::Confidence),
             );
             self.apply_edit(EditField::Confidence, edit, |app, value| {
-                app.set_confidence(Confidence::new(value));
+                app.edit(|settings| settings.confidence = Confidence::new(value));
             });
             ui.small("Minimum confidence required to accept a detection.");
 
@@ -92,7 +99,7 @@ impl App {
                 self.dirty.contains(&EditField::TargetYOffset),
             );
             self.apply_edit(EditField::TargetYOffset, edit, |app, value| {
-                app.set_target_y_offset(TargetYOffset::new(value));
+                app.edit(|settings| settings.target_y_offset = TargetYOffset::new(value));
             });
             ui.small("Aim point inside the target box: 0% = top, 50% = center, 100% = bottom.");
 
@@ -105,12 +112,12 @@ impl App {
                     self.dirty.contains(&EditField::MaxDelta),
                 );
                 self.apply_edit(EditField::MaxDelta, edit, |app, value| {
-                    app.set_max_delta(MaxDelta::new(value));
+                    app.edit(|settings| settings.max_delta = MaxDelta::new(value));
                 });
             });
             ui.small("Per-frame cap on movement length after sensitivity; 0 = unlimited.");
 
-            let ready = engine.ready();
+            let ready = engine.blocked().is_none();
             let run_idle = engine.run.phase == RunPhase::Idle;
             if ui
                 .add_enabled(ready && run_idle, egui::Button::new("Run once"))
@@ -124,7 +131,7 @@ impl App {
                 ui.small(format!("Shortcuts: {once_shortcuts}"));
             }
 
-            if !ready && let Some(reason) = engine.block_reason() {
+            if !ready && let Some(reason) = engine.blocked() {
                 ui.horizontal(|ui| {
                     ui.small(reason);
                     if engine.capture.phase == CapturePhase::Failed
@@ -180,7 +187,7 @@ impl App {
                     self.dirty.contains(&EditField::FpsLimit),
                 );
                 self.apply_edit(EditField::FpsLimit, edit, |app, value| {
-                    app.set_fps_limit(FpsLimit::new(value));
+                    app.edit(|settings| settings.fps_limit = FpsLimit::new(value));
                 });
                 ui.small("Continuous only");
             });
@@ -194,8 +201,7 @@ impl App {
                 wait = NewFrameWait::new(milliseconds);
             });
             if wait != self.settings.new_frame_wait {
-                self.settings.new_frame_wait = wait;
-                self.commands.send(Command::SetNewFrameWait(wait));
+                self.edit(|settings| settings.new_frame_wait = wait);
                 self.persist();
             }
 
@@ -210,8 +216,7 @@ impl App {
                     )
                     .changed()
                 {
-                    self.settings.low_latency = low_latency;
-                    self.commands.send(Command::SetLowLatency(low_latency));
+                    self.edit(|settings| settings.low_latency = low_latency);
                     self.persist();
                 }
             });

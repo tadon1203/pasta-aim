@@ -6,10 +6,7 @@ use nice_aimassist::{
     channel::{self, Message, Receiver, Sender},
     engine::{Command, Engine, State, Stats},
     hotkeys::{self, Action, Event, Hotkey, Hotkeys, Shortcut},
-    settings::{
-        self, Confidence, FpsLimit, Interpolation, Loaded, MaxDelta, Sensitivity, Settings,
-        TargetYOffset,
-    },
+    settings::{self, Display, Loaded, Settings},
 };
 
 pub struct App {
@@ -42,7 +39,6 @@ pub struct App {
     settings_save_error: Option<String>,
     /// Value fields edited since they were last saved (see `view::widgets::drag_value`).
     dirty: HashSet<EditField>,
-    model_load_requested: bool,
 }
 
 /// A numeric setting edited through a widget that saves once the edit ends.
@@ -109,11 +105,9 @@ impl App {
             settings_unusable,
             settings_save_error: None,
             dirty: HashSet::new(),
-            model_load_requested: false,
         };
 
-        // The initial scan is the sole automatic-load source. Further scans
-        // coalesce while this request is in flight.
+        // The initial scan is the sole automatic-load source.
         let mut app = app;
         app.request_sole_model_load();
 
@@ -152,31 +146,15 @@ impl App {
 
     fn select_model(&mut self, name: String) {
         tracing::debug!(model = %name, "model selected from UI");
-        self.load_model(name, true);
+        self.commands.send(Command::LoadModel(name));
     }
 
-    /// Sends the load of a model in `models/`. `notify` asks the engine to report the result, so the choice is saved.
-    fn load_model(&mut self, name: String, notify: bool) {
-        match settings::model_path(&name) {
-            Ok(path) => {
-                self.commands
-                    .send(Command::LoadModel { name, path, notify });
-            }
-            Err(error) => {
-                tracing::warn!(model = %name, error = %format_args!("{error:#}"), "model could not be loaded");
-                self.model_catalog_error = Some(format!("{error:#}"));
-            }
-        }
-    }
-
+    /// Loads the only model in `models/` when no model is saved. The engine reports the load, so it is saved.
     fn request_sole_model_load(&mut self) {
         if self.settings.model.is_none()
-            && !self.model_load_requested
             && let [name] = self.models.as_slice()
         {
-            let name = name.clone();
-            self.model_load_requested = true;
-            self.load_model(name, false);
+            self.commands.send(Command::LoadModel(name.clone()));
         }
     }
 
@@ -185,55 +163,16 @@ impl App {
         self.commands.send(Command::RescanDisplays);
     }
 
-    fn select_display(&mut self, adapter: u32, output: u32) {
-        tracing::debug!(adapter, output, "display selected from UI");
-        self.commands
-            .send(Command::SetCaptureSelection { adapter, output });
+    fn select_display(&self, target: Display) {
+        tracing::debug!(?target, "display selected from UI");
+        self.commands.send(Command::SelectDisplay(target));
     }
 
-    fn set_sensitivity(&mut self, sensitivity: Sensitivity) {
-        tracing::debug!(value = sensitivity.get(), "sensitivity changed");
-        self.settings.sensitivity = sensitivity;
-        self.commands.send(Command::SetSensitivity(sensitivity));
-    }
-
-    fn set_confidence(&mut self, value: Confidence) {
-        tracing::debug!(value = value.get(), "confidence threshold changed");
-        self.settings.confidence = value;
-        self.commands.send(Command::SetConfidence(value));
-    }
-
-    fn set_target_y_offset(&mut self, value: TargetYOffset) {
-        tracing::debug!(value = value.get(), "target Y offset changed");
-        self.settings.target_y_offset = value;
-        self.commands.send(Command::SetTargetYOffset(value));
-    }
-
-    fn set_max_delta(&mut self, value: MaxDelta) {
-        tracing::debug!(value = value.get(), "max delta changed");
-        self.settings.max_delta = value;
-        self.commands.send(Command::SetMaxDelta(value));
-    }
-
-    /// Only stores and sends the value. The caller saves it with `persist`, after the drag or click ends.
-    fn set_interpolation(&mut self, interpolation: Interpolation) {
-        tracing::debug!(?interpolation, "move interpolation changed");
-        self.settings.interpolation = interpolation;
-        self.commands.send(Command::SetInterpolation(interpolation));
-    }
-
-    /// `None` is auto-detect. The engine connects again, and the choice is saved.
-    fn set_makcu_port(&mut self, port: Option<String>) {
-        tracing::debug!(?port, "MAKCU port selected from UI");
-        self.settings.makcu_port.clone_from(&port);
-        self.commands.send(Command::SetOutputPort(port));
-        self.persist();
-    }
-
-    fn set_fps_limit(&mut self, fps_limit: FpsLimit) {
-        tracing::debug!(value = fps_limit.get(), "FPS limit changed");
-        self.settings.fps_limit = fps_limit;
-        self.commands.send(Command::SetFpsLimit(fps_limit));
+    /// Applies a change to the settings and sends all of them: the engine applies what differs. A drag
+    /// or a click is saved by the caller with `persist`.
+    fn edit(&mut self, change: impl FnOnce(&mut Settings)) {
+        change(&mut self.settings);
+        self.commands.send(Command::Settings(self.settings.clone()));
     }
 
     /// Applies what the other threads sent since the last frame.
@@ -243,7 +182,6 @@ impl App {
                 Message::State(state) => self.state = state,
                 Message::Stats(stats) => self.stats = stats,
                 Message::ModelLoaded(name) => {
-                    self.model_load_requested = false;
                     tracing::debug!(model = %name, "model loaded");
                     self.settings.model = Some(name);
                     self.persist();

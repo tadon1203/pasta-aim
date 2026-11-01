@@ -13,7 +13,7 @@ use std::{
     path::Path,
     sync::{
         OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -31,7 +31,10 @@ use self::{
     inference::{ModelInputSpec, OrtDirectMlBackend},
     preprocess::GpuPreprocessor,
 };
-use crate::{clock::Clock, settings::Confidence};
+use crate::{
+    clock::Clock,
+    settings::{self, Confidence},
+};
 
 // ---- Startup ----
 
@@ -157,7 +160,7 @@ pub struct Detection {
 
 /// The stage boundaries of one frame, as QPC ticks.
 #[derive(Debug, Clone, Copy)]
-pub struct FrameTimes {
+pub struct Times {
     /// The Present time of the desktop update.
     pub present: i64,
     /// The capture attempt started, just before `AcquireNextFrame`.
@@ -208,36 +211,36 @@ impl GpuFaultStage {
 
 // ---- Pipeline ----
 
-/// What the engine asks of a pipeline when it is built or its model is replaced.
-pub(crate) struct PipelineConfig<'a> {
-    pub model: &'a Path,
-    pub pipeline_id: u64,
-    pub confidence_threshold: Confidence,
+/// The settings that the model half of a pipeline is built with.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub confidence: Confidence,
     pub low_latency: bool,
-    pub qpc: Clock,
 }
 
 /// A new frame after the inference and the postprocess.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ProcessedFrame {
+pub struct Frame {
     pub desktop_size: (usize, usize),
-    pub times: FrameTimes,
+    pub times: Times,
     pub gpu_preprocess_ms: Option<f64>,
     pub gpu_copy_ms: Option<f64>,
     pub selected: Option<Detection>,
 }
 
-// The frame is handed over by value, so the frame path does not allocate.
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum FrameOutcome {
-    NewFrame(ProcessedFrame),
-    NoDesktopUpdate,
+/// A failure of the pipeline. `Gpu` may be cured by a rebuild, `Other` means the pipeline is dropped.
+#[derive(Debug, thiserror::Error)]
+pub enum Fault {
+    /// The GPU transport is poisoned or the device is lost. The engine rebuilds the pipeline once.
+    #[error("GPU failed: {0:#}")]
+    Gpu(anyhow::Error),
+    /// The pipeline cannot be used. The engine drops it.
+    #[error("{0:#}")]
+    Other(anyhow::Error),
 }
 
-/// The pipeline cannot be used any more. The engine suspends it until the user retries.
-pub(crate) struct PipelineFault {
-    pub message: String,
-}
+/// Numbers the pipelines of the process, for the GPU fault log.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Field order is drop order: the ONNX Runtime objects, the preprocessor, the D3D12 half of the
 /// shared frame, and the D3D12 device last. Dropping waits for the queue first.
@@ -266,7 +269,6 @@ pub(crate) struct Pipeline {
     model: ModelHalf,
     capture_frame: CaptureFrame,
     capture: DxgiCapture,
-    qpc: Clock,
     id: u64,
     /// The New frames of this pipeline. Each frame uses its count as the fence value.
     frame_seq: u64,
@@ -276,44 +278,40 @@ pub(crate) struct Pipeline {
 }
 
 impl Pipeline {
-    /// Builds a pipeline on `capture`. On failure the capture comes back with the error.
-    // The capture comes back by value on failure. A build runs once per model or display change.
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn build(
-        mut capture: DxgiCapture,
-        config: &PipelineConfig<'_>,
-    ) -> Result<Self, (DxgiCapture, anyhow::Error)> {
-        let (model, capture_frame) = match build_model(&capture, config) {
-            Ok(built) => built,
-            Err(error) => return Err((capture, error)),
-        };
-        if let Err(error) = capture.bind_copy_target(&capture_frame, model.input_size) {
-            return Err((capture, error));
-        }
+    /// Builds a pipeline on the display that `display` names, with `model`. Nothing is kept on failure.
+    pub fn new(display: &settings::Display, model: &Path, options: Options) -> Result<Self> {
+        let info = displays()?
+            .into_iter()
+            .find(|info| {
+                u64::from(info.adapter_luid) == display.adapter
+                    && info.output_index == display.output
+            })
+            .context("the selected display is not connected")?;
+        let mut capture = DxgiCapture::new(info.adapter_index, info.output_index)?;
+        let (model, capture_frame) = build_model(&capture, model, options)?;
+        capture.bind_copy_target(&capture_frame, model.input_size)?;
         Ok(Self {
             model,
             capture_frame,
             capture,
-            qpc: config.qpc,
-            id: config.pipeline_id,
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             frame_seq: 0,
             last_submitted: 0,
             sampler: ProfileSampler::default(),
         })
     }
 
-    /// Builds the model half again on the same capture. On failure the pipeline is not changed.
-    pub(crate) fn replace_model(&mut self, config: &PipelineConfig<'_>) -> Result<()> {
-        let (model, capture_frame) = build_model(&self.capture, config)?;
+    /// Changes the model and the options on the same capture. On failure the pipeline is not changed.
+    pub fn set_model(&mut self, model: &Path, options: Options) -> Result<()> {
+        let (new_model, capture_frame) = build_model(&self.capture, model, options)?;
         self.capture
-            .bind_copy_target(&capture_frame, model.input_size)?;
+            .bind_copy_target(&capture_frame, new_model.input_size)?;
         // Dropping the old model waits for its GPU queue.
-        let old_model = std::mem::replace(&mut self.model, model);
+        let old_model = std::mem::replace(&mut self.model, new_model);
         let old_frame = std::mem::replace(&mut self.capture_frame, capture_frame);
         drop(old_model);
         drop(old_frame);
-        self.qpc = config.qpc;
-        self.id = config.pipeline_id;
+        self.id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         // The new shared frame has new fences, so the frame count starts again.
         self.frame_seq = 0;
         self.last_submitted = 0;
@@ -321,13 +319,14 @@ impl Pipeline {
     }
 
     /// One capture attempt and, for a new frame, the copy, the preprocess, the inference, and the postprocess.
-    pub(crate) fn process_next(&mut self, wait_ms: u32) -> Result<FrameOutcome, PipelineFault> {
+    /// `Ok(None)` means there is no new desktop update.
+    pub fn process_next(&mut self, wait_ms: u32) -> Result<Option<Frame>, Fault> {
         let reuse_completed = self.check_reuse_fence()?;
 
         let attempt_start = Clock::now();
         let frame = match self.capture.acquire(wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => frame,
-            Ok(CapturePoll::NoDesktopUpdate) => return Ok(FrameOutcome::NoDesktopUpdate),
+            Ok(CapturePoll::NoDesktopUpdate) => return Ok(None),
             Err(error) => return Err(self.capture_fault(&error)),
         };
         let acquired_qpc = Clock::now();
@@ -387,9 +386,9 @@ impl Pipeline {
             }
         };
 
-        Ok(FrameOutcome::NewFrame(ProcessedFrame {
+        Ok(Some(Frame {
             desktop_size: frame.desktop_size(),
-            times: FrameTimes {
+            times: Times {
                 present: frame.present_qpc(),
                 attempt_start,
                 acquired: acquired_qpc,
@@ -405,44 +404,37 @@ impl Pipeline {
         }))
     }
 
-    pub(crate) fn set_confidence_threshold(&mut self, value: Confidence) {
+    pub fn set_confidence(&mut self, value: Confidence) {
         self.model.backend.set_confidence_threshold(value);
     }
 
     /// Called at the start of a run: the first frames are measured again.
-    pub(crate) fn reset_profiling(&mut self) {
+    pub fn reset_timing(&mut self) {
         self.sampler.reset();
         self.capture.reset_gpu_profiler();
     }
 
-    pub(crate) fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub(crate) fn prepare_id(&self) -> &str {
-        &self.model.prepare_id
-    }
-
-    pub(crate) fn display(&self) -> &DisplayInfo {
+    pub fn display(&self) -> &DisplayInfo {
         self.capture.info()
     }
 
-    pub(crate) fn input_size(&self) -> (usize, usize) {
-        self.model.input_size
+    pub fn input_size(&self) -> (u32, u32) {
+        let (width, height) = self.model.input_size;
+        (width as u32, height as u32)
     }
 
-    pub(crate) fn precision(&self) -> Precision {
+    pub fn precision(&self) -> Precision {
         self.model.precision
     }
 
     /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report the assignment.
-    pub(crate) fn cpu_nodes(&self) -> Option<usize> {
+    pub fn cpu_nodes(&self) -> Option<usize> {
         self.model.cpu_nodes
     }
 
     /// Reads the reuse fence once for a frame. Fails when the GPU is still reading the shared
     /// frame or the device is removed. No capture was made for the frame.
-    fn check_reuse_fence(&self) -> Result<u64, PipelineFault> {
+    fn check_reuse_fence(&self) -> Result<u64, Fault> {
         let reuse_completed = self.model.frame.reuse_completed();
         if gpu::fence_reports_removal(reuse_completed) {
             let error = anyhow!("D3D12 completion fence reports device removed");
@@ -462,11 +454,11 @@ impl Pipeline {
         Ok(reuse_completed)
     }
 
-    fn capture_fault(&self, error: &anyhow::Error) -> PipelineFault {
+    fn capture_fault(&self, error: &anyhow::Error) -> Fault {
         self.fault(GpuFaultStage::CaptureAcquire, "DXGI capture failed", error)
     }
 
-    fn copy_fault(&self, error: &anyhow::Error) -> PipelineFault {
+    fn copy_fault(&self, error: &anyhow::Error) -> Fault {
         self.fault(
             self.capture.last_fault_stage(),
             "GPU capture copy failed",
@@ -474,8 +466,9 @@ impl Pipeline {
         )
     }
 
-    /// Logs the fault once when GPU debug is on, and returns it for the engine.
-    fn fault(&self, stage: GpuFaultStage, message: &str, error: &anyhow::Error) -> PipelineFault {
+    /// Logs the fault once when GPU debug is on, and classifies it for the engine. A DXGI acquire
+    /// failure and an inference failure are not GPU transport faults, so a rebuild does not help.
+    fn fault(&self, stage: GpuFaultStage, message: &str, error: &anyhow::Error) -> Fault {
         if GPU_DEBUG.load(Ordering::Relaxed) {
             gpu::log_fault(
                 &self.model.gpu,
@@ -485,8 +478,10 @@ impl Pipeline {
                 error,
             );
         }
-        PipelineFault {
-            message: format!("{message}: {error:#}"),
+        let error = anyhow!("{message}: {error:#}");
+        match stage {
+            GpuFaultStage::CaptureAcquire | GpuFaultStage::BackendRun => Fault::Other(error),
+            _ => Fault::Gpu(error),
         }
     }
 }
@@ -495,12 +490,13 @@ impl Pipeline {
 /// It binds nothing and changes no state.
 fn build_model(
     capture: &DxgiCapture,
-    config: &PipelineConfig<'_>,
+    model: &Path,
+    options: Options,
 ) -> Result<(ModelHalf, CaptureFrame)> {
     let display = capture.info();
     let gpu = GpuDeviceContext::new(display.adapter_luid)?;
-    let mut backend = OrtDirectMlBackend::prepare(config.model, &gpu, config.low_latency)?;
-    backend.set_confidence_threshold(config.confidence_threshold);
+    let mut backend = OrtDirectMlBackend::prepare(model, &gpu, options.low_latency)?;
+    backend.set_confidence_threshold(options.confidence);
     let spec: ModelInputSpec = backend.input_spec();
     if spec.width > display.width as usize || spec.height > display.height as usize {
         anyhow::bail!("model input exceeds the selected display dimensions");
@@ -519,7 +515,7 @@ fn build_model(
     let prepare_id = backend.prepare_id().to_owned();
     let cpu_nodes = backend.cpu_nodes();
     tracing::info!(
-        pipeline_id = config.pipeline_id,
+        model = %model.display(),
         input_width = spec.width,
         input_height = spec.height,
         precision = spec.precision.label(),

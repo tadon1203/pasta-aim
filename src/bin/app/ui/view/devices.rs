@@ -8,6 +8,7 @@ use crate::ui::App;
 use nice_aimassist::{
     engine::{Command, OutputPhase, RunPhase, State},
     pipeline::DisplayInfo,
+    settings::Display,
 };
 
 /// Whether the MAKCU connection attempt is still running.
@@ -51,7 +52,10 @@ impl App {
                                     && selected.output_index == display.output_index
                             });
                             if ui.selectable_label(active, display.label()).clicked() {
-                                self.select_display(display.adapter_index, display.output_index);
+                                self.select_display(Display {
+                                    adapter: u64::from(display.adapter_luid),
+                                    output: display.output_index,
+                                });
                             }
                         }
                     });
@@ -110,7 +114,8 @@ impl App {
                     .width(200.0)
                     .show_ui(ui, |ui| {
                         if ui.selectable_label(chosen.is_none(), "Auto").clicked() {
-                            self.set_makcu_port(None);
+                            self.edit(|settings| settings.makcu_port = None);
+                            self.persist();
                         }
                         for entry in &engine.output.ports {
                             let label = if entry.description.is_empty() {
@@ -120,7 +125,9 @@ impl App {
                             };
                             let active = chosen.as_deref() == Some(entry.name.as_str());
                             if ui.selectable_label(active, label).clicked() {
-                                self.set_makcu_port(Some(entry.name.clone()));
+                                let port = entry.name.clone();
+                                self.edit(|settings| settings.makcu_port = Some(port));
+                                self.persist();
                             }
                         }
                     });

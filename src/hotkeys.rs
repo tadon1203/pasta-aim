@@ -421,7 +421,7 @@ pub struct Hotkeys {
 
 impl Hotkeys {
     /// Starts the hotkeys thread. It sends `Hold` and `RunOnce` to `engine`, and what the user needs to
-    /// see to `ui`. For `Hold`, the command is `SetContinuous(true)` while any Hold shortcut is down.
+    /// see to `ui`. For `Hold`, the command is `Hold(true)` while any Hold shortcut is down.
     pub fn spawn(
         hotkeys: &[Hotkey],
         ui: Sender<Message>,
@@ -446,7 +446,7 @@ impl Hotkeys {
 }
 
 impl Drop for Hotkeys {
-    /// Stops and joins the hotkeys thread. The thread sends `SetContinuous(false)` before it ends.
+    /// Stops and joins the hotkeys thread. The thread sends `Hold(false)` before it ends.
     fn drop(&mut self) {
         self.commands.send(Command::Shutdown);
         if let Some(join) = self.join.take() {
@@ -479,14 +479,14 @@ fn run(
         core.step(reading, &mut out);
         flush(&mut out, ui, engine);
     }
-    engine.send(engine::Command::SetContinuous(false));
+    engine.send(engine::Command::Hold(false));
     tracing::info!("hotkeys thread stopped");
 }
 
 fn flush(out: &mut Vec<Signal>, ui: &Sender<Message>, engine: &Sender<engine::Command>) {
     for signal in out.drain(..) {
         match signal {
-            Signal::Action(Action::Hold, down) => engine.send(engine::Command::SetContinuous(down)),
+            Signal::Action(Action::Hold, down) => engine.send(engine::Command::Hold(down)),
             Signal::Action(Action::RunOnce, true) => engine.send(engine::Command::RunOnce),
             Signal::Action(Action::RunOnce, false) => {}
             Signal::Event(event) => ui.send(Message::Hotkeys(event)),
