@@ -3,18 +3,17 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc::Receiver},
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::Receiver;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState, hotkey::Code};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
 use super::{BindingActions, InputView, KeyboardReleaseLatency, ListenerMessage};
 use crate::{
+    Repaint,
     engine::{Command, EngineControl},
-    repaint::RepaintSignal,
     settings::HotkeyAction,
     sync::MutexExt,
     wait::DeadlineWait,
@@ -51,7 +50,7 @@ pub(super) struct Listener {
     rx: Receiver<ListenerMessage>,
     wait: DeadlineWait,
     control: EngineControl,
-    repaint: RepaintSignal,
+    repaint: Repaint,
     view: Arc<Mutex<InputView>>,
     bindings: BindingActions,
     suspended: bool,
@@ -72,7 +71,7 @@ impl Listener {
         rx: Receiver<ListenerMessage>,
         wait: DeadlineWait,
         control: EngineControl,
-        repaint: RepaintSignal,
+        repaint: Repaint,
         view: Arc<Mutex<InputView>>,
     ) -> Self {
         Self {
@@ -132,7 +131,7 @@ impl Listener {
                 self.suspended = true;
                 self.active_hold_ids.clear();
                 self.control.send(Command::SetContinuous(false));
-                self.repaint.request();
+                (self.repaint)();
             }
             ListenerMessage::Resume => self.suspended = false,
             ListenerMessage::BeginCapture => {
@@ -252,7 +251,7 @@ impl Listener {
         {
             tracing::debug!(enabled, "continuous hotkey state reconciled");
             self.control.send(Command::SetContinuous(enabled));
-            self.repaint.request();
+            (self.repaint)();
         }
 
         for edge in edges {
@@ -294,12 +293,12 @@ impl Listener {
                     tracing::debug!(enabled, "continuous hotkey state changed");
                     self.control.send(Command::SetContinuous(enabled));
                 }
-                self.repaint.request();
+                (self.repaint)();
             }
             Some(HotkeyAction::RunOnce) if event.state == TriggerState::Pressed => {
                 tracing::debug!("run-once hotkey triggered");
                 self.control.send(Command::RunOnce);
-                self.repaint.request();
+                (self.repaint)();
             }
             _ => {}
         }
@@ -308,7 +307,7 @@ impl Listener {
     /// Changes the view for the UI and asks for a repaint. Call it only when a value changed.
     fn update_view(&self, update: impl FnOnce(&mut InputView)) {
         update(&mut self.view.lock_recover());
-        self.repaint.request();
+        (self.repaint)();
     }
 }
 
@@ -614,13 +613,13 @@ mod tests {
     #[test]
     fn suspend_releases_every_hold_and_sends_one_stop() {
         let (control, commands) = EngineControl::detached();
-        let (_sender, rx) = crossbeam_channel::unbounded();
+        let (_sender, rx) = std::sync::mpsc::channel();
         let (wait, _waker) = DeadlineWait::new().unwrap();
         let mut listener = Listener::new(
             rx,
             wait,
             control,
-            RepaintSignal::detached(),
+            Arc::new(|| {}),
             Arc::new(Mutex::new(InputView::default())),
         );
         listener.active_hold_ids.insert(TriggerId::Keyboard(1));
@@ -641,13 +640,13 @@ mod tests {
     #[test]
     fn fast_xinput_polling_is_wanted_only_with_a_bound_xinput_shortcut_or_a_recording() {
         let (control, _commands) = EngineControl::detached();
-        let (_sender, rx) = crossbeam_channel::unbounded();
+        let (_sender, rx) = std::sync::mpsc::channel();
         let (wait, _waker) = DeadlineWait::new().unwrap();
         let mut listener = Listener::new(
             rx,
             wait,
             control,
-            RepaintSignal::detached(),
+            Arc::new(|| {}),
             Arc::new(Mutex::new(InputView::default())),
         );
         assert!(!listener.wants_fast());

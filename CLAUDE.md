@@ -11,11 +11,9 @@ Read a document only when its trigger applies. Do not read them all up front.
 | `README.md`                | What the project is and how to run it                   | You need setup or run steps                                    |
 | `ARCHITECTURE.md`          | System map, code map, and rules that must not break     | You change structure, add a module, or cross a thread boundary |
 | `docs/requirements.md`     | How the product behaves                                 | A task changes or depends on user-visible behavior             |
-| `CONTEXT.md`               | Domain terms (glossary)                                 | You name something or write docs                               |
+| `docs/makcu-protocol.md`   | The MAKCU wire protocol                                 | The MAKCU communication changes                                |
 | `docs/coding-standards.md` | Rules for code and documentation that lint cannot check | You write or review code or docs                               |
 | `docs/git-workflow.md`     | Commit branch and commit message rules                  | You commit or prepare a commit                                 |
-
-- If a term that you need is missing from `CONTEXT.md`, say so.
 
 ## Tool usage
 

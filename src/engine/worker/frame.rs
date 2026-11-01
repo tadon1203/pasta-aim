@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use std::sync::mpsc::Receiver;
 
 use super::{Worker, run::ActiveRun};
 use crate::{
@@ -195,8 +195,7 @@ mod tests {
         timing::QpcClock,
         wait::{DeadlineWait, Waker},
     };
-    use crossbeam_channel::Receiver as TestReceiver;
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::{Arc, Mutex, mpsc, mpsc::Receiver as TestReceiver};
 
     /// The Move frames that the fake MAKCU received.
     fn moves(fake: &FakeMakcu) -> Vec<Vec<u8>> {
@@ -242,7 +241,7 @@ mod tests {
             frame_trace: false,
         };
         let (makcu, fake) = MakcuClient::fake();
-        let repaint = crate::repaint::RepaintSignal::detached();
+        let repaint: crate::Repaint = Arc::new(|| {});
         let (event_tx, _) = mpsc::channel();
         let (wait, waker) = DeadlineWait::new().unwrap();
         let (telemetry, telemetry_rx) = TelemetrySink::for_test();
@@ -346,7 +345,7 @@ mod tests {
             let shutdown = matches!(command, Command::Shutdown);
             let (mut worker, fake, telemetry) = worker();
             let frame = processed(QpcClock::now());
-            let (tx, rx) = crossbeam_channel::unbounded();
+            let (tx, rx) = mpsc::channel();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, &frame), !shutdown);
             assert_eq!(moves(&fake).len(), 0);
@@ -360,7 +359,7 @@ mod tests {
     #[test]
     fn valid_result_outputs() {
         let (mut worker, fake, telemetry) = worker();
-        let (_tx, rx) = crossbeam_channel::unbounded();
+        let (_tx, rx) = mpsc::channel();
         let frame = processed(QpcClock::now());
         assert!(finish(&mut worker, &rx, &frame));
         assert_ne!(moves(&fake).len(), 0);
@@ -399,7 +398,7 @@ mod tests {
             deadline.pending_until(RunMode::Continuous, now),
             Some(now + Duration::from_secs(1))
         );
-        let (_tx, rx) = crossbeam_channel::unbounded();
+        let (_tx, rx) = mpsc::channel();
         let frame = processed(QpcClock::now());
         assert!(finish(&mut worker, &rx, &frame));
         assert_ne!(moves(&fake).len(), 0);
@@ -412,7 +411,7 @@ mod tests {
     #[test]
     fn stop_before_acquisition_and_shutdown_during_fps_wait_are_handled() {
         let (mut worker, _, waker, _telemetry) = worker_with_waker();
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = mpsc::channel();
         tx.send(Command::SetContinuous(false)).unwrap();
         assert_eq!(worker.step_frame(&rx), StepOutcome::NoDesktopUpdate);
         // There is no GPU pipeline in this fixture: acquisition would fail the run.

@@ -30,8 +30,8 @@ use std::{
 };
 
 use crate::{
+    Repaint,
     config::Config,
-    repaint::RepaintSignal,
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity,
         TargetYOffset,
@@ -39,7 +39,6 @@ use crate::{
     telemetry::{LiveTelemetry, Telemetry},
     timing::QpcClock,
 };
-use crossbeam_channel as crossbeam;
 
 use crate::wait::{DeadlineWait, Waker};
 
@@ -95,7 +94,7 @@ pub enum Command {
 /// Cheap, cloneable handle for sending commands to the engine thread.
 #[derive(Clone)]
 pub struct EngineControl {
-    tx: crossbeam::Sender<Command>,
+    tx: mpsc::Sender<Command>,
     waker: Waker,
 }
 
@@ -110,8 +109,8 @@ impl EngineControl {
 #[cfg(test)]
 impl EngineControl {
     /// A control for tests. The commands that it sends are read from the returned receiver.
-    pub(crate) fn detached() -> (Self, crossbeam::Receiver<Command>) {
-        let (tx, rx) = crossbeam::unbounded();
+    pub(crate) fn detached() -> (Self, mpsc::Receiver<Command>) {
+        let (tx, rx) = mpsc::channel();
         let (_wait, waker) = DeadlineWait::new().expect("failed to create the test wait");
         (Self { tx, waker }, rx)
     }
@@ -126,9 +125,9 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(config: &Config, repaint: RepaintSignal) -> Self {
+    pub fn new(config: &Config, repaint: Repaint) -> Self {
         tracing::info!("spawning engine worker");
-        let (tx, rx) = crossbeam::unbounded();
+        let (tx, rx) = mpsc::channel();
         let (wait, waker) = DeadlineWait::new().expect("failed to create the engine wait");
         let (event_tx, events) = mpsc::channel();
         let qpc = QpcClock::new().expect("failed to read the QPC frequency");

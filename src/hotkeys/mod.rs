@@ -6,7 +6,7 @@ mod xinput;
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
 };
 
@@ -16,8 +16,8 @@ use global_hotkey::{
 };
 
 use crate::{
+    Repaint,
     engine::{Command, EngineControl},
-    repaint::RepaintSignal,
     settings::{HotkeyAction, HotkeyBinding},
     wait::{DeadlineWait, Waker},
 };
@@ -68,7 +68,7 @@ struct InputView {
 pub struct HotkeyRegistry {
     manager: Option<GlobalHotKeyManager>,
     registered: HashMap<u32, HotKey>,
-    tx: crossbeam_channel::Sender<ListenerMessage>,
+    tx: mpsc::Sender<ListenerMessage>,
     waker: Waker,
     input: Arc<Mutex<InputView>>,
     listener: Option<JoinHandle<()>>,
@@ -76,7 +76,7 @@ pub struct HotkeyRegistry {
 }
 
 impl HotkeyRegistry {
-    pub fn new(control: EngineControl, repaint: RepaintSignal) -> Self {
+    pub fn new(control: EngineControl, repaint: Repaint) -> Self {
         let manager = GlobalHotKeyManager::new().ok();
         if manager.is_some() {
             tracing::debug!("global hotkey manager initialized");
@@ -87,7 +87,7 @@ impl HotkeyRegistry {
         }
 
         let (wait, waker) = DeadlineWait::new().expect("failed to create the hotkey wait");
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = mpsc::channel();
         let input = Arc::new(Mutex::new(InputView::default()));
 
         // The hotkey manager calls this from its own thread. Each event is queued, then the input thread is woken.

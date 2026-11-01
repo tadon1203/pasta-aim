@@ -14,10 +14,7 @@
 /.scratch/
 
 # OS
-.DS_Store
 Thumbs.db
 
 # Other IDEs
 .idea/
-
-project_snapshot.zip

@@ -9,11 +9,12 @@ mod run;
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc::Sender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{Receiver, Sender, TryRecvError},
+    },
     time::{Duration, Instant},
 };
-
-use crossbeam_channel::{Receiver, TryRecvError};
 
 use self::{frame::StepOutcome, run::RunControl};
 use super::{
@@ -22,13 +23,13 @@ use super::{
     status::StatusHub,
 };
 use crate::{
+    Repaint,
     config::Config,
     graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
     makcu::MakcuClient,
     models,
     pipeline::Pipeline,
-    repaint::RepaintSignal,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     telemetry::{RunCounters, TelemetrySink, TraceEvent},
     timing::QpcClock,
@@ -56,7 +57,7 @@ pub(super) struct WorkerLinks {
     pub commands: Receiver<Command>,
     pub events: Sender<EngineEvent>,
     pub state: Arc<Mutex<Arc<EngineState>>>,
-    pub repaint: RepaintSignal,
+    pub repaint: Repaint,
     pub wait: DeadlineWait,
     pub qpc: QpcClock,
     pub telemetry: TelemetrySink,
@@ -111,7 +112,7 @@ impl CaptureState {
 
 struct Worker {
     event_tx: Sender<EngineEvent>,
-    repaint: RepaintSignal,
+    repaint: Repaint,
     status: StatusHub,
     qpc: QpcClock,
     telemetry: TelemetrySink,
@@ -401,7 +402,7 @@ impl Worker {
 
     fn emit_event(&self, event: EngineEvent) {
         let _ = self.event_tx.send(event);
-        self.repaint.request();
+        (self.repaint)();
     }
 
     fn next_pipeline_id(&mut self) -> u64 {

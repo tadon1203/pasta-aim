@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
+    Repaint,
     graphics::DisplayInfo,
     inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
     makcu::{MakcuRoutes, PortEntry},
-    repaint::RepaintSignal,
     sync::MutexExt,
 };
 
@@ -228,12 +228,12 @@ impl EngineState {
 pub(super) struct StatusHub {
     local: EngineState,
     shared: Arc<Mutex<Arc<EngineState>>>,
-    repaint: RepaintSignal,
+    repaint: Repaint,
     dirty: bool,
 }
 
 impl StatusHub {
-    pub(super) fn new(shared: Arc<Mutex<Arc<EngineState>>>, repaint: RepaintSignal) -> Self {
+    pub(super) fn new(shared: Arc<Mutex<Arc<EngineState>>>, repaint: Repaint) -> Self {
         Self {
             local: EngineState::default(),
             shared,
@@ -258,7 +258,7 @@ impl StatusHub {
         }
         *self.shared.lock_recover() = Arc::new(self.local.clone());
         self.dirty = false;
-        self.repaint.request();
+        (self.repaint)();
     }
 }
 
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn flush_publishes_only_a_pending_edit() {
         let shared = Arc::new(Mutex::new(Arc::new(EngineState::default())));
-        let mut hub = StatusHub::new(Arc::clone(&shared), RepaintSignal::detached());
+        let mut hub = StatusHub::new(Arc::clone(&shared), Arc::new(|| {}));
         hub.flush();
         hub.edit(|state| state.run.phase = RunPhase::Continuous);
         assert_eq!(shared.lock_recover().run.phase, RunPhase::Idle);

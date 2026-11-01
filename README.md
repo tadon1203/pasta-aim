@@ -24,7 +24,7 @@ Put at least one `.onnx` model in `models/`. The model requirements are in [requ
 
 ## Development
 
-Use Windows and the MSVC Rust toolchain.
+Use Windows. `rust-toolchain.toml` selects the stable MSVC toolchain, and nothing else is needed.
 
 ```text
 cargo run
@@ -37,7 +37,7 @@ The checks to run are in [CLAUDE.md](./CLAUDE.md#commands).
 - UI: egui (eframe)
 - Capture: DXGI Desktop Duplication
 - Inference: ONNX Runtime with DirectML
-- Output: the Move interpolation. The MAKCU client is in `src/makcu`, and it needs MAKCU firmware V4.076 or newer
+- Output: MAKCU (USB serial). It needs firmware V4.076 or newer.
 
 ## Agent skills
 

@@ -26,11 +26,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 
 use self::aggregator::Aggregator;
 use crate::{
-    engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths, repaint::RepaintSignal,
+    Repaint, engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths,
     sync::MutexExt, timing::QpcClock,
 };
 
@@ -80,7 +80,7 @@ pub(crate) enum TelemetryMessage {
 /// The engine side of the Telemetry thread.
 #[derive(Clone)]
 pub(crate) struct TelemetrySink {
-    tx: Sender<TelemetryMessage>,
+    tx: SyncSender<TelemetryMessage>,
     /// Messages that did not fit in the queue. Shared with the Aggregator, which reports the count of each Run in the Frame trace footer.
     dropped: Arc<AtomicU64>,
 }
@@ -138,7 +138,7 @@ impl TelemetrySink {
     /// A sink for tests, with the receiving end of its queue.
     #[cfg(test)]
     pub(crate) fn for_test() -> (Self, Receiver<TelemetryMessage>) {
-        let (tx, rx) = bounded(QUEUE_CAPACITY);
+        let (tx, rx) = sync_channel(QUEUE_CAPACITY);
         (
             Self {
                 tx,
@@ -162,14 +162,14 @@ pub struct LiveTelemetry {
 
 /// The Telemetry thread and the values it publishes. It lives as long as the engine.
 pub(crate) struct Telemetry {
-    tx: Sender<TelemetryMessage>,
+    tx: SyncSender<TelemetryMessage>,
     live: Arc<Mutex<LiveTelemetry>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl Telemetry {
-    pub(crate) fn spawn(qpc: QpcClock, repaint: RepaintSignal) -> (Self, TelemetrySink) {
-        let (tx, rx) = bounded(QUEUE_CAPACITY);
+    pub(crate) fn spawn(qpc: QpcClock, repaint: Repaint) -> (Self, TelemetrySink) {
+        let (tx, rx) = sync_channel(QUEUE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         let live = Arc::new(Mutex::new(LiveTelemetry::default()));
         let mut aggregator = Aggregator::new(qpc, paths::logs_dir(), Arc::clone(&dropped));
@@ -210,7 +210,7 @@ fn run_telemetry(
     rx: &Receiver<TelemetryMessage>,
     aggregator: &mut Aggregator,
     live: &Mutex<LiveTelemetry>,
-    repaint: &RepaintSignal,
+    repaint: &Repaint,
 ) {
     let mut last_publish = Instant::now();
     let mut last_flush = Instant::now();
@@ -228,7 +228,7 @@ fn run_telemetry(
         };
         if pending && (urgent || last_publish.elapsed() >= PUBLISH_INTERVAL) {
             *live.lock_recover() = aggregator.live();
-            repaint.request();
+            repaint();
             last_publish = Instant::now();
             pending = false;
         }

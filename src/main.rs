@@ -1,45 +1,27 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(windows)]
 mod app;
-#[cfg(windows)]
 mod config;
-#[cfg(windows)]
 mod engine;
-#[cfg(windows)]
 mod graphics;
-#[cfg(windows)]
 mod hotkeys;
-#[cfg(windows)]
 mod inference;
-#[cfg(windows)]
 mod logging;
-#[cfg(windows)]
 mod makcu;
-#[cfg(windows)]
 mod models;
-#[cfg(windows)]
 mod paths;
-#[cfg(windows)]
 mod pipeline;
-#[cfg(windows)]
 mod platform;
-#[cfg(windows)]
-mod repaint;
-#[cfg(windows)]
 mod settings;
-#[cfg(windows)]
 mod stats;
-#[cfg(windows)]
 mod sync;
-#[cfg(windows)]
 mod telemetry;
-#[cfg(windows)]
 mod timing;
-#[cfg(windows)]
 mod wait;
 
-#[cfg(windows)]
+/// Asks the UI for a repaint. Any thread can call it. It does nothing while the window is minimized.
+pub(crate) type Repaint = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 fn main() -> eframe::Result {
     use windows::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -75,11 +57,4 @@ fn main() -> eframe::Result {
     );
     tracing::info!(?result, "nice-aimassist exiting");
     result
-}
-
-#[cfg(not(windows))]
-fn main() {
-    eprintln!(
-        "nice-aimassist is Windows-only because it uses DXGI Desktop Duplication and DirectML."
-    );
 }

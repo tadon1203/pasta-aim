@@ -13,7 +13,9 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded, unbounded};
+use std::sync::mpsc::{
+    Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
+};
 
 use super::{
     port::{Connector, Port},
@@ -81,7 +83,7 @@ impl From<io::Error> for SessionError {
 /// The request that waits for its reply. Only one is open at a time.
 struct Slot {
     request: Request,
-    reply: Sender<Result<Packet, SessionError>>,
+    reply: SyncSender<Result<Packet, SessionError>>,
 }
 
 /// The write side of the port, with the buffer that a write encodes into. One lock covers both.
@@ -152,8 +154,8 @@ impl Session {
             slot: Mutex::new(None),
             connected: AtomicBool::new(true),
         });
-        let (faults, fault_receiver) = unbounded();
-        let (event_sender, events) = unbounded();
+        let (faults, fault_receiver) = channel();
+        let (event_sender, events) = channel();
         let io = IoThread {
             connector,
             shared: Arc::clone(&shared),
@@ -181,7 +183,7 @@ impl Session {
         if !self.is_connected() {
             return Err(SessionError::NotConnected);
         }
-        let (reply, answer) = bounded(1);
+        let (reply, answer) = sync_channel(1);
         *lock(&self.shared.slot) = Some(Slot { request, reply });
         if let Err(error) = self.write(std::slice::from_ref(&request)) {
             *lock(&self.shared.slot) = None;
@@ -229,7 +231,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Replacing the sender drops the old one, so the I/O thread sees the end and returns.
-        self.faults = unbounded().0;
+        self.faults = channel().0;
         if let Some(io) = self.io.take() {
             let _ = io.join();
         }

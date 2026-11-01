@@ -1,13 +1,13 @@
 mod view;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
+    Repaint,
     config::{Config, ConfigLoad},
     engine::{Command, Engine, EngineEvent},
     hotkeys::{HotkeyRegistry, canonical_shortcut},
     models::ModelCatalog,
-    repaint::RepaintSignal,
     settings::{
         ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation, MaxDelta,
         Sensitivity, TargetYOffset,
@@ -68,8 +68,15 @@ impl App {
             }
         };
 
-        let repaint = RepaintSignal::new(cc.egui_ctx.clone());
-        let engine = Engine::new(&config, repaint.clone());
+        let repaint: Repaint = {
+            let ctx = cc.egui_ctx.clone();
+            Arc::new(move || {
+                if ctx.input(|input| input.viewport().minimized) != Some(true) {
+                    ctx.request_repaint();
+                }
+            })
+        };
+        let engine = Engine::new(&config, Arc::clone(&repaint));
         let mut hotkeys = HotkeyRegistry::new(engine.control(), repaint);
         let hotkey_error = hotkeys.replace_bindings(&config.hotkeys).err();
         if let Some(error) = &hotkey_error {
