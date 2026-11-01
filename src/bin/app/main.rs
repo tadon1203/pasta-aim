@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
     let result = eframe::run_native(
         "nice-aimassist",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, loaded)?))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, loaded)))),
     );
     tracing::info!(?result, "nice-aimassist exiting");
     result

@@ -1,10 +1,6 @@
-use std::sync::{Arc, Mutex};
-
 use crate::{
-    Repaint,
     output::{Device, Port},
     pipeline::{DisplayInfo, Precision},
-    sync::MutexExt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +11,7 @@ pub enum ModelPhase {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModelStatus {
+pub struct ModelState {
     pub phase: ModelPhase,
     pub active_name: Option<String>,
     pub loading_name: Option<String>,
@@ -26,7 +22,7 @@ pub struct ModelStatus {
     pub cpu_nodes: Option<usize>,
 }
 
-impl Default for ModelStatus {
+impl Default for ModelState {
     fn default() -> Self {
         Self {
             phase: ModelPhase::Empty,
@@ -41,7 +37,7 @@ impl Default for ModelStatus {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct GraphicsStatus {
+pub struct GraphicsState {
     pub displays: Vec<DisplayInfo>,
     pub catalog_error: Option<String>,
 }
@@ -54,14 +50,14 @@ pub enum CapturePhase {
 }
 
 #[derive(Debug, Clone)]
-pub struct CaptureStatus {
+pub struct CaptureState {
     pub phase: CapturePhase,
     pub error: Option<String>,
     pub desktop_size: Option<(usize, usize)>,
     pub selected: Option<DisplayInfo>,
 }
 
-impl Default for CaptureStatus {
+impl Default for CaptureState {
     fn default() -> Self {
         Self {
             phase: CapturePhase::Initializing,
@@ -73,15 +69,15 @@ impl Default for CaptureStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MakcuPhase {
+pub enum OutputPhase {
     Connecting,
     Connected,
     Failed,
 }
 
 #[derive(Debug, Clone)]
-pub struct MakcuStatus {
-    pub phase: MakcuPhase,
+pub struct OutputState {
+    pub phase: OutputPhase,
     /// The MAKCU of the connected link. `None` while it is not connected.
     pub device: Option<Device>,
     pub error: Option<String>,
@@ -89,10 +85,10 @@ pub struct MakcuStatus {
     pub ports: Vec<Port>,
 }
 
-impl Default for MakcuStatus {
+impl Default for OutputState {
     fn default() -> Self {
         Self {
-            phase: MakcuPhase::Connecting,
+            phase: OutputPhase::Connecting,
             device: None,
             error: None,
             ports: Vec::new(),
@@ -108,12 +104,12 @@ pub enum RunPhase {
 }
 
 #[derive(Debug, Clone)]
-pub struct RunStatus {
+pub struct RunState {
     pub phase: RunPhase,
     pub error: Option<String>,
 }
 
-impl Default for RunStatus {
+impl Default for RunState {
     fn default() -> Self {
         Self {
             phase: RunPhase::Idle,
@@ -124,7 +120,7 @@ impl Default for RunStatus {
 
 pub(super) const BLOCK_MODEL: &str = "Model is not ready";
 pub(super) const BLOCK_CAPTURE: &str = "DXGI capture is not ready";
-pub(super) const BLOCK_MAKCU: &str = "MAKCU is not connected";
+pub(super) const BLOCK_OUTPUT: &str = "MAKCU is not connected";
 pub(super) const BLOCK_MOUSE_ROUTE: &str = "Mouse route is unavailable";
 
 /// The first reason that blocks a run. `checks` is `(ready, reason)` in the order to report.
@@ -136,15 +132,15 @@ pub(super) fn run_block_reason(checks: [(bool, &'static str); 4]) -> Option<&'st
 
 /// The state of the engine that the UI shows. It changes on a command or a fault, not on a frame.
 #[derive(Debug, Clone, Default)]
-pub struct EngineState {
-    pub graphics: GraphicsStatus,
-    pub model: ModelStatus,
-    pub capture: CaptureStatus,
-    pub makcu: MakcuStatus,
-    pub run: RunStatus,
+pub struct State {
+    pub graphics: GraphicsState,
+    pub model: ModelState,
+    pub capture: CaptureState,
+    pub output: OutputState,
+    pub run: RunState,
 }
 
-impl EngineState {
+impl State {
     pub fn ready(&self) -> bool {
         self.block_reason().is_none()
     }
@@ -154,57 +150,17 @@ impl EngineState {
             (self.model.phase == ModelPhase::Ready, BLOCK_MODEL),
             (self.capture.phase == CapturePhase::Ready, BLOCK_CAPTURE),
             (
-                self.makcu.phase == MakcuPhase::Connected && self.makcu.error.is_none(),
-                BLOCK_MAKCU,
+                self.output.phase == OutputPhase::Connected && self.output.error.is_none(),
+                BLOCK_OUTPUT,
             ),
             (
-                self.makcu
+                self.output
                     .device
                     .as_ref()
                     .is_some_and(|device| device.mouse_route),
                 BLOCK_MOUSE_ROUTE,
             ),
         ])
-    }
-}
-
-/// The engine's own copy of the state. The UI only sees the copies that the engine publishes.
-///
-/// The engine edits `local` without locking. `flush` publishes a copy when an edit is pending.
-pub(super) struct StatusHub {
-    local: EngineState,
-    shared: Arc<Mutex<Arc<EngineState>>>,
-    repaint: Repaint,
-    dirty: bool,
-}
-
-impl StatusHub {
-    pub(super) fn new(shared: Arc<Mutex<Arc<EngineState>>>, repaint: Repaint) -> Self {
-        Self {
-            local: EngineState::default(),
-            shared,
-            repaint,
-            dirty: false,
-        }
-    }
-
-    pub(super) fn get(&self) -> &EngineState {
-        &self.local
-    }
-
-    pub(super) fn edit(&mut self, edit: impl FnOnce(&mut EngineState)) {
-        edit(&mut self.local);
-        self.dirty = true;
-    }
-
-    /// Publishes the pending edit, if there is one, and asks for a repaint.
-    pub(super) fn flush(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        *self.shared.lock_recover() = Arc::new(self.local.clone());
-        self.dirty = false;
-        (self.repaint)();
     }
 }
 
@@ -221,12 +177,12 @@ mod tests {
         }
     }
 
-    fn ready_state() -> EngineState {
-        let mut state = EngineState::default();
+    fn ready_state() -> State {
+        let mut state = State::default();
         state.model.phase = ModelPhase::Ready;
         state.capture.phase = CapturePhase::Ready;
-        state.makcu.phase = MakcuPhase::Connected;
-        state.makcu.device = Some(device(true));
+        state.output.phase = OutputPhase::Connected;
+        state.output.device = Some(device(true));
         state
     }
 
@@ -238,25 +194,14 @@ mod tests {
     #[test]
     fn missing_mouse_route_blocks_output() {
         let mut state = ready_state();
-        state.makcu.device = Some(device(false));
+        state.output.device = Some(device(false));
         assert_eq!(state.block_reason(), Some("Mouse route is unavailable"));
     }
 
     #[test]
     fn disconnected_makcu_blocks_output() {
         let mut state = ready_state();
-        state.makcu.phase = MakcuPhase::Failed;
+        state.output.phase = OutputPhase::Failed;
         assert_eq!(state.block_reason(), Some("MAKCU is not connected"));
-    }
-
-    #[test]
-    fn flush_publishes_only_a_pending_edit() {
-        let shared = Arc::new(Mutex::new(Arc::new(EngineState::default())));
-        let mut hub = StatusHub::new(Arc::clone(&shared), Arc::new(|| {}));
-        hub.flush();
-        hub.edit(|state| state.run.phase = RunPhase::Continuous);
-        assert_eq!(shared.lock_recover().run.phase, RunPhase::Idle);
-        hub.flush();
-        assert_eq!(shared.lock_recover().run.phase, RunPhase::Continuous);
     }
 }

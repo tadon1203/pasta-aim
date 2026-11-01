@@ -1,17 +1,16 @@
 //! One frame of the engine: the pipeline's attempt, the pending commands, and the output.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::mpsc::Receiver,
+    time::{Duration, Instant},
+};
 
-use std::sync::mpsc::Receiver;
-
-use super::{Worker, run::ActiveRun};
+use super::Worker;
 use crate::{
     clock::Clock,
-    engine::{Command, RunMode},
+    engine::{Command, RunPhase},
     pipeline::{FrameOutcome, PipelineFault, ProcessedFrame},
-    pipeline::{GpuDropReason, NoDesktopUpdateReason},
     settings::FpsLimit,
-    telemetry::FrameRecord,
 };
 
 /// The earliest time of the next capture in a Continuous run.
@@ -38,8 +37,8 @@ impl CaptureDeadline {
     }
 
     /// `None` when a capture is due now. Run once is always due.
-    pub(super) fn pending_until(&self, mode: RunMode, now: Instant) -> Option<Instant> {
-        (mode == RunMode::Continuous && now < self.next).then_some(self.next)
+    pub(super) fn pending_until(&self, mode: RunPhase, now: Instant) -> Option<Instant> {
+        (mode == RunPhase::Continuous && now < self.next).then_some(self.next)
     }
 
     /// Only a step that got a new frame arms the deadline. Any other step leaves it as it is.
@@ -67,9 +66,9 @@ impl Worker {
         if !self.drain_commands(commands) {
             return StepOutcome::Shutdown;
         }
-        let Some(run) = self.run.active else {
+        if self.run.active.is_none() {
             return StepOutcome::NoDesktopUpdate;
-        };
+        }
         let attempt_start = Instant::now();
         let wait_ms = u32::from(self.tuning.new_frame_wait.get());
         let result = if let Some(pipeline) = self.capture.pipeline_mut() {
@@ -79,16 +78,9 @@ impl Worker {
             return StepOutcome::NoDesktopUpdate;
         };
         match result {
-            Ok(FrameOutcome::NoDesktopUpdate(reason)) => {
-                if matches!(reason, NoDesktopUpdateReason::Timeout) {
-                    self.run_counters.timeouts += 1;
-                }
-                StepOutcome::NoDesktopUpdate
-            }
+            Ok(FrameOutcome::NoDesktopUpdate) => StepOutcome::NoDesktopUpdate,
             Ok(FrameOutcome::NewFrame(frame)) => {
-                self.run_counters.new_frames += 1;
-                self.run_counters.accumulated_frames += u64::from(frame.accumulated_frames);
-                if self.finish_frame(commands, run, &frame) {
+                if self.finish_frame(commands, attempt_start, &frame) {
                     StepOutcome::NewFrame { attempt_start }
                 } else {
                     StepOutcome::Shutdown
@@ -102,46 +94,34 @@ impl Worker {
     }
 
     /// The part of a frame after the pipeline: the pending commands, the stop check, the output, and the
-    /// Frame record. Returns false on shutdown.
+    /// statistics. Returns false on shutdown.
     fn finish_frame(
         &mut self,
         commands: &Receiver<Command>,
-        run: ActiveRun,
+        attempt_start: Instant,
         frame: &ProcessedFrame,
     ) -> bool {
         if !self.drain_commands(commands) {
             return false;
         }
-        if !self.run.is_active(run.generation) {
-            self.telemetry.frame_dropped(GpuDropReason::StaleGeneration);
+        // The frame is current when its run is still active and the run began before the capture.
+        let Some(run) = self.run.active.filter(|run| run.started <= attempt_start) else {
+            self.recorder.frame_dropped();
             return true;
-        }
-        let output_start_qpc = Clock::now();
+        };
+        let output_start = Clock::now();
         let outcome = self.aim.update(frame.selected, self.input_size);
         if let Some(rounded) = outcome.rounded
-            && let Err(error) = self.output.send(rounded)
+            && let Err(error) = self.output.write(rounded)
         {
-            self.makcu_lost(format!("{error:#}"));
+            self.output_lost(format!("{error:#}"));
             return true;
         }
-        let output_complete_qpc = Clock::now();
-        self.telemetry.frame(&FrameRecord {
-            generation: run.generation,
-            frame_seq: frame.frame_seq,
-            times: frame.times,
-            output_start_qpc,
-            output_complete_qpc,
-            gpu_preprocess_ms: frame.gpu_preprocess_ms,
-            gpu_copy_ms: frame.gpu_copy_ms,
-            detections: frame.detections,
-            selected: frame.selected,
-            track: outcome.track,
-            aim_error: outcome.error,
-            planned: outcome.exact,
-            sent: outcome.rounded,
-        });
+        let output_done = Clock::now();
+        self.recorder
+            .frame(frame, &outcome, output_start, output_done, Instant::now());
         self.note_output(frame.desktop_size);
-        if run.mode == RunMode::OneShot {
+        if run.mode == RunPhase::OneShot {
             self.stop_run();
         }
         true
@@ -149,37 +129,35 @@ impl Worker {
 
     /// Suspends the pipeline after a fault. The user retries with `RetryCapture`.
     fn handle_fault(&mut self, fault: &PipelineFault) {
-        self.telemetry
-            .frame_dropped(GpuDropReason::PipelinePoisoned);
+        self.recorder.frame_dropped();
         self.suspend_invalid_pipeline(&fault.message);
     }
 
     /// Edits the state for a frame that reached the output. Each edit is made only when its value changes.
     fn note_output(&mut self, desktop_size: (usize, usize)) {
-        if self.status.get().capture.desktop_size != Some(desktop_size) {
-            self.status
-                .edit(|status| status.capture.desktop_size = Some(desktop_size));
+        if self.state.capture.desktop_size != Some(desktop_size) {
+            self.edit(|state| state.capture.desktop_size = Some(desktop_size));
         }
-        if self.status.get().run.error.is_some() {
-            self.status.edit(|status| status.run.error = None);
+        if self.state.run.error.is_some() {
+            self.edit(|state| state.run.error = None);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CaptureState, Tuning, run::RunControl};
+    use super::super::{Source, Tuning, run::RunControl};
     use super::*;
     use crate::{
         aim::{Aim, AimSettings},
+        channel::channel,
         clock::{self, Clock, Wake},
-        engine::{CapturePhase, EngineState, MakcuPhase, RunPhase, status::StatusHub},
+        engine::{CapturePhase, OutputPhase, RunPhase, State, stats::Recorder},
         output::{Output, fake::FakeMakcu},
-        pipeline::{AdapterLuid, Detection, Detections},
+        pipeline::{AdapterLuid, Detection, FrameTimes},
         settings::{Interpolation, InterpolationPercent, Settings},
-        telemetry::{FrameTimes, RunCounters, TelemetryMessage, TelemetrySink},
     };
-    use std::sync::{Arc, Mutex, mpsc, mpsc::Receiver as TestReceiver};
+    use std::sync::mpsc;
 
     /// The Move frames that the fake MAKCU received.
     fn moves(fake: &FakeMakcu) -> Vec<Vec<u8>> {
@@ -189,65 +167,45 @@ mod tests {
             .collect()
     }
 
-    /// The frame records and the dropped frames that the telemetry queue received.
-    fn output_messages(telemetry: &TestReceiver<TelemetryMessage>) -> (Vec<FrameRecord>, usize) {
-        let mut records = Vec::new();
-        let mut dropped = 0;
-        for message in telemetry.try_iter() {
-            match message {
-                TelemetryMessage::Frame(record) => records.push(record),
-                TelemetryMessage::FrameDropped { .. } => dropped += 1,
-                _ => {}
-            }
-        }
-        (records, dropped)
+    fn worker() -> (Worker, FakeMakcu) {
+        let (worker, fake, _waker) = worker_with_waker();
+        (worker, fake)
     }
 
-    fn worker() -> (Worker, FakeMakcu, TestReceiver<TelemetryMessage>) {
-        let (worker, fake, _waker, telemetry) = worker_with_waker();
-        (worker, fake, telemetry)
-    }
-
-    /// The fixture, with the waker of its wait, which the test raises to wake the loop, and the telemetry queue.
+    /// The fixture, with the waker of its wait, which the test raises to wake the loop.
     /// It has no GPU, so it begins the run without the readiness check.
-    fn worker_with_waker() -> (Worker, FakeMakcu, Wake, TestReceiver<TelemetryMessage>) {
-        let config = Settings::default();
+    fn worker_with_waker() -> (Worker, FakeMakcu, Wake) {
+        let settings = Settings::default();
         let tuning = Tuning {
             aim: AimSettings {
-                sensitivity: config.sensitivity,
-                target_y_offset: config.target_y_offset,
-                max_delta: config.max_delta,
+                sensitivity: settings.sensitivity,
+                target_y_offset: settings.target_y_offset,
+                max_delta: settings.max_delta,
             },
-            interpolation: config.interpolation,
-            confidence: config.confidence,
-            fps_limit: config.fps_limit,
-            new_frame_wait: config.new_frame_wait,
-            low_latency: config.low_latency,
-            frame_trace: false,
+            interpolation: settings.interpolation,
+            confidence: settings.confidence,
+            fps_limit: settings.fps_limit,
+            new_frame_wait: settings.new_frame_wait,
+            low_latency: settings.low_latency,
         };
         let (output, fake) = Output::fake();
-        let repaint: crate::Repaint = Arc::new(|| {});
-        let (event_tx, _) = mpsc::channel();
+        let (ui, _messages) = channel(|| {});
         let (wait, waker) = clock::wait().unwrap();
-        let (telemetry, telemetry_rx) = TelemetrySink::for_test();
+        let clock = Clock::new().unwrap();
         let mut worker = Worker {
-            event_tx,
-            status: StatusHub::new(
-                Arc::new(Mutex::new(Arc::new(EngineState::default()))),
-                repaint.clone(),
-            ),
-            repaint,
-            qpc: Clock::new().unwrap(),
-            telemetry,
+            ui,
+            state: State::default(),
+            state_changed: false,
+            recorder: Recorder::new(clock),
+            stats_sent: Instant::now(),
+            clock,
             tuning,
             displays: Vec::new(),
             // The fixture has no GPU capture and no pipeline.
-            capture: CaptureState::None,
+            capture: Source::None,
             input_size: (100, 100),
             wait,
             capture_deadline: CaptureDeadline::new(),
-            run_counters: RunCounters::default(),
-            sent_counters: RunCounters::default(),
             active_model: Some(("previous.onnx".into(), "previous.onnx".into())),
             next_pipeline_id: 2,
             capture_adapter: 0,
@@ -258,9 +216,9 @@ mod tests {
             run: RunControl::default(),
             com_ready: false,
         };
-        worker.status.edit(|status| {
-            status.capture.phase = CapturePhase::Ready;
-            status.capture.selected = Some(crate::pipeline::DisplayInfo {
+        worker.edit(|state| {
+            state.capture.phase = CapturePhase::Ready;
+            state.capture.selected = Some(crate::pipeline::DisplayInfo {
                 adapter_index: 0,
                 output_index: 0,
                 adapter_luid: AdapterLuid { low: 0, high: 0 },
@@ -271,15 +229,13 @@ mod tests {
                 refresh_hz: 60.0,
             });
         });
-        worker.begin_run(RunMode::Continuous);
-        (worker, fake, waker, telemetry_rx)
+        worker.begin_run(RunPhase::Continuous);
+        (worker, fake, waker)
     }
 
     /// A new frame with a valid detection, as the pipeline would hand it to the engine.
     fn processed(present_qpc: i64) -> ProcessedFrame {
         ProcessedFrame {
-            frame_seq: 1,
-            accumulated_frames: 1,
             desktop_size: (100, 100),
             times: FrameTimes {
                 present: present_qpc,
@@ -294,13 +250,12 @@ mod tests {
             gpu_preprocess_ms: None,
             gpu_copy_ms: None,
             selected: Some(Detection::for_test(70.0, 50.0, 0)),
-            detections: Detections::EMPTY,
         }
     }
 
+    /// Finishes a frame whose capture was attempted now.
     fn finish(worker: &mut Worker, commands: &Receiver<Command>, frame: &ProcessedFrame) -> bool {
-        let run = worker.run.active.unwrap();
-        worker.finish_frame(commands, run, frame)
+        worker.finish_frame(commands, Instant::now(), frame)
     }
 
     #[test]
@@ -320,52 +275,54 @@ mod tests {
             Command::SetLowLatency(true),
         ] {
             let shutdown = matches!(command, Command::Shutdown);
-            let (mut worker, fake, telemetry) = worker();
+            let (mut worker, fake) = worker();
             let frame = processed(Clock::now());
             let (tx, rx) = mpsc::channel();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, &frame), !shutdown);
             assert_eq!(moves(&fake).len(), 0);
-            let (records, dropped) = output_messages(&telemetry);
-            assert!(records.is_empty());
-            // A stale frame is reported as dropped. A shutdown ends before the output stage.
-            assert_eq!(dropped, usize::from(!shutdown));
+            // A stale frame is counted as dropped. A shutdown ends before the output stage.
+            assert_eq!(worker.recorder.counts(), (0, u64::from(!shutdown)));
         }
     }
 
     #[test]
     fn valid_result_outputs() {
-        let (mut worker, fake, telemetry) = worker();
+        let (mut worker, fake) = worker();
         let (_tx, rx) = mpsc::channel();
         let frame = processed(Clock::now());
         assert!(finish(&mut worker, &rx, &frame));
         assert_ne!(moves(&fake).len(), 0);
-        let (records, dropped) = output_messages(&telemetry);
-        assert_eq!(dropped, 0);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].frame_seq, 1);
-        assert_eq!(records[0].aim_error, Some((20.0, 0.0)));
-        assert!(records[0].sent.is_some());
+        assert_eq!(worker.recorder.counts(), (1, 0));
+        let stats = worker.recorder.stats();
+        assert_eq!(
+            stats.last_target.map(|target| (target.0, target.1)),
+            Some((20.0, 0.0))
+        );
+        assert!(stats.last_move.is_some());
     }
 
     #[test]
     fn a_failed_move_write_is_a_lost_makcu_and_stops_the_run() {
-        let (mut worker, fake, telemetry) = worker();
+        let (mut worker, fake) = worker();
         fake.disconnect();
         let (_tx, rx) = mpsc::channel();
         assert!(finish(&mut worker, &rx, &processed(Clock::now())));
-        let status = worker.status.get();
-        assert_eq!(status.makcu.phase, MakcuPhase::Failed);
-        assert!(status.makcu.error.is_some());
+        let state = worker.state;
+        assert_eq!(state.output.phase, OutputPhase::Failed);
+        assert!(state.output.error.is_some());
         assert!(worker.run.active.is_none());
         assert!(!worker.output.is_connected());
-        let (records, _) = output_messages(&telemetry);
-        assert!(records.is_empty(), "the frame did not reach the output");
+        assert_eq!(
+            worker.recorder.counts().0,
+            0,
+            "the frame did not reach the output"
+        );
     }
 
     #[test]
     fn the_stored_interpolation_is_sent_and_a_missing_reply_is_a_lost_makcu() {
-        let (mut worker, fake, _telemetry) = worker();
+        let (mut worker, fake) = worker();
         worker.tuning.interpolation = Interpolation::Percent(InterpolationPercent::new(40));
         worker.send_interpolation();
         assert_eq!(fake.frames().last().unwrap()[4..], [0x1F, 40]);
@@ -373,28 +330,26 @@ mod tests {
 
         fake.mute_next(0x1F);
         worker.send_interpolation();
-        assert_eq!(worker.status.get().makcu.phase, MakcuPhase::Failed);
+        assert_eq!(worker.state.output.phase, OutputPhase::Failed);
         assert!(!worker.output.is_connected());
     }
 
     #[test]
     fn a_rejected_interpolation_shows_an_error_and_keeps_the_makcu() {
-        let (mut worker, fake, _telemetry) = worker();
+        let (mut worker, fake) = worker();
         worker.tuning.interpolation = Interpolation::Percent(InterpolationPercent::new(40));
         fake.reject_next(0x1F);
         worker.send_interpolation();
-        assert!(worker.status.get().run.error.is_some());
+        assert!(worker.state.run.error.is_some());
         assert!(worker.output.is_connected());
     }
 
     #[test]
     fn failed_model_and_display_changes_preserve_selection_and_run_policy() {
-        let (mut worker, _fake, _telemetry) = worker();
-        let old_generation = worker.run.active.unwrap().generation;
+        let (mut worker, _fake) = worker();
         worker.set_capture_selection(99, 99);
         assert_eq!(worker.capture_output, 0);
         assert!(worker.run.is_continuous());
-        assert_ne!(worker.run.active.unwrap().generation, old_generation);
         worker.load_model(false, "missing.onnx".into(), "missing.onnx".into());
         assert_eq!(worker.active_model.as_ref().unwrap().0, "previous.onnx");
         assert!(worker.run.active.is_none());
@@ -402,16 +357,16 @@ mod tests {
 
     #[test]
     fn one_shot_ignores_fps_wait_and_finishes_after_one_output() {
-        let (mut worker, fake, telemetry) = worker();
+        let (mut worker, fake) = worker();
         worker.stop_run();
-        worker.begin_run(RunMode::OneShot);
+        worker.begin_run(RunPhase::OneShot);
         let now = Instant::now();
         let deadline = CaptureDeadline {
             next: now + Duration::from_secs(1),
         };
-        assert_eq!(deadline.pending_until(RunMode::OneShot, now), None);
+        assert_eq!(deadline.pending_until(RunPhase::OneShot, now), None);
         assert_eq!(
-            deadline.pending_until(RunMode::Continuous, now),
+            deadline.pending_until(RunPhase::Continuous, now),
             Some(now + Duration::from_secs(1))
         );
         let (_tx, rx) = mpsc::channel();
@@ -419,20 +374,31 @@ mod tests {
         assert!(finish(&mut worker, &rx, &frame));
         assert_ne!(moves(&fake).len(), 0);
         assert!(worker.run.active.is_none());
-        assert_eq!(worker.status.get().run.phase, RunPhase::Idle);
-        let (records, _) = output_messages(&telemetry);
-        assert_eq!(records.len(), 1);
+        assert_eq!(worker.state.run.phase, RunPhase::Idle);
+        assert_eq!(worker.recorder.counts().0, 1);
+    }
+
+    #[test]
+    fn a_frame_captured_before_a_new_run_is_dropped() {
+        let (mut worker, _fake) = worker();
+        let attempt_start = Instant::now();
+        worker.stop_run();
+        worker.begin_run(RunPhase::Continuous);
+        let (_tx, rx) = mpsc::channel();
+        // The run that is active now began after the capture: the frame is stale.
+        assert!(worker.finish_frame(&rx, attempt_start, &processed(Clock::now())));
+        assert_eq!(worker.recorder.counts(), (0, 1));
     }
 
     #[test]
     fn stop_before_acquisition_and_shutdown_during_fps_wait_are_handled() {
-        let (mut worker, _, waker, _telemetry) = worker_with_waker();
+        let (mut worker, _, waker) = worker_with_waker();
         let (tx, rx) = mpsc::channel();
         tx.send(Command::SetContinuous(false)).unwrap();
         assert_eq!(worker.step_frame(&rx), StepOutcome::NoDesktopUpdate);
         // There is no GPU pipeline in this fixture: acquisition would fail the run.
-        assert!(worker.status.get().run.error.is_none());
-        worker.begin_run(RunMode::Continuous);
+        assert!(worker.state.run.error.is_none());
+        worker.begin_run(RunPhase::Continuous);
         worker.capture_deadline.next = Instant::now() + Duration::from_secs(10);
         let sender = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
@@ -443,7 +409,7 @@ mod tests {
         worker.event_loop(&rx);
         sender.join().unwrap();
         assert!(start.elapsed() < Duration::from_secs(2));
-        assert!(worker.status.get().run.error.is_none());
+        assert!(worker.state.run.error.is_none());
     }
 
     #[test]
@@ -473,7 +439,7 @@ mod tests {
             fps,
         );
         assert_eq!(
-            deadline.pending_until(RunMode::Continuous, start),
+            deadline.pending_until(RunPhase::Continuous, start),
             Some(start + Duration::from_millis(10))
         );
     }

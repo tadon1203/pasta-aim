@@ -1,5 +1,5 @@
 use nice_aimassist::{
-    engine::{CapturePhase, MakcuPhase, ModelPhase},
+    engine::{CapturePhase, ModelPhase, OutputPhase},
     output::Device,
 };
 
@@ -19,25 +19,25 @@ pub(super) fn capture_phase_label(phase: CapturePhase) -> &'static str {
     }
 }
 
-pub(super) fn makcu_phase_label(phase: MakcuPhase) -> &'static str {
+pub(super) fn makcu_phase_label(phase: OutputPhase) -> &'static str {
     match phase {
-        MakcuPhase::Connecting => "Connecting",
-        MakcuPhase::Connected => "Connected",
-        MakcuPhase::Failed => "Disconnected",
+        OutputPhase::Connecting => "Connecting",
+        OutputPhase::Connected => "Connected",
+        OutputPhase::Failed => "Disconnected",
     }
 }
 
-pub(super) fn makcu_phase_mark(phase: MakcuPhase) -> &'static str {
+pub(super) fn makcu_phase_mark(phase: OutputPhase) -> &'static str {
     match phase {
-        MakcuPhase::Connected => "●",
-        MakcuPhase::Connecting => "◌",
-        MakcuPhase::Failed => "○",
+        OutputPhase::Connected => "●",
+        OutputPhase::Connecting => "◌",
+        OutputPhase::Failed => "○",
     }
 }
 
 /// The MAKCU line: the phase, then the port and the firmware once it is connected. The Devices
 /// panel and the diagnostics text both show it.
-pub(super) fn makcu_line(phase: MakcuPhase, device: Option<&Device>) -> String {
+pub(super) fn makcu_line(phase: OutputPhase, device: Option<&Device>) -> String {
     let phase = format!("{} {}", makcu_phase_mark(phase), makcu_phase_label(phase));
     match device {
         Some(device) => format!("{phase} · {} · FW {}", device.port, device.firmware_label()),

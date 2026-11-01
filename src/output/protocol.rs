@@ -21,10 +21,10 @@ pub(super) const KIND_MOUSE: u8 = 0x01;
 /// The payload of a reject. See "Reject form" in `docs/makcu-protocol.md`.
 pub(super) const REJECT: u8 = 0xFF;
 
-/// A request to MAKCU. See "Opcodes" in `docs/makcu-protocol.md`.
+/// A query to MAKCU. See "Opcodes" in `docs/makcu-protocol.md`.
 /// A `SET` that MAKCU accepts has no reply, except `Interpolate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Request {
+pub(super) enum Query {
     Device,
     FirmwareVersion,
     Move { x: i16, y: i16 },
@@ -32,7 +32,7 @@ pub(super) enum Request {
     SetBaud(u32),
 }
 
-impl Request {
+impl Query {
     /// The command byte of the packet. See "Opcodes" in `docs/makcu-protocol.md`.
     pub(super) fn command(self) -> u8 {
         match self {
@@ -44,7 +44,7 @@ impl Request {
         }
     }
 
-    /// Appends the packet of the request to `out`.
+    /// Appends the packet of the query to `out`.
     pub(super) fn encode(self, out: &mut Vec<u8>) {
         let len = match self {
             Self::Device | Self::FirmwareVersion => 0,
@@ -94,11 +94,11 @@ impl Packet {
     }
 }
 
-/// A reply that is a reject: the command of the request and the payload `FF`.
+/// A reply that is a reject: the command of the query and the payload `FF`.
 /// See "Reject form" in `docs/makcu-protocol.md`.
 /// `INTERPOLATE 255` is the exception: its accepted echo has the same bytes, so it is never a reject.
-pub(super) fn is_reject(request: Request, packet: &Packet) -> bool {
-    packet.payload() == [REJECT] && request != Request::Interpolate(INTERPOLATE_AUTO)
+pub(super) fn is_reject(query: Query, packet: &Packet) -> bool {
+    packet.payload() == [REJECT] && query != Query::Interpolate(INTERPOLATE_AUTO)
 }
 
 /// Whether the reply to `INTERPOLATE value` confirms the value. Auto (255) is never checked,
@@ -109,7 +109,7 @@ pub(super) fn is_interpolate_echo(value: u8, packet: &Packet) -> bool {
 
 /// Whether a reply to `INTERPOLATE value` confirms the value: the echo, and not a reject.
 pub(super) fn confirms_interpolate(value: u8, packet: &Packet) -> bool {
-    !is_reject(Request::Interpolate(value), packet) && is_interpolate_echo(value, packet)
+    !is_reject(Query::Interpolate(value), packet) && is_interpolate_echo(value, packet)
 }
 
 /// Splits a byte stream into packets. Keeps the partial packet between calls.
@@ -166,10 +166,10 @@ pub(super) fn format_firmware(version: u32) -> String {
 pub(super) mod tests {
     use super::*;
 
-    /// The bytes that `request` puts on the wire.
-    pub(in crate::output) fn frame(request: Request) -> Vec<u8> {
+    /// The bytes that `query` puts on the wire.
+    pub(in crate::output) fn frame(query: Query) -> Vec<u8> {
         let mut out = Vec::new();
-        request.encode(&mut out);
+        query.encode(&mut out);
         out
     }
 
@@ -188,29 +188,26 @@ pub(super) mod tests {
 
     #[test]
     fn requests_encode_to_the_documented_bytes() {
-        let cases: Vec<(Request, Vec<u8>)> = vec![
-            (Request::Device, vec![0xDE, 0xAD, 0, 0, 0x02]),
-            (Request::FirmwareVersion, vec![0xDE, 0xAD, 0, 0, 0x04]),
+        let cases: Vec<(Query, Vec<u8>)> = vec![
+            (Query::Device, vec![0xDE, 0xAD, 0, 0, 0x02]),
+            (Query::FirmwareVersion, vec![0xDE, 0xAD, 0, 0, 0x04]),
             (
-                Request::Move { x: 10, y: -5 },
+                Query::Move { x: 10, y: -5 },
                 vec![0xDE, 0xAD, 4, 0, 0x18, 0x0A, 0, 0xFB, 0xFF],
             ),
+            (Query::Interpolate(255), vec![0xDE, 0xAD, 1, 0, 0x1F, 0xFF]),
+            (Query::Interpolate(40), vec![0xDE, 0xAD, 1, 0, 0x1F, 0x28]),
             (
-                Request::Interpolate(255),
-                vec![0xDE, 0xAD, 1, 0, 0x1F, 0xFF],
-            ),
-            (Request::Interpolate(40), vec![0xDE, 0xAD, 1, 0, 0x1F, 0x28]),
-            (
-                Request::SetBaud(4_000_000),
+                Query::SetBaud(4_000_000),
                 vec![0xDE, 0xAD, 5, 0, 0xA5, 0x00, 0x09, 0x3D, 0x00],
             ),
             (
-                Request::SetBaud(115_200),
+                Query::SetBaud(115_200),
                 vec![0xDE, 0xAD, 5, 0, 0xA5, 0x00, 0xC2, 0x01, 0x00],
             ),
         ];
-        for (request, bytes) in cases {
-            assert_eq!(frame(request), bytes, "{request:?}");
+        for (query, bytes) in cases {
+            assert_eq!(frame(query), bytes, "{query:?}");
         }
     }
 
@@ -282,8 +279,8 @@ pub(super) mod tests {
     #[test]
     fn a_reject_is_ff_except_for_the_auto_echo() {
         let reject = Packet::new(CMD_INTERPOLATE, &[0xFF]);
-        assert!(is_reject(Request::Interpolate(40), &reject));
-        assert!(!is_reject(Request::Interpolate(255), &reject));
+        assert!(is_reject(Query::Interpolate(40), &reject));
+        assert!(!is_reject(Query::Interpolate(255), &reject));
         assert!(is_interpolate_echo(255, &reject));
         assert!(!is_interpolate_echo(40, &reject));
     }

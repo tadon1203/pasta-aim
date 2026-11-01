@@ -29,7 +29,7 @@ use windows::{
     core::Interface,
 };
 
-use super::{Detection, Detections, GpuDeviceContext, Precision};
+use super::{Detection, GpuDeviceContext, Precision};
 use crate::{clock::Clock, settings::Confidence};
 
 static NEXT_PREPARE_ID: AtomicU64 = AtomicU64::new(1);
@@ -51,11 +51,10 @@ pub(super) struct InferenceOutput {
     pub postprocess_done_qpc: i64,
 }
 
-/// The nearest detection, and every detection that passed the confidence filter.
+/// The nearest detection that passed the confidence filter.
 #[derive(Debug)]
 pub(super) struct Selection {
     pub nearest: Option<Detection>,
-    pub detections: Detections,
 }
 
 /// The DirectML-allocated input tensor, in the model's input precision.
@@ -325,7 +324,6 @@ fn select_nearest<T: Copy + Into<f32>>(
 ) -> Selection {
     let image_center = (input_width as f32 * 0.5, input_height as f32 * 0.5);
     let mut best: Option<(f32, Detection)> = None;
-    let mut detections = Detections::EMPTY;
 
     for row in data.as_chunks::<6>().0.iter().take(rows) {
         // The confidence decides the row first, so a rejected row converts no box values.
@@ -361,14 +359,12 @@ fn select_nearest<T: Copy + Into<f32>>(
             confidence,
             class_id: class_id.round() as i32,
         };
-        detections.push(detection);
         if !matches!(best, Some((best_distance, _)) if best_distance <= distance_sq) {
             best = Some((distance_sq, detection));
         }
     }
     Selection {
         nearest: best.map(|(_, detection)| detection),
-        detections,
     }
 }
 
@@ -665,7 +661,6 @@ mod tests {
         ];
         let selection = select_nearest(&data, 2, 100, 100, 0.25);
         assert!(selection.nearest.is_none());
-        assert_eq!(selection.detections.total(), 0);
     }
 
     #[test]
@@ -685,20 +680,7 @@ mod tests {
             2.0,
         ];
         let selection = select_nearest(&data, 2, 100, 100, 0.25);
-        assert_eq!(selection.detections.total(), 1);
         assert_eq!(selection.nearest.unwrap().class_id, 2);
-    }
-
-    #[test]
-    fn all_detections_above_the_threshold_are_kept_in_order() {
-        let data: [f32; 18] = [
-            0.0, 0.0, 20.0, 20.0, 0.95, 1.0, 45.0, 45.0, 55.0, 55.0, 0.80, 2.0, 0.0, 0.0, 5.0, 5.0,
-            0.10, 3.0,
-        ];
-        let selection = select_nearest(&data, 3, 100, 100, 0.25);
-        assert_eq!(selection.detections.total(), 2);
-        assert_eq!(selection.detections.iter().count(), 2);
-        assert_eq!(selection.detections.iter().next().unwrap().class_id, 1);
     }
 
     #[test]

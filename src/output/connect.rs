@@ -1,5 +1,5 @@
 //! The connect to MAKCU: it finds the port, probes the baud rates, and reads the firmware and the
-//! routes. It also holds `exchange`, the one way to send a request and wait for its reply.
+//! routes. It also holds `exchange`, the one way to send a query and wait for its reply.
 //!
 //! The protocol is in `docs/makcu-protocol.md`. The port is in `port`.
 
@@ -12,8 +12,8 @@ use anyhow::{Result, anyhow, bail, ensure};
 
 use super::{
     Device, Port as Entry,
-    port::{Connector, Port},
-    protocol::{Packet, PacketDecoder, Request, is_reject, mouse_route},
+    port::{Connector, Serial},
+    protocol::{Packet, PacketDecoder, Query, is_reject, mouse_route},
 };
 
 pub(super) const LOW_BAUD: u32 = 115_200;
@@ -26,7 +26,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) fn connect(
     connector: &dyn Connector,
     chosen: Option<&str>,
-) -> Result<(Box<dyn Port>, Device)> {
+) -> Result<(Box<dyn Serial>, Device)> {
     let names = match chosen {
         Some(name) => vec![name.to_owned()],
         None => makcu_ports(connector.ports()?),
@@ -55,17 +55,13 @@ fn makcu_ports(entries: Vec<Entry>) -> Vec<String> {
 
 /// The connect sequence on one port: probe both rates, switch to 4,000,000 baud when the port is at
 /// 115,200, then read the mouse route.
-fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Port>, Device)> {
+fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Serial>, Device)> {
     // The rate that MAKCU keeps is not known after the app closes, so both rates are probed.
     let (mut port, mut baud) = probe_first(connector, name, [LOW_BAUD, HIGH_BAUD])?;
     let firmware = firmware_of(port.as_mut())?;
     if baud == LOW_BAUD {
         // A `SetBaud` that the device accepts has no reply. A refused one leaves the device at 115,200.
-        write_requests(
-            port.as_mut(),
-            &mut Vec::new(),
-            &[Request::SetBaud(HIGH_BAUD)],
-        )?;
+        write_queries(port.as_mut(), &mut Vec::new(), &[Query::SetBaud(HIGH_BAUD)])?;
         // Close the port before the reopen: Windows does not open a COM port twice.
         drop(port);
         (port, baud) = probe_first(connector, name, [HIGH_BAUD, LOW_BAUD])?;
@@ -85,7 +81,7 @@ fn probe_first(
     connector: &dyn Connector,
     name: &str,
     rates: [u32; 2],
-) -> Result<(Box<dyn Port>, u32)> {
+) -> Result<(Box<dyn Serial>, u32)> {
     let mut result = Err(anyhow!("MAKCU did not answer at either baud rate"));
     for baud in rates {
         result = probe(connector, name, baud).map(|port| (port, baud));
@@ -97,22 +93,22 @@ fn probe_first(
 }
 
 /// Opens the port at `baud` and asks for the routes. The port is kept only when the device answers.
-fn probe(connector: &dyn Connector, name: &str, baud: u32) -> Result<Box<dyn Port>> {
+fn probe(connector: &dyn Connector, name: &str, baud: u32) -> Result<Box<dyn Serial>> {
     let mut port = connector.open(name, baud)?;
-    exchange_accepted(port.as_mut(), Request::Device)?;
+    exchange_accepted(port.as_mut(), Query::Device)?;
     Ok(port)
 }
 
-fn firmware_of(port: &mut dyn Port) -> Result<u32> {
-    let packet = exchange_accepted(port, Request::FirmwareVersion)?;
+fn firmware_of(port: &mut dyn Serial) -> Result<u32> {
+    let packet = exchange_accepted(port, Query::FirmwareVersion)?;
     let [a, b, c, d] = *packet.payload() else {
         bail!("MAKCU sent a malformed firmware version");
     };
     Ok(u32::from_le_bytes([a, b, c, d]))
 }
 
-fn kinds_of(port: &mut dyn Port) -> Result<u8> {
-    let packet = exchange_accepted(port, Request::Device)?;
+fn kinds_of(port: &mut dyn Serial) -> Result<u8> {
+    let packet = exchange_accepted(port, Query::Device)?;
     let [kinds] = *packet.payload() else {
         bail!("MAKCU sent a malformed device reply");
     };
@@ -120,33 +116,33 @@ fn kinds_of(port: &mut dyn Port) -> Result<u8> {
 }
 
 /// `exchange`, where a reject is an error.
-fn exchange_accepted(port: &mut dyn Port, request: Request) -> Result<Packet> {
-    let packet = exchange(port, request)?;
-    ensure!(!is_reject(request, &packet), "MAKCU rejected {request:?}");
+fn exchange_accepted(port: &mut dyn Serial, query: Query) -> Result<Packet> {
+    let packet = exchange(port, query)?;
+    ensure!(!is_reject(query, &packet), "MAKCU rejected {query:?}");
     Ok(packet)
 }
 
-/// Writes a request and reads until its reply, for at most `REPLY_TIMEOUT`. A reject is a reply
+/// Writes a query and reads until its reply, for at most `REPLY_TIMEOUT`. A reject is a reply
 /// too, so the caller checks it. The port must have no other reader.
-pub(super) fn exchange(port: &mut dyn Port, request: Request) -> Result<Packet> {
-    write_requests(port, &mut Vec::new(), std::slice::from_ref(&request))?;
+pub(super) fn exchange(port: &mut dyn Serial, query: Query) -> Result<Packet> {
+    write_queries(port, &mut Vec::new(), std::slice::from_ref(&query))?;
     let mut decoder = PacketDecoder::default();
     let mut answer = None;
     let deadline = Instant::now() + REPLY_TIMEOUT;
     while answer.is_none() && Instant::now() < deadline {
         read_packets(port, &mut decoder, |packet| {
-            if answer.is_none() && packet.cmd == request.command() {
+            if answer.is_none() && packet.cmd == query.command() {
                 answer = Some(packet);
             }
         })?;
     }
-    answer.ok_or_else(|| anyhow!("MAKCU did not answer {request:?} in time"))
+    answer.ok_or_else(|| anyhow!("MAKCU did not answer {query:?} in time"))
 }
 
 /// One read from the port, which hands the packets it completes to `on_packet`. A read that times
 /// out is no packet, not an error.
 fn read_packets(
-    port: &mut dyn Port,
+    port: &mut dyn Serial,
     decoder: &mut PacketDecoder,
     on_packet: impl FnMut(Packet),
 ) -> io::Result<()> {
@@ -161,15 +157,15 @@ fn read_packets(
     }
 }
 
-/// Encodes the requests into `buffer` and writes them with one port write. `buffer` is kept for the next write.
-pub(super) fn write_requests(
-    port: &mut dyn Port,
+/// Encodes the queries into `buffer` and writes them with one port write. `buffer` is kept for the next write.
+pub(super) fn write_queries(
+    port: &mut dyn Serial,
     buffer: &mut Vec<u8>,
-    requests: &[Request],
+    queries: &[Query],
 ) -> io::Result<()> {
     buffer.clear();
-    for request in requests {
-        request.encode(buffer);
+    for query in queries {
+        query.encode(buffer);
     }
     port.write_all(buffer)
 }
@@ -194,7 +190,7 @@ mod tests {
         let fake = FakeMakcu::new();
         let (_port, device) = connect(&fake, None).unwrap();
         assert_eq!(device.baud, HIGH_BAUD);
-        assert!(fake.frames().contains(&frame(Request::SetBaud(HIGH_BAUD))));
+        assert!(fake.frames().contains(&frame(Query::SetBaud(HIGH_BAUD))));
     }
 
     #[test]
@@ -203,7 +199,7 @@ mod tests {
         fake.set_accepted_bauds(&[LOW_BAUD]);
         let (_port, device) = connect(&fake, None).unwrap();
         assert_eq!(device.baud, LOW_BAUD);
-        assert!(fake.frames().contains(&frame(Request::SetBaud(HIGH_BAUD))));
+        assert!(fake.frames().contains(&frame(Query::SetBaud(HIGH_BAUD))));
     }
 
     #[test]
@@ -273,7 +269,7 @@ mod tests {
         let fake = FakeMakcu::new();
         let (mut port, _) = connect(&fake, None).unwrap();
         fake.reject_next(CMD_INTERPOLATE);
-        let reply = exchange(port.as_mut(), Request::Interpolate(40)).unwrap();
+        let reply = exchange(port.as_mut(), Query::Interpolate(40)).unwrap();
         assert_eq!(reply.payload(), [0xFF]);
     }
 
@@ -281,7 +277,7 @@ mod tests {
     fn the_auto_echo_of_interpolate_255_is_an_answer_not_a_reject() {
         let fake = FakeMakcu::new();
         let (mut port, _) = connect(&fake, None).unwrap();
-        let reply = exchange_accepted(port.as_mut(), Request::Interpolate(255)).unwrap();
+        let reply = exchange_accepted(port.as_mut(), Query::Interpolate(255)).unwrap();
         assert_eq!(reply.payload(), [0xFF]);
     }
 
@@ -290,7 +286,7 @@ mod tests {
         let fake = FakeMakcu::new();
         let (mut port, _) = connect(&fake, None).unwrap();
         fake.mute_next(CMD_INTERPOLATE);
-        let error = exchange(port.as_mut(), Request::Interpolate(40)).unwrap_err();
+        let error = exchange(port.as_mut(), Query::Interpolate(40)).unwrap_err();
         assert!(format!("{error:#}").contains("in time"), "{error:#}");
     }
 }

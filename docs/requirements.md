@@ -89,16 +89,9 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 - **Log level** is the lowest severity that the session log writes: `off`, `error`, `warn`, `info` (default), `debug`, or `trace`. A session log is the text file of one start of the app, and each session writes `logs/session-<unix_ms>-<pid>.log`.
 - **GPU debug** (default off) applies only at the start of the app. It makes inference slower. With GPU debug on, a GPU fault writes one log line with the pipeline, the stage, the error, the HRESULT, the D3D11 and D3D12 removed reasons, and the D3D12 debug layer messages.
 - **CPU fallback nodes** is the number of model nodes that ONNX Runtime assigned to the CPU. The diagnostics panel and its copied text show it as `CPU fallback nodes: N`, or `unknown` when ONNX Runtime does not report the assignment.
-- **Frame trace** (default off): each run writes `logs/trace-<unix_ms>.jsonl`. A change of this setting applies to the next run.
-  - The file has a `header` line, a `frame` line for each processed frame, an `event` line for each trace event, and a `footer` line. The file has no version: the header names the version of the app.
-  - The header has what a reader needs to read the file alone: the app version and build, the clock (the QPC frequency, and the QPC value and the wall clock at the start of the run), the run, MAKCU (port, firmware, baud, and the move interpolation), the model, and the settings of the run.
-  - Every time in a line is in microseconds from the start of the run. A `frame` line has the time of each stage, `total_us` (from the present time, which is the time of the desktop update that made the frame, to the end of the output), the detections with the highest confidence first (at most 8, and `candidate_total` has the full count), the target, the track, the aim point error, the move before rounding, and the move that was sent.
-  - A trace event is something that happened in a run and is not a frame. The trace events are: MAKCU disconnected, MAKCU connected (port, firmware, baud), the move interpolation failed, the pipeline changed (the next frame is the first frame), a frame result dropped (with the reason), and messages that the telemetry queue refused.
-  - The trace never slows a run. A message that cannot be taken in time is dropped and counted. A dropped frame record is then missing from the trace, the statistics, and the loop metrics. A frame record is the data of one processed frame: its times, its detections, its target, and its move. The footer has the count of frames and the count of dropped messages.
-  - A trace file that cannot be opened or written does not stop the run.
-- The UI shows the loop metrics, which are measurements of how well the output follows the target: the frame period, the RMS error, the overshoots, and the time to reach the target.
-- The UI updates the statistics and the last target at most 10 times each second. A run that stops updates them at once.
-- The UI shows timing statistics for each stage of a frame. The first frame after a model load or a pipeline change is shown apart and is not part of the statistics.
+- The UI shows the statistics of the run: the p50 and p95 of the time of each stage of a frame, the frame rate, the frames per second that the capture produced and that reached the output, the last target, and the last move.
+- The UI gets new statistics at most 10 times each second. A run that stops sends them at once.
+- The first frame after a model load or a pipeline change is not part of the statistics. A new run starts the statistics again.
 
 ## Settings file
 

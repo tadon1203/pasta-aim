@@ -6,24 +6,23 @@ use super::{
 };
 use crate::ui::{App, EditField};
 use nice_aimassist::{
-    engine::{CapturePhase, Command, EngineState, ModelPhase, RunPhase},
+    engine::{CapturePhase, Command, ModelPhase, RunPhase, State, Stats},
     hotkeys::{Action, Shortcut},
     settings::{
         Confidence, FpsLimit, Interpolation, InterpolationPercent, MaxDelta, NewFrameWait,
         Sensitivity, TargetYOffset,
     },
-    telemetry::LiveTelemetry,
 };
 
 /// The fixed interpolation that a switch from Auto starts with.
 const FIXED_INTERPOLATION_START: u16 = 50;
 
 impl App {
-    pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineState) {
+    pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, engine: &State) {
         ui.group(|ui| {
             ui.strong("Output");
-            if !status
-                .makcu
+            if !engine
+                .output
                 .device
                 .as_ref()
                 .is_some_and(|device| device.mouse_route)
@@ -33,7 +32,7 @@ impl App {
 
             ui.horizontal(|ui| {
                 ui.label("Move interpolation");
-                let mut auto = self.config.interpolation == Interpolation::Auto;
+                let mut auto = self.settings.interpolation == Interpolation::Auto;
                 if ui.checkbox(&mut auto, "Auto").changed() {
                     self.set_interpolation(if auto {
                         Interpolation::Auto
@@ -43,7 +42,7 @@ impl App {
                     self.persist();
                 }
             });
-            if let Interpolation::Percent(percent) = self.config.interpolation {
+            if let Interpolation::Percent(percent) = self.settings.interpolation {
                 let edit = percent_row(
                     ui,
                     "Fixed",
@@ -58,18 +57,13 @@ impl App {
         });
     }
 
-    pub(super) fn draw_calibration(
-        &mut self,
-        ui: &mut egui::Ui,
-        status: &EngineState,
-        live: &LiveTelemetry,
-    ) {
+    pub(super) fn draw_calibration(&mut self, ui: &mut egui::Ui, engine: &State, stats: &Stats) {
         ui.group(|ui| {
             ui.strong("Calibration");
             let edit = percent_row(
                 ui,
                 "Sensitivity",
-                self.config.sensitivity.get(),
+                self.settings.sensitivity.get(),
                 Sensitivity::MIN..=Sensitivity::MAX,
                 self.dirty.contains(&EditField::Sensitivity),
             );
@@ -81,7 +75,7 @@ impl App {
             let edit = percent_row(
                 ui,
                 "Confidence",
-                self.config.confidence.get(),
+                self.settings.confidence.get(),
                 Confidence::MIN..=Confidence::MAX,
                 self.dirty.contains(&EditField::Confidence),
             );
@@ -93,7 +87,7 @@ impl App {
             let edit = percent_row(
                 ui,
                 "Target Y offset",
-                self.config.target_y_offset.get(),
+                self.settings.target_y_offset.get(),
                 TargetYOffset::MIN..=TargetYOffset::MAX,
                 self.dirty.contains(&EditField::TargetYOffset),
             );
@@ -106,7 +100,7 @@ impl App {
                 ui.label("Max delta");
                 let edit = drag_value(
                     ui,
-                    self.config.max_delta.get(),
+                    self.settings.max_delta.get(),
                     0..=MaxDelta::MAX,
                     self.dirty.contains(&EditField::MaxDelta),
                 );
@@ -116,67 +110,62 @@ impl App {
             });
             ui.small("Per-frame cap on movement length after sensitivity; 0 = unlimited.");
 
-            let ready = status.ready();
-            let run_idle = status.run.phase == RunPhase::Idle;
+            let ready = engine.ready();
+            let run_idle = engine.run.phase == RunPhase::Idle;
             if ui
                 .add_enabled(ready && run_idle, egui::Button::new("Run once"))
                 .clicked()
             {
-                self.engine.send(Command::RunOnce);
+                self.commands.send(Command::RunOnce);
             }
 
-            let once_shortcuts = bindings_summary(&self.config, Action::RunOnce);
+            let once_shortcuts = bindings_summary(&self.settings, Action::RunOnce);
             if !once_shortcuts.is_empty() {
                 ui.small(format!("Shortcuts: {once_shortcuts}"));
             }
 
-            if !ready && let Some(reason) = status.block_reason() {
+            if !ready && let Some(reason) = engine.block_reason() {
                 ui.horizontal(|ui| {
                     ui.small(reason);
-                    if status.capture.phase == CapturePhase::Failed
+                    if engine.capture.phase == CapturePhase::Failed
                         && ui.small_button("Retry capture").clicked()
                     {
-                        self.engine.send(Command::RetryCapture);
+                        self.commands.send(Command::RetryCapture);
                     }
                 });
             }
 
-            if live.last_target.is_some()
-                || live.last_movement.is_some()
-                || live.last_total_ms.is_some()
+            if stats.last_target.is_some()
+                || stats.last_move.is_some()
+                || stats.last_total_ms.is_some()
             {
                 ui.separator();
                 ui.small("Last run");
-                if let Some((dx, dy, _, _)) = live.last_target {
+                if let Some((dx, dy, _, _)) = stats.last_target {
                     ui.label(format!("Target     x={dx:+.1} px   y={dy:+.1} px"));
                 } else {
                     ui.label("Target     no detection");
                 }
-                if let Some(sent) = live.last_movement {
+                if let Some(sent) = stats.last_move {
                     ui.label(format!("Command    x={:+}   y={:+}", sent.x, sent.y));
                 }
-                if let Some(ms) = live.last_total_ms {
+                if let Some(ms) = stats.last_total_ms {
                     ui.label(format!("pipeline   {ms:.2} ms"));
                 }
             }
 
-            if let Some(error) = &status.run.error {
+            if let Some(error) = &engine.run.error {
                 error_label(ui, error);
             }
         });
     }
 
-    pub(super) fn draw_continuous(
-        &mut self,
-        ui: &mut egui::Ui,
-        status: &EngineState,
-        live: &LiveTelemetry,
-    ) {
+    pub(super) fn draw_continuous(&mut self, ui: &mut egui::Ui, engine: &State, stats: &Stats) {
         ui.group(|ui| {
             ui.horizontal(|ui| {
                 ui.strong("Continuous");
                 ui.separator();
-                ui.label(match status.run.phase {
+                ui.label(match engine.run.phase {
                     RunPhase::Continuous => "● Running",
                     RunPhase::OneShot => "Single run",
                     RunPhase::Idle => "Idle",
@@ -186,7 +175,7 @@ impl App {
                 ui.label("FPS limit");
                 let edit = drag_value(
                     ui,
-                    self.config.fps_limit.get(),
+                    self.settings.fps_limit.get(),
                     FpsLimit::MIN..=FpsLimit::MAX,
                     self.dirty.contains(&EditField::FpsLimit),
                 );
@@ -196,7 +185,7 @@ impl App {
                 ui.small("Continuous only");
             });
 
-            let mut wait = self.config.new_frame_wait;
+            let mut wait = self.settings.new_frame_wait;
             ui.horizontal(|ui| {
                 ui.label("New frame wait");
                 let mut milliseconds = wait.get();
@@ -204,16 +193,16 @@ impl App {
                     .on_hover_text("Maximum wait per capture attempt. FPS limit still applies to new frames.");
                 wait = NewFrameWait::new(milliseconds);
             });
-            if wait != self.config.new_frame_wait {
-                self.config.new_frame_wait = wait;
-                self.engine.send(Command::SetNewFrameWait(wait));
+            if wait != self.settings.new_frame_wait {
+                self.settings.new_frame_wait = wait;
+                self.commands.send(Command::SetNewFrameWait(wait));
                 self.persist();
             }
 
             let can_change_latency =
-                status.run.phase == RunPhase::Idle && status.model.phase != ModelPhase::Loading;
+                engine.run.phase == RunPhase::Idle && engine.model.phase != ModelPhase::Loading;
             ui.add_enabled_ui(can_change_latency, |ui| {
-                let mut low_latency = self.config.low_latency;
+                let mut low_latency = self.settings.low_latency;
                 if ui
                     .checkbox(&mut low_latency, "Low-latency mode")
                     .on_hover_text(
@@ -221,19 +210,19 @@ impl App {
                     )
                     .changed()
                 {
-                    self.config.low_latency = low_latency;
-                    self.engine.send(Command::SetLowLatency(low_latency));
+                    self.settings.low_latency = low_latency;
+                    self.commands.send(Command::SetLowLatency(low_latency));
                     self.persist();
                 }
             });
 
-            let hold_shortcuts = bindings_summary(&self.config, Action::Hold);
+            let hold_shortcuts = bindings_summary(&self.settings, Action::Hold);
             if hold_shortcuts.is_empty() {
                 ui.small("No hold shortcut assigned.");
             } else {
                 ui.small(format!("Hold: {hold_shortcuts}"));
             }
-            if live.performance.sample_count > 0 {
+            if stats.stages.sample_count > 0 {
                 if self.gpu_debug_at_startup {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
@@ -242,25 +231,25 @@ impl App {
                 }
                 ui.small(format!(
                     "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
-                    live.performance.fps,
-                    self.config.fps_limit.get(),
-                    live.performance.total.p50,
-                    live.performance.total.p95,
-                    live.performance.inference.p50,
-                    live.performance.inference.p95,
+                    stats.stages.fps,
+                    self.settings.fps_limit.get(),
+                    stats.stages.total.p50,
+                    stats.stages.total.p95,
+                    stats.stages.inference.p50,
+                    stats.stages.inference.p95,
                 ));
             }
         });
     }
 
-    pub(super) fn draw_hotkeys(&mut self, ui: &mut egui::Ui, status: &EngineState) {
+    pub(super) fn draw_hotkeys(&mut self, ui: &mut egui::Ui, engine: &State) {
         ui.group(|ui| {
             ui.strong("Hotkeys");
             for action in Action::ALL {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_sized([120.0, 20.0], egui::Label::new(action.label()));
                     let shortcuts: Vec<Shortcut> = self
-                        .config
+                        .settings
                         .bindings_for(action)
                         .map(|binding| binding.shortcut)
                         .collect();
@@ -268,7 +257,7 @@ impl App {
                         let label = format!("{}  ×", shortcut.label());
                         if ui
                             .add_enabled(
-                                status.run.phase == RunPhase::Idle,
+                                engine.run.phase == RunPhase::Idle,
                                 egui::Button::new(label),
                             )
                             .on_hover_text("Remove shortcut")
@@ -278,7 +267,7 @@ impl App {
                         }
                     }
                     let can_add =
-                        self.hotkey_capture.is_none() && status.run.phase == RunPhase::Idle;
+                        self.hotkey_capture.is_none() && engine.run.phase == RunPhase::Idle;
                     if ui
                         .add_enabled(can_add, egui::Button::new("+ Add"))
                         .clicked()
@@ -296,7 +285,7 @@ impl App {
 }
 
 impl App {
-    /// The dialog. The input thread records the shortcut; this only shows the wait and the result.
+    /// The dialog. The hotkeys thread records the shortcut; this only shows the wait and the result.
     pub(super) fn draw_hotkey_capture(&mut self, ctx: &egui::Context) {
         let Some(action) = self.hotkey_capture else {
             return;

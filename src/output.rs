@@ -1,7 +1,7 @@
 //! The output: it writes the mouse move to MAKCU.
 //!
 //! The engine owns one `Output` and calls it on the engine thread. There is no I/O thread: a move
-//! is one write, and the one request with a reply waits for it. The port is in `port`, the connect
+//! is one write, and the one query with a reply waits for it. The port is in `port`, the connect
 //! in `connect`, and the wire format in `protocol`.
 
 mod connect;
@@ -15,9 +15,9 @@ use std::{fmt, sync::Arc};
 use anyhow::{Context, Result, ensure};
 
 use self::{
-    connect::{exchange, write_requests},
-    port::{Connector, Port as SerialPort, WindowsConnector},
-    protocol::{Request, confirms_interpolate},
+    connect::{exchange, write_queries},
+    port::{Connector, Serial, WindowsConnector},
+    protocol::{Query, confirms_interpolate},
 };
 use crate::{aim::Move, settings::Interpolation};
 
@@ -57,7 +57,7 @@ pub fn ports() -> Vec<Port> {
 /// An open port with the device behind it. A failed write or a missing reply ends the link for
 /// good: the engine connects a new one.
 struct Link {
-    port: Box<dyn SerialPort>,
+    port: Box<dyn Serial>,
     device: Device,
     /// The buffer that a write encodes into, kept for the next write.
     buffer: Vec<u8>,
@@ -146,12 +146,12 @@ impl Output {
     /// Sends the Move interpolation and checks the echo. The device can lose the value when it
     /// restarts, so the caller sends it after each connect.
     /// A reply that does not confirm the value is an error, and the link stays up. A missing reply
-    /// ends the link: a late reply would look like the answer to the next request.
+    /// ends the link: a late reply would look like the answer to the next query.
     pub fn set_interpolation(&mut self, interpolation: Interpolation) -> Result<()> {
         let value = interpolation.wire_value();
         let link = self.link.as_mut().context("MAKCU is not connected")?;
-        let request = Request::Interpolate(value);
-        let packet = match exchange(link.port.as_mut(), request) {
+        let query = Query::Interpolate(value);
+        let packet = match exchange(link.port.as_mut(), query) {
             Ok(packet) => packet,
             Err(error) => {
                 self.link = None;
@@ -167,13 +167,13 @@ impl Output {
     }
 
     /// Writes one move as one port write. It never waits for a reply. A failed write ends the link.
-    pub fn send(&mut self, step: Move) -> Result<()> {
+    pub fn write(&mut self, step: Move) -> Result<()> {
         let link = self.link.as_mut().context("MAKCU is not connected")?;
-        let request = Request::Move {
+        let query = Query::Move {
             x: step.x,
             y: step.y,
         };
-        if let Err(error) = write_requests(link.port.as_mut(), &mut link.buffer, &[request]) {
+        if let Err(error) = write_queries(link.port.as_mut(), &mut link.buffer, &[query]) {
             self.link = None;
             return Err(error).context("MAKCU mouse move failed");
         }
@@ -205,7 +205,7 @@ mod tests {
         Interpolation::Percent(InterpolationPercent::new(value))
     }
 
-    /// The last request that the fake received.
+    /// The last query that the fake received.
     fn last_frame(fake: &fake::FakeMakcu) -> Vec<u8> {
         fake.frames().last().unwrap().clone()
     }
@@ -213,14 +213,14 @@ mod tests {
     #[test]
     fn a_move_is_one_write_of_the_move_request() {
         let (mut output, fake) = Output::fake();
-        output.send(movement(20, -3)).unwrap();
-        assert_eq!(last_frame(&fake), frame(Request::Move { x: 20, y: -3 }));
+        output.write(movement(20, -3)).unwrap();
+        assert_eq!(last_frame(&fake), frame(Query::Move { x: 20, y: -3 }));
     }
 
     #[test]
     fn a_move_without_a_link_is_an_error() {
         let mut output = Output::with_connector(Arc::new(fake::FakeMakcu::new()));
-        let error = output.send(movement(1, 1)).unwrap_err();
+        let error = output.write(movement(1, 1)).unwrap_err();
         assert_eq!(error.to_string(), "MAKCU is not connected");
     }
 
@@ -228,7 +228,7 @@ mod tests {
     fn a_failed_write_ends_the_link_and_is_not_reported_again() {
         let (mut output, fake) = Output::fake();
         fake.disconnect();
-        let error = output.send(movement(1, 1)).unwrap_err();
+        let error = output.write(movement(1, 1)).unwrap_err();
         assert_eq!(error.to_string(), "MAKCU mouse move failed");
         assert!(!output.is_connected());
         assert!(!output.link_lost(), "the failed write was the report");
@@ -262,14 +262,14 @@ mod tests {
     fn a_percent_interpolation_is_confirmed_by_its_echo() {
         let (mut output, fake) = Output::fake();
         output.set_interpolation(percent(40)).unwrap();
-        assert_eq!(last_frame(&fake), frame(Request::Interpolate(40)));
+        assert_eq!(last_frame(&fake), frame(Query::Interpolate(40)));
     }
 
     #[test]
     fn auto_interpolation_is_sent_as_255() {
         let (mut output, fake) = Output::fake();
         output.set_interpolation(Interpolation::Auto).unwrap();
-        assert_eq!(last_frame(&fake), frame(Request::Interpolate(255)));
+        assert_eq!(last_frame(&fake), frame(Query::Interpolate(255)));
     }
 
     #[test]

@@ -1,45 +1,30 @@
 //! Starting, stopping, and observing inference runs.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use super::Worker;
-use crate::{
-    clock::Clock,
-    engine::{
-        MakcuPhase, RunGeneration, RunMode, RunPhase,
-        status::{BLOCK_CAPTURE, BLOCK_MAKCU, BLOCK_MODEL, BLOCK_MOUSE_ROUTE, run_block_reason},
-    },
-    telemetry::{
-        AppInfo, ClockInfo, MakcuInfo, ModelInfo, RunCounters, RunInfo, RunStart, SettingsInfo,
-        TraceHeader,
-    },
+use crate::engine::{
+    RunPhase,
+    state::{BLOCK_CAPTURE, BLOCK_MODEL, BLOCK_MOUSE_ROUTE, BLOCK_OUTPUT, run_block_reason},
 };
 
+/// The active run. `started` is when it began: a frame whose capture was attempted before that is stale.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ActiveRun {
-    pub generation: RunGeneration,
-    pub mode: RunMode,
+    /// `OneShot` or `Continuous`.
+    pub mode: RunPhase,
+    pub started: Instant,
 }
 
 #[derive(Default)]
 pub(super) struct RunControl {
-    last_generation: RunGeneration,
     pub active: Option<ActiveRun>,
 }
 
 impl RunControl {
-    pub(super) fn next_generation(&mut self) -> RunGeneration {
-        self.last_generation = self.last_generation.wrapping_add(1).max(1);
-        self.last_generation
-    }
-
-    pub(super) fn is_active(&self, generation: RunGeneration) -> bool {
-        self.active.is_some_and(|run| run.generation == generation)
-    }
-
     pub(super) fn is_continuous(&self) -> bool {
         self.active
-            .is_some_and(|run| run.mode == RunMode::Continuous)
+            .is_some_and(|run| run.mode == RunPhase::Continuous)
     }
 }
 
@@ -48,7 +33,7 @@ impl Worker {
         if !active {
             self.stop_run();
         } else if !self.run.is_continuous() {
-            self.start_run(RunMode::Continuous);
+            self.start_run(RunPhase::Continuous);
         }
     }
 
@@ -58,10 +43,10 @@ impl Worker {
             self.set_run_error("Stop continuous inference before running once".to_owned());
             return;
         }
-        self.start_run(RunMode::OneShot);
+        self.start_run(RunPhase::OneShot);
     }
 
-    pub(super) fn start_run(&mut self, mode: RunMode) {
+    pub(super) fn start_run(&mut self, mode: RunPhase) {
         if let Some(reason) = self.run_block_reason() {
             tracing::warn!(%reason, ?mode, "inference start blocked");
             self.set_run_error(reason);
@@ -71,104 +56,37 @@ impl Worker {
     }
 
     /// Starts a run with no readiness check. `start_run` checks the readiness first.
-    pub(super) fn begin_run(&mut self, mode: RunMode) {
-        let generation = self.run.next_generation();
+    pub(super) fn begin_run(&mut self, mode: RunPhase) {
         self.aim.reset();
         self.capture_deadline.clear();
-        self.run_counters = RunCounters::default();
-        self.sent_counters = RunCounters::default();
+        self.recorder.run_started(Instant::now());
         if let Some(pipeline) = self.capture.pipeline_mut() {
             pipeline.reset_profiling();
         }
-        self.run.active = Some(ActiveRun { generation, mode });
-        let phase = match mode {
-            RunMode::Continuous => {
-                tracing::info!(
-                    fps_limit = self.tuning.fps_limit.get(),
-                    "continuous inference started"
-                );
-                RunPhase::Continuous
-            }
-            RunMode::OneShot => RunPhase::OneShot,
-        };
-        self.telemetry.run_started(RunStart {
-            generation,
-            trace: self.trace_header(generation, mode),
+        self.run.active = Some(ActiveRun {
+            mode,
+            started: Instant::now(),
         });
-        self.status.edit(|status| {
-            status.run.phase = phase;
-            status.run.error = None;
-        });
-    }
-
-    /// The header of the frame trace, when the trace is on for this run.
-    fn trace_header(&self, generation: RunGeneration, mode: RunMode) -> Option<TraceHeader> {
-        if !self.tuning.frame_trace {
-            return None;
+        if mode == RunPhase::Continuous {
+            tracing::info!(
+                fps_limit = self.tuning.fps_limit.get(),
+                "continuous inference started"
+            );
         }
-        let tuning = &self.tuning;
-        let makcu = self.status.get().makcu.clone();
-        let makcu = match (makcu.phase, makcu.device) {
-            (MakcuPhase::Connected, Some(device)) => Some(MakcuInfo {
-                firmware: device.firmware_label(),
-                port: device.port,
-                baud: Some(device.baud),
-                interpolation: self.tuning.interpolation,
-            }),
-            _ => None,
-        };
-        Some(TraceHeader {
-            app: AppInfo {
-                version: env!("CARGO_PKG_VERSION"),
-                build: if cfg!(debug_assertions) {
-                    "debug"
-                } else {
-                    "release"
-                },
-            },
-            clock: ClockInfo {
-                qpc_hz: self.qpc.frequency(),
-                run_start_qpc: Clock::now(),
-                run_start_unix_ms: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |elapsed| elapsed.as_millis() as u64),
-            },
-            run: RunInfo {
-                generation,
-                mode: match mode {
-                    RunMode::Continuous => "continuous",
-                    RunMode::OneShot => "one_shot",
-                },
-            },
-            makcu,
-            model: ModelInfo {
-                name: self.active_model.as_ref().map(|(name, _)| name.clone()),
-                input_size: self
-                    .capture
-                    .pipeline()
-                    .map(crate::pipeline::Pipeline::input_size),
-            },
-            settings: SettingsInfo {
-                fps_limit: tuning.fps_limit.get(),
-                capture_wait_ms: u32::from(tuning.new_frame_wait.get()),
-                low_latency: tuning.low_latency,
-                confidence_threshold_percent: tuning.confidence.get(),
-                sensitivity_percent: tuning.aim.sensitivity.get(),
-                target_y_offset_percent: tuning.aim.target_y_offset.get(),
-                max_delta: tuning.aim.max_delta.get(),
-            },
-        })
+        self.edit(|state| {
+            state.run.phase = mode;
+            state.run.error = None;
+        });
     }
 
     /// Stops any active run. Safe to call when idle.
     pub(super) fn stop_run(&mut self) {
-        if let Some(run) = self.run.active.take() {
-            tracing::info!(generation = run.generation, "inference stopped");
-            self.telemetry.run_stopped(run.generation);
+        if self.run.active.take().is_some() {
+            tracing::info!("inference stopped");
         }
         self.aim.reset();
-        if self.status.get().run.phase != RunPhase::Idle {
-            self.status.edit(|status| status.run.phase = RunPhase::Idle);
+        if self.state.run.phase != RunPhase::Idle {
+            self.edit(|state| state.run.phase = RunPhase::Idle);
         }
     }
 
@@ -182,7 +100,7 @@ impl Worker {
         run_block_reason([
             (self.capture.has_model(), BLOCK_MODEL),
             (self.capture.is_capture_ready(), BLOCK_CAPTURE),
-            (self.output.is_connected(), BLOCK_MAKCU),
+            (self.output.is_connected(), BLOCK_OUTPUT),
             (self.output.mouse_route(), BLOCK_MOUSE_ROUTE),
         ])
         .map(str::to_owned)
@@ -194,25 +112,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_generation_is_rejected() {
+    fn continuous_is_the_mode_of_the_active_run() {
         let mut run = RunControl::default();
-        let generation = run.next_generation();
-        assert!(!run.is_active(generation));
+        assert!(!run.is_continuous());
         run.active = Some(ActiveRun {
-            generation,
-            mode: RunMode::Continuous,
+            mode: RunPhase::Continuous,
+            started: Instant::now(),
         });
-        assert!(run.is_active(generation));
-        assert!(!run.is_active(generation + 1));
         assert!(run.is_continuous());
-    }
-
-    #[test]
-    fn generations_are_never_zero() {
-        let mut run = RunControl {
-            last_generation: RunGeneration::MAX,
-            active: None,
-        };
-        assert_eq!(run.next_generation(), 1);
+        run.active = Some(ActiveRun {
+            mode: RunPhase::OneShot,
+            started: Instant::now(),
+        });
+        assert!(!run.is_continuous());
     }
 }

@@ -28,7 +28,8 @@ const GPU_QUERY_RING_SIZE: usize = 16;
 
 pub(crate) enum CapturePoll {
     Fresh(AcquiredDesktopFrame),
-    NoDesktopUpdate(NoDesktopUpdateReason),
+    /// A timeout, a pointer-only update, or an access loss. The engine counts them.
+    NoDesktopUpdate,
 }
 
 /// A desktop image that the capture acquired, with the source region that the copy reads.
@@ -38,14 +39,6 @@ pub(crate) struct AcquiredDesktopFrame {
     source_box: D3D11_BOX,
     desktop_size: (usize, usize),
     present_qpc: i64,
-    accumulated_frames: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum NoDesktopUpdateReason {
-    Timeout,
-    PointerOnly,
-    AccessLost,
 }
 
 /// The QPC ticks that the capture reports for one copy.
@@ -58,10 +51,6 @@ pub(crate) struct CopyTimes {
 }
 
 impl AcquiredDesktopFrame {
-    pub(crate) fn accumulated_frames(&self) -> u32 {
-        self.accumulated_frames
-    }
-
     pub(crate) fn desktop_size(&self) -> (usize, usize) {
         self.desktop_size
     }
@@ -336,9 +325,7 @@ impl DxgiCapture {
             if let Err(error) = release_result {
                 if error.code() == DXGI_ERROR_ACCESS_LOST {
                     self.recreate_duplication()?;
-                    return Ok(CapturePoll::NoDesktopUpdate(
-                        NoDesktopUpdateReason::AccessLost,
-                    ));
+                    return Ok(CapturePoll::NoDesktopUpdate);
                 }
                 return Err(error).context("failed to release previous DXGI frame");
             }
@@ -353,20 +340,16 @@ impl DxgiCapture {
         } {
             Ok(()) => self.frame_held = true,
             Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => {
-                return Ok(CapturePoll::NoDesktopUpdate(NoDesktopUpdateReason::Timeout));
+                return Ok(CapturePoll::NoDesktopUpdate);
             }
             Err(error) if error.code() == DXGI_ERROR_ACCESS_LOST => {
                 self.recreate_duplication()?;
-                return Ok(CapturePoll::NoDesktopUpdate(
-                    NoDesktopUpdateReason::AccessLost,
-                ));
+                return Ok(CapturePoll::NoDesktopUpdate);
             }
             Err(error) => return Err(error).context("failed to acquire DXGI desktop frame"),
         }
         if frame_info.LastPresentTime == 0 {
-            return Ok(CapturePoll::NoDesktopUpdate(
-                NoDesktopUpdateReason::PointerOnly,
-            ));
+            return Ok(CapturePoll::NoDesktopUpdate);
         }
         let resource = resource.context("DXGI returned no desktop resource")?;
         let texture = resource
@@ -384,7 +367,6 @@ impl DxgiCapture {
             source_box: layout.source_box,
             desktop_size: layout.desktop_size,
             present_qpc: frame_info.LastPresentTime,
-            accumulated_frames: frame_info.AccumulatedFrames,
         }))
     }
 

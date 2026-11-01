@@ -1,6 +1,6 @@
 //! The serial port of MAKCU: finding the ports and opening them.
 //!
-//! `Port` and `Connector` are the seam. The Windows implementation is below, and `fake` (test only)
+//! `Serial` and `Connector` are the seam. The Windows implementation is below, and `fake` (test only)
 //! is a MAKCU in memory. The Windows code is the only `unsafe` in `src/output`.
 
 use std::{io, mem, time::Duration};
@@ -40,7 +40,7 @@ use windows::{
 use super::Port as Entry;
 
 /// A port that is open. `read` gives `TimedOut` when nothing came.
-pub(super) trait Port: Send {
+pub(super) trait Serial: Send {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
     /// Fails when the device is gone. It does not wait.
@@ -51,7 +51,7 @@ pub(super) trait Connector: Send + Sync {
     /// Every serial port of the system, the MAKCU chips first. See `list_ports`.
     fn ports(&self) -> io::Result<Vec<Entry>>;
     /// Opens the port at `baud`. The input buffer is empty when it returns.
-    fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Port>>;
+    fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Serial>>;
 }
 
 /// The USB ids of the chips of MAKCU: CH343 first, then CH340.
@@ -102,7 +102,7 @@ impl Connector for WindowsConnector {
         Ok(list_ports(&as_refs(&port_devices()?)))
     }
 
-    fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Port>> {
+    fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Serial>> {
         Ok(Box::new(WindowsPort::open(port, baud)?))
     }
 }
@@ -305,7 +305,7 @@ impl WindowsPort {
     }
 }
 
-impl Port for WindowsPort {
+impl Serial for WindowsPort {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let count = self.transfer(READ_WATCHDOG, |overlapped| unsafe {
             ReadFile(

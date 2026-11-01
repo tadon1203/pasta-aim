@@ -1,5 +1,5 @@
 //! Hotkeys: keyboard keys and `XInput` controls that run an action while they are held or once
-//! when they are pressed. The input thread polls every shortcut each millisecond with
+//! when they are pressed. The hotkeys thread polls every shortcut each millisecond with
 //! `GetAsyncKeyState` and `XInputGetState`. It never takes a key from another app, so a shortcut
 //! key also reaches the focused window. The same thread records a new shortcut.
 
@@ -9,7 +9,6 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     str::FromStr,
-    sync::mpsc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -21,10 +20,13 @@ use windows::Win32::UI::Input::{
     XboxController::{XINPUT_STATE, XInputGetState},
 };
 
-use crate::{Message, UiSender, clock};
+use crate::{
+    channel::{Message, Receiver, Sender, channel},
+    clock, engine,
+};
 use keys::{ALT, CONTROL, ESCAPE, KeySet, Pad, PadSample, PadSet, SHIFT};
 
-/// How often the input thread reads the inputs.
+/// How often the hotkeys thread reads the inputs.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// How often a disconnected controller is looked for.
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
@@ -179,7 +181,7 @@ pub struct Hotkey {
     pub shortcut: Shortcut,
 }
 
-/// What the input thread reports to the UI.
+/// What the hotkeys thread reports to the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// A shortcut was recorded. Recording has ended.
@@ -190,18 +192,22 @@ pub enum Event {
     Controller(Option<u32>),
 }
 
-/// The input thread's bindings, and the commands the UI sends it.
-enum Request {
-    Bindings(HashMap<Shortcut, Action>),
+/// Requests accepted by the hotkeys thread.
+#[derive(Debug)]
+pub enum Command {
+    /// Replaces the bindings. `bindings` checks them first.
+    SetBindings(HashMap<Shortcut, Action>),
+    /// Starts recording a shortcut. Dispatch stops until it ends.
     Record,
+    /// Ends a recording without a shortcut.
     CancelRecord,
     Shutdown,
 }
 
-/// What one step of the input thread produces, in order.
+/// What one step of the hotkeys thread produces, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Output {
-    /// `on_action(action, down)`.
+pub(crate) enum Signal {
+    /// A command for the engine: `Hold` while any Hold shortcut is down, `RunOnce` on each press.
     Action(Action, bool),
     /// A message for the UI.
     Event(Event),
@@ -240,7 +246,7 @@ impl Ignored {
     }
 }
 
-/// The state of the input thread. It is pure: each pass is one `Reading`, and the output is the
+/// The state of the hotkeys thread. It is pure: each pass is one `Reading`, and the output is the
 /// actions and events that the pass produces.
 #[derive(Debug, Default)]
 pub(crate) struct Core {
@@ -261,10 +267,10 @@ impl Core {
         }
     }
 
-    /// Applies one request. Returns `false` on `Shutdown`.
-    fn request(&mut self, request: Request, out: &mut Vec<Output>) -> bool {
-        match request {
-            Request::Bindings(bindings) => {
+    /// Applies one command. Returns `false` on `Shutdown`.
+    fn command(&mut self, command: Command, out: &mut Vec<Signal>) -> bool {
+        match command {
+            Command::SetBindings(bindings) => {
                 let before = self.holding();
                 // A held control that no longer starts a Hold run stops being held.
                 self.held.retain(|input| {
@@ -275,7 +281,7 @@ impl Core {
                 self.bindings = bindings;
                 self.settle(before, out);
             }
-            Request::Record => {
+            Command::Record => {
                 if self.recording.is_none() {
                     // Dispatch stops while recording: the Hold runs end, and the held controls are ignored.
                     let before = self.holding();
@@ -287,18 +293,18 @@ impl Core {
                     self.settle(before, out);
                 }
             }
-            Request::CancelRecord => {
+            Command::CancelRecord => {
                 if self.recording.take().is_some() {
-                    out.push(Output::Event(Event::RecordCancelled));
+                    out.push(Signal::Event(Event::RecordCancelled));
                 }
             }
-            Request::Shutdown => return false,
+            Command::Shutdown => return false,
         }
         true
     }
 
     /// Turns one reading into the outputs of this pass.
-    pub(crate) fn step(&mut self, reading: Reading, out: &mut Vec<Output>) {
+    pub(crate) fn step(&mut self, reading: Reading, out: &mut Vec<Signal>) {
         let before = self.holding();
         let pads_now = reading
             .pad
@@ -306,7 +312,7 @@ impl Core {
 
         if self.recording.is_some() && reading.escape && !self.prev.escape {
             self.recording = None;
-            out.push(Output::Event(Event::RecordCancelled));
+            out.push(Signal::Event(Event::RecordCancelled));
         } else {
             self.edges(reading, pads_now, out);
         }
@@ -316,7 +322,7 @@ impl Core {
         self.settle(before, out);
     }
 
-    fn edges(&mut self, reading: Reading, pads_now: PadSet, out: &mut Vec<Output>) {
+    fn edges(&mut self, reading: Reading, pads_now: PadSet, out: &mut Vec<Signal>) {
         let pads_before = self.pads;
         if reading.slot == self.prev.slot {
             for pad in pads_now.iter().filter(|pad| !pads_before.contains(*pad)) {
@@ -326,7 +332,7 @@ impl Core {
                 self.release(Input::Pad(pad));
             }
         } else {
-            out.push(Output::Event(Event::Controller(reading.slot)));
+            out.push(Signal::Event(Event::Controller(reading.slot)));
             // The old controller's controls are released. The new one's are already down, so
             // they are a baseline: they make a Hold run active, but they are not presses.
             for pad in pads_before.iter() {
@@ -353,12 +359,12 @@ impl Core {
         }
     }
 
-    fn press(&mut self, input: Input, mods: Mods, out: &mut Vec<Output>) {
+    fn press(&mut self, input: Input, mods: Mods, out: &mut Vec<Signal>) {
         let shortcut = Shortcut::new(input, mods);
         if let Some(ignored) = self.recording {
             if !ignored.contains(input) {
                 self.recording = None;
-                out.push(Output::Event(Event::Recorded(shortcut)));
+                out.push(Signal::Event(Event::Recorded(shortcut)));
             }
             return;
         }
@@ -366,7 +372,7 @@ impl Core {
             Some(Action::Hold) => {
                 self.held.insert(input);
             }
-            Some(Action::RunOnce) => out.push(Output::Action(Action::RunOnce, true)),
+            Some(Action::RunOnce) => out.push(Signal::Action(Action::RunOnce, true)),
             None => {}
         }
     }
@@ -383,16 +389,16 @@ impl Core {
     }
 
     /// Reports a change of the Hold state. Call it after every change to `held`.
-    fn settle(&self, before: bool, out: &mut Vec<Output>) {
+    fn settle(&self, before: bool, out: &mut Vec<Signal>) {
         let now = self.holding();
         if now != before {
-            out.push(Output::Action(Action::Hold, now));
+            out.push(Signal::Action(Action::Hold, now));
         }
     }
 }
 
 /// Checks the bindings: a shortcut may belong to one action only.
-fn bindings_from(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
+pub fn bindings(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
     let mut bindings = HashMap::new();
     for hotkey in hotkeys {
         if let Some(existing) = bindings.insert(hotkey.shortcut, hotkey.action) {
@@ -406,66 +412,43 @@ fn bindings_from(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
     Ok(bindings)
 }
 
-/// The input thread, and the channel that controls it.
+/// The hotkeys thread. Dropping it stops the thread and waits for it.
 #[derive(Debug)]
 pub struct Hotkeys {
-    tx: mpsc::Sender<Request>,
-    wake: clock::Wake,
+    commands: Sender<Command>,
     join: Option<JoinHandle<()>>,
 }
 
 impl Hotkeys {
-    /// Starts the input thread. `on_action(action, down)` runs on that thread. For `Hold`, `down` is
-    /// true while any Hold shortcut is down. For `RunOnce`, it is true on each press.
+    /// Starts the hotkeys thread. It sends `Hold` and `RunOnce` to `engine`, and what the user needs to
+    /// see to `ui`. For `Hold`, the command is `SetContinuous(true)` while any Hold shortcut is down.
     pub fn spawn(
         hotkeys: &[Hotkey],
-        ui: UiSender,
-        on_action: impl Fn(Action, bool) + Send + 'static,
+        ui: Sender<Message>,
+        engine: Sender<engine::Command>,
     ) -> Result<Self> {
-        let bindings = bindings_from(hotkeys)?;
+        let bindings = bindings(hotkeys)?;
         let (wait, wake) = clock::wait()?;
-        let (tx, rx) = mpsc::channel();
+        let (commands, inbox) = channel(move || wake.wake());
         let join = thread::Builder::new()
-            .name("nice-aimassist-inputs".to_owned())
-            .spawn(move || run(wait, &rx, bindings, &ui, &on_action))
-            .context("failed to start the input thread")?;
+            .name("nice-aimassist-hotkeys".to_owned())
+            .spawn(move || run(wait, &inbox, bindings, &ui, &engine))
+            .context("failed to start the hotkeys thread")?;
         Ok(Self {
-            tx,
-            wake,
+            commands,
             join: Some(join),
         })
     }
 
-    /// Replaces the bindings. It rejects a shortcut that belongs to two actions.
-    pub fn set(&self, hotkeys: &[Hotkey]) -> Result<()> {
-        let bindings = bindings_from(hotkeys)?;
-        self.send(Request::Bindings(bindings))
-    }
-
-    /// Starts recording a shortcut. Dispatch stops until it ends.
-    pub fn record(&self) {
-        let _ = self.send(Request::Record);
-    }
-
-    /// Ends a recording without a shortcut.
-    pub fn cancel_record(&self) {
-        let _ = self.send(Request::CancelRecord);
-    }
-
-    /// Fails only when the input thread has stopped, so that `set` does not report success for it.
-    fn send(&self, request: Request) -> Result<()> {
-        self.tx
-            .send(request)
-            .map_err(|_| anyhow!("the input thread has stopped"))?;
-        self.wake.wake();
-        Ok(())
+    pub fn sender(&self) -> &Sender<Command> {
+        &self.commands
     }
 }
 
 impl Drop for Hotkeys {
-    /// Stops and joins the input thread. The thread calls `on_action(Action::Hold, false)` before it ends.
+    /// Stops and joins the hotkeys thread. The thread sends `SetContinuous(false)` before it ends.
     fn drop(&mut self) {
-        let _ = self.send(Request::Shutdown);
+        self.commands.send(Command::Shutdown);
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -474,37 +457,39 @@ impl Drop for Hotkeys {
 
 fn run(
     mut wait: clock::Wait,
-    rx: &mpsc::Receiver<Request>,
+    inbox: &Receiver<Command>,
     bindings: HashMap<Shortcut, Action>,
-    ui: &UiSender,
-    on_action: &impl Fn(Action, bool),
+    ui: &Sender<Message>,
+    engine: &Sender<engine::Command>,
 ) {
-    tracing::info!("hotkey input thread started");
+    tracing::info!("hotkeys thread started");
     let mut core = Core::new(bindings);
     let mut pads = PadPoll::new(Instant::now());
     let mut out = Vec::new();
     'passes: loop {
         wait.until(Some(Instant::now() + POLL_INTERVAL), Duration::ZERO);
-        while let Ok(request) = rx.try_recv() {
-            let running = core.request(request, &mut out);
-            flush(&mut out, ui, on_action);
+        while let Ok(command) = inbox.try_recv() {
+            let running = core.command(command, &mut out);
+            flush(&mut out, ui, engine);
             if !running {
                 break 'passes;
             }
         }
         let reading = read(&mut pads, Instant::now());
         core.step(reading, &mut out);
-        flush(&mut out, ui, on_action);
+        flush(&mut out, ui, engine);
     }
-    on_action(Action::Hold, false);
-    tracing::info!("hotkey input thread stopped");
+    engine.send(engine::Command::SetContinuous(false));
+    tracing::info!("hotkeys thread stopped");
 }
 
-fn flush(out: &mut Vec<Output>, ui: &UiSender, on_action: &impl Fn(Action, bool)) {
-    for output in out.drain(..) {
-        match output {
-            Output::Action(action, down) => on_action(action, down),
-            Output::Event(event) => ui.send(Message::Hotkeys(event)),
+fn flush(out: &mut Vec<Signal>, ui: &Sender<Message>, engine: &Sender<engine::Command>) {
+    for signal in out.drain(..) {
+        match signal {
+            Signal::Action(Action::Hold, down) => engine.send(engine::Command::SetContinuous(down)),
+            Signal::Action(Action::RunOnce, true) => engine.send(engine::Command::RunOnce),
+            Signal::Action(Action::RunOnce, false) => {}
+            Signal::Event(event) => ui.send(Message::Hotkeys(event)),
         }
     }
 }
@@ -646,15 +631,15 @@ mod tests {
         Core::new(bindings.iter().copied().collect())
     }
 
-    fn step(core: &mut Core, reading: Reading) -> Vec<Output> {
+    fn step(core: &mut Core, reading: Reading) -> Vec<Signal> {
         let mut out = Vec::new();
         core.step(reading, &mut out);
         out
     }
 
-    fn request(core: &mut Core, request: Request) -> Vec<Output> {
+    fn command(core: &mut Core, command: Command) -> Vec<Signal> {
         let mut out = Vec::new();
-        core.request(request, &mut out);
+        core.command(command, &mut out);
         out
     }
 
@@ -714,7 +699,7 @@ mod tests {
                 shortcut: "F8".parse().unwrap(),
             },
         ];
-        assert!(bindings_from(&hotkeys).is_err());
+        assert!(bindings(&hotkeys).is_err());
     }
 
     #[test]
@@ -729,7 +714,7 @@ mod tests {
                 shortcut: "xinput:a".parse().unwrap(),
             },
         ];
-        assert!(bindings_from(&hotkeys).is_err());
+        assert!(bindings(&hotkeys).is_err());
     }
 
     #[test]
@@ -744,7 +729,7 @@ mod tests {
                 shortcut: "xinput:a".parse().unwrap(),
             },
         ];
-        assert!(bindings_from(&hotkeys).is_ok());
+        assert!(bindings(&hotkeys).is_ok());
     }
 
     #[test]
@@ -760,7 +745,7 @@ mod tests {
         let mut core = core(&[(pad(Pad::A), Action::RunOnce)]);
         step(&mut core, pad_reading(0, 0, 0));
         let pressed = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        assert_eq!(pressed, vec![Output::Action(Action::RunOnce, true),]);
+        assert_eq!(pressed, vec![Signal::Action(Action::RunOnce, true),]);
         assert_eq!(step(&mut core, pad_reading(PAD_A_HELD, 0, 0)), Vec::new());
         assert_eq!(step(&mut core, pad_reading(0, 0, 0)), Vec::new());
     }
@@ -770,11 +755,11 @@ mod tests {
         let mut core = core(&[(pad(Pad::A), Action::Hold)]);
         step(&mut core, pad_reading(0, 0, 0));
         let held = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        assert!(held.contains(&Output::Action(Action::Hold, true)));
+        assert!(held.contains(&Signal::Action(Action::Hold, true)));
 
         let lost = step(&mut core, Reading::default());
-        assert!(lost.contains(&Output::Event(Event::Controller(None))));
-        assert!(lost.contains(&Output::Action(Action::Hold, false)));
+        assert!(lost.contains(&Signal::Event(Event::Controller(None))));
+        assert!(lost.contains(&Signal::Action(Action::Hold, false)));
     }
 
     #[test]
@@ -789,14 +774,14 @@ mod tests {
     fn a_controller_held_at_connect_is_a_baseline_not_a_press() {
         let mut core = core(&[(pad(Pad::A), Action::RunOnce)]);
         let connected = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        assert_eq!(connected, vec![Output::Event(Event::Controller(Some(0)))]);
+        assert_eq!(connected, vec![Signal::Event(Event::Controller(Some(0)))]);
     }
 
     #[test]
     fn a_held_controller_at_connect_keeps_a_hold_run_active() {
         let mut core = core(&[(pad(Pad::A), Action::Hold)]);
         let connected = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        assert!(connected.contains(&Output::Action(Action::Hold, true)));
+        assert!(connected.contains(&Signal::Action(Action::Hold, true)));
     }
 
     #[test]
@@ -805,7 +790,7 @@ mod tests {
         step(&mut core, reading(&[], 0));
         assert_eq!(
             step(&mut core, reading(&[F8], 0)),
-            vec![Output::Action(Action::Hold, true)]
+            vec![Signal::Action(Action::Hold, true)]
         );
         // The second Hold shortcut goes down while the first is held: no change of state.
         assert_eq!(step(&mut core, reading(&[F8], PAD_A_HELD)), Vec::new());
@@ -822,7 +807,7 @@ mod tests {
         step(&mut core, reading(&[F8], 0));
         assert_eq!(
             step(&mut core, reading(&[], 0)),
-            vec![Output::Action(Action::Hold, false)]
+            vec![Signal::Action(Action::Hold, false)]
         );
     }
 
@@ -830,20 +815,20 @@ mod tests {
     fn recording_ignores_a_control_that_was_down_at_the_start_until_released() {
         let mut core = core(&[]);
         step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        request(&mut core, Request::Record);
+        command(&mut core, Command::Record);
 
         assert_eq!(step(&mut core, pad_reading(PAD_A_HELD, 0, 0)), Vec::new());
         assert_eq!(step(&mut core, pad_reading(0, 0, 0)), Vec::new());
         assert_eq!(
             step(&mut core, pad_reading(PAD_A_HELD, 0, 0)),
-            vec![Output::Event(Event::Recorded(pad(Pad::A)))]
+            vec![Signal::Event(Event::Recorded(pad(Pad::A)))]
         );
     }
 
     #[test]
     fn recording_takes_a_key_with_modifiers() {
         let mut core = core(&[]);
-        request(&mut core, Request::Record);
+        command(&mut core, Command::Record);
         let mods = Mods {
             ctrl: true,
             shift: true,
@@ -852,7 +837,7 @@ mod tests {
         let recorded = step(&mut core, key_reading(&[KEY_A], mods));
         assert_eq!(
             recorded,
-            vec![Output::Event(Event::Recorded(Shortcut::new(
+            vec![Signal::Event(Event::Recorded(Shortcut::new(
                 Input::Key(KEY_A),
                 mods
             )))]
@@ -862,14 +847,14 @@ mod tests {
     #[test]
     fn esc_during_recording_cancels_and_starts_no_action() {
         let mut core = core(&[(key(F8), Action::RunOnce)]);
-        request(&mut core, Request::Record);
+        command(&mut core, Command::Record);
         let escape = Reading {
             escape: true,
             ..Reading::default()
         };
         assert_eq!(
             step(&mut core, escape),
-            vec![Output::Event(Event::RecordCancelled)]
+            vec![Signal::Event(Event::RecordCancelled)]
         );
         assert!(core.recording.is_none());
     }
@@ -877,13 +862,13 @@ mod tests {
     #[test]
     fn no_action_fires_while_recording() {
         let mut core = core(&[(key(F9), Action::RunOnce), (key(F8), Action::Hold)]);
-        request(&mut core, Request::Record);
+        command(&mut core, Command::Record);
         let out = step(&mut core, key_reading(&[F9], Mods::default()));
         assert!(
             out.iter()
-                .all(|output| !matches!(output, Output::Action(..)))
+                .all(|output| !matches!(output, Signal::Action(..)))
         );
-        assert_eq!(out, vec![Output::Event(Event::Recorded(key(F9)))]);
+        assert_eq!(out, vec![Signal::Event(Event::Recorded(key(F9)))]);
     }
 
     #[test]
@@ -891,8 +876,8 @@ mod tests {
         let mut core = core(&[(key(F8), Action::Hold)]);
         step(&mut core, key_reading(&[F8], Mods::default()));
         assert_eq!(
-            request(&mut core, Request::Record),
-            vec![Output::Action(Action::Hold, false)]
+            command(&mut core, Command::Record),
+            vec![Signal::Action(Action::Hold, false)]
         );
     }
 
@@ -900,6 +885,6 @@ mod tests {
     fn a_shutdown_request_stops_the_thread_loop() {
         let mut core = core(&[]);
         let mut out = Vec::new();
-        assert!(!core.request(Request::Shutdown, &mut out));
+        assert!(!core.command(Command::Shutdown, &mut out));
     }
 }

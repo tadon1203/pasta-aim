@@ -2,34 +2,32 @@
 
 mod capture;
 mod frame;
-mod makcu;
 mod model;
+mod output;
 mod recovery;
 mod run;
 
 use std::{
     path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        mpsc::{Receiver, Sender, TryRecvError},
-    },
+    sync::{Arc, mpsc::TryRecvError},
     time::{Duration, Instant},
 };
 
 use self::{frame::StepOutcome, run::RunControl};
-use super::{CapturePhase, Command, EngineEvent, EngineState, status::StatusHub};
+use super::{
+    CapturePhase, Command, State,
+    stats::{PUBLISH_INTERVAL, Recorder},
+};
 use crate::{
-    Repaint,
     aim::{Aim, AimSettings},
-    clock::Clock,
-    clock::Wait,
+    channel::{Message, Receiver, Sender},
+    clock::{Clock, Wait},
     output::Output,
     pipeline::{AdapterLuid, DisplayInfo, DxgiCapture, Pipeline, init_thread},
     settings::{self, Confidence, FpsLimit, Interpolation, NewFrameWait, Settings},
-    telemetry::{RunCounters, TelemetrySink},
 };
 
-/// How often the engine polls MAKCU connection state and sends the counters, when no other event wakes it.
+/// How often the engine polls MAKCU connection state, when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
 /// How long the engine spins before a capture deadline. Only the capture deadline spins.
 const CAPTURE_SPIN: Duration = Duration::from_millis(1);
@@ -44,29 +42,25 @@ struct Tuning {
     fps_limit: FpsLimit,
     new_frame_wait: NewFrameWait,
     low_latency: bool,
-    frame_trace: bool,
 }
 
 /// The channels and handles that the engine thread is started with.
 pub(super) struct WorkerLinks {
     pub commands: Receiver<Command>,
-    pub events: Sender<EngineEvent>,
-    pub state: Arc<Mutex<Arc<EngineState>>>,
-    pub repaint: Repaint,
+    pub ui: Sender<Message>,
     pub wait: Wait,
-    pub qpc: Clock,
-    pub telemetry: TelemetrySink,
+    pub clock: Clock,
 }
 
 /// What the engine holds for the selected display.
-enum CaptureState {
+enum Source {
     None,
     /// A capture with no model. No run can start.
     CaptureOnly(Box<DxgiCapture>),
     Ready(Box<Pipeline>),
 }
 
-impl CaptureState {
+impl Source {
     /// The display that the state captures, if any.
     fn display(&self) -> Option<&DisplayInfo> {
         match self {
@@ -102,25 +96,25 @@ impl CaptureState {
 }
 
 struct Worker {
-    event_tx: Sender<EngineEvent>,
-    repaint: Repaint,
-    status: StatusHub,
-    qpc: Clock,
-    telemetry: TelemetrySink,
+    ui: Sender<Message>,
+    /// The engine state. `publish` sends it to the UI after an edit.
+    state: State,
+    state_changed: bool,
+    recorder: Recorder,
+    /// When the statistics were last sent to the UI.
+    stats_sent: Instant,
+    clock: Clock,
     tuning: Tuning,
     /// The display catalog that the engine uses to find the remembered display.
     displays: Vec<DisplayInfo>,
 
     /// The capture of the selected display, and the pipeline when a model is loaded.
-    capture: CaptureState,
+    capture: Source,
     /// The model input size that the output plans against. The capture of a loaded model sets it.
     input_size: (u32, u32),
     /// Wakes the engine for a command, the housekeeping, or the capture deadline.
     wait: Wait,
     capture_deadline: frame::CaptureDeadline,
-    /// The counters of the current run, and the last values sent to the Telemetry thread.
-    run_counters: RunCounters,
-    sent_counters: RunCounters,
     active_model: Option<(String, PathBuf)>,
     next_pipeline_id: u64,
     capture_adapter: u32,
@@ -154,107 +148,110 @@ fn log_pipeline_state(
     );
 }
 
-pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
-    tracing::info!("engine worker started");
+pub(super) fn run_worker(links: WorkerLinks, settings: Settings) {
+    tracing::info!("engine thread started");
     let WorkerLinks {
         commands,
-        events,
-        state,
-        repaint,
+        ui,
         wait,
-        qpc,
-        telemetry,
+        clock,
     } = links;
-    let mut status = StatusHub::new(state, repaint.clone());
-    let com_ready = match init_thread() {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::error!(error = %format_args!("{error:#}"), "engine thread COM initialization failed");
-            let message = format!("Engine thread COM initialization failed: {error:#}");
-            status.edit(|status| {
-                status.capture.phase = CapturePhase::Failed;
-                status.capture.error = Some(message.clone());
-                status.graphics.catalog_error = Some(message);
-            });
-            status.flush();
-            false
-        }
-    };
+    let com_error = init_thread().err().map(|error| {
+        tracing::error!(error = %format_args!("{error:#}"), "engine thread COM initialization failed");
+        format!("Engine thread COM initialization failed: {error:#}")
+    });
 
     let tuning = Tuning {
         aim: AimSettings {
-            sensitivity: config.sensitivity,
-            target_y_offset: config.target_y_offset,
-            max_delta: config.max_delta,
+            sensitivity: settings.sensitivity,
+            target_y_offset: settings.target_y_offset,
+            max_delta: settings.max_delta,
         },
-        interpolation: config.interpolation,
-        confidence: config.confidence,
-        fps_limit: config.fps_limit,
-        new_frame_wait: config.new_frame_wait,
-        low_latency: config.low_latency,
-        frame_trace: config.frame_trace,
+        interpolation: settings.interpolation,
+        confidence: settings.confidence,
+        fps_limit: settings.fps_limit,
+        new_frame_wait: settings.new_frame_wait,
+        low_latency: settings.low_latency,
     };
     let mut output = Output::default();
     // A blank port in the file means auto-detect, as `None` does.
     output.set_port(
-        config
+        settings
             .makcu_port
             .clone()
             .filter(|port| !port.trim().is_empty()),
     );
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
-        event_tx: events,
-        repaint,
-        status,
-        qpc,
-        telemetry,
+        ui,
+        state: State::default(),
+        state_changed: false,
+        recorder: Recorder::new(clock),
+        stats_sent: Instant::now(),
+        clock,
         tuning,
         displays: Vec::new(),
-        capture: CaptureState::None,
+        capture: Source::None,
         input_size: (0, 0),
         wait,
         capture_deadline: frame::CaptureDeadline::new(),
-        run_counters: RunCounters::default(),
-        sent_counters: RunCounters::default(),
         active_model: None,
         next_pipeline_id: 1,
         capture_adapter: 0,
-        capture_output: config.display.output,
-        selected_adapter_luid: AdapterLuid::from(config.display.adapter),
+        capture_output: settings.display.output,
+        selected_adapter_luid: AdapterLuid::from(settings.display.adapter),
         aim: Aim::new(tuning.aim),
         output,
         run: RunControl::default(),
-        com_ready,
+        com_ready: com_error.is_none(),
     };
+    if let Some(message) = com_error {
+        worker.edit(|state| {
+            state.capture.phase = CapturePhase::Failed;
+            state.capture.error = Some(message.clone());
+            state.graphics.catalog_error = Some(message);
+        });
+        worker.publish();
+    }
 
     worker.refresh_capture_catalog();
     worker.initialize_capture();
-    worker.connect_makcu();
-    if let Some(name) = config.model {
+    worker.connect_output();
+    if let Some(name) = settings.model {
         match settings::model_path(&name) {
             Ok(path) => worker.load_model(false, name, path),
             Err(error) => {
                 tracing::error!(model = %name, error = %format_args!("{error:#}"), "configured model could not be resolved");
-                worker
-                    .status
-                    .edit(|status| status.model.error = Some(format!("{error:#}")));
+                worker.edit(|state| state.model.error = Some(format!("{error:#}")));
             }
         }
     }
     worker.event_loop(&commands);
-    worker.status.flush();
+    worker.publish();
 }
 
 impl Worker {
-    /// Periodic work that no event triggers: MAKCU connection changes, and the run counters
-    /// that the Telemetry thread shows. Each value is sent only when it changed.
+    /// Periodic work that no event triggers: MAKCU connection changes.
     fn housekeeping(&mut self) {
-        self.poll_makcu_link();
-        if self.run_counters != self.sent_counters {
-            self.sent_counters = self.run_counters;
-            self.telemetry.counters(self.run_counters);
+        self.poll_output_link();
+    }
+
+    /// Sends the state to the UI after an edit. It also sends the statistics when they changed: while
+    /// a run is active, not more often than `PUBLISH_INTERVAL`.
+    fn publish(&mut self) {
+        if std::mem::take(&mut self.state_changed) {
+            self.ui.send(Message::State(Arc::new(self.state.clone())));
         }
+        let due = self.run.active.is_none() || self.stats_sent.elapsed() >= PUBLISH_INTERVAL;
+        if due && self.recorder.take_changed() {
+            self.ui.send(Message::Stats(self.recorder.stats()));
+            self.stats_sent = Instant::now();
+        }
+    }
+
+    fn edit(&mut self, edit: impl FnOnce(&mut State)) {
+        edit(&mut self.state);
+        self.state_changed = true;
     }
 
     fn event_loop(&mut self, rx: &Receiver<Command>) {
@@ -274,8 +271,8 @@ impl Worker {
                     capture_at = Some(at);
                 } else {
                     let outcome = self.step_frame(rx);
-                    // The end of each pass publishes the state, if it changed.
-                    self.status.flush();
+                    // The end of each pass sends the state, if it changed.
+                    self.publish();
                     if outcome == StepOutcome::Shutdown {
                         return;
                     }
@@ -284,7 +281,7 @@ impl Worker {
                     continue;
                 }
             }
-            self.status.flush();
+            self.publish();
             // The earlier of the housekeeping and the capture deadline wakes the loop.
             let mut deadline = next_housekeeping;
             let mut spin = Duration::ZERO;
@@ -358,21 +355,20 @@ impl Worker {
             Command::SetNewFrameWait(value) => {
                 self.tuning.new_frame_wait = value;
             }
-            Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetCaptureSelection { adapter, output } => {
                 self.set_capture_selection(adapter, output);
             }
             Command::SetContinuous(active) => self.set_continuous(active),
             Command::RunOnce => self.run_once(),
-            Command::ReconnectMakcu => self.reconnect_makcu(),
-            Command::SetMakcuPort(port) => {
+            Command::ReconnectOutput => self.reconnect_output(),
+            Command::SetOutputPort(port) => {
                 self.output.set_port(port);
-                self.reconnect_makcu();
+                self.reconnect_output();
             }
             Command::RetryCapture => self.retry_suspended_pipeline(),
             Command::RescanDisplays => self.refresh_capture_catalog(),
             Command::Shutdown => {
-                tracing::info!("engine worker shutdown requested");
+                tracing::info!("engine shutdown requested");
                 self.stop_run();
                 return false;
             }
@@ -385,12 +381,7 @@ impl Worker {
     }
 
     fn set_run_error(&mut self, error: String) {
-        self.status.edit(|status| status.run.error = Some(error));
-    }
-
-    fn emit_event(&self, event: EngineEvent) {
-        let _ = self.event_tx.send(event);
-        (self.repaint)();
+        self.edit(|state| state.run.error = Some(error));
     }
 
     fn next_pipeline_id(&mut self) -> u64 {

@@ -46,18 +46,17 @@ The template of this document. Text in `<>` is a placeholder: replace it, and ke
 
 One Windows process, written in Rust. Each thread owns its resources, and the threads talk through channels. The domain terms are defined in [docs/requirements.md](./docs/requirements.md).
 
-- **UI thread** (`src/bin/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
-- **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`), the aim (`src/aim`), and the output (`src/output`), which holds the MAKCU link. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
-- **Input thread** (`src/hotkeys`): keyboard and XInput polling, read every millisecond. It turns a shortcut into an engine command, and it reports the recorded shortcut and the controller slot to the UI. It holds no run state of the engine.
-- **Telemetry thread** (`src/telemetry`): it takes the frame records. It makes the statistics and the loop metrics, writes the frame trace, and publishes the live values for the UI.
+- **UI thread** (`src/bin/app`): egui (eframe). It shows the settings and the engine state, and it writes the settings file. It holds no capture, inference, or device resource.
+- **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`), the aim (`src/aim`), and the output (`src/output`), which holds the MAKCU link. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time. It also makes the statistics of the run.
+- **Hotkeys thread** (`src/hotkeys`): keyboard and XInput polling, read every millisecond. It turns a shortcut into an engine command, and it reports the recorded shortcut and the controller slot to the UI. It holds no run state of the engine.
+
+A thread takes its input from one `Receiver`. Any thread sends to it through a `Sender` (`src/channel.rs`), which also tells the receiving thread: a wake-up for the engine and hotkeys threads, a repaint for the UI. What goes into a thread is a `Command`. What goes to the UI is a `Message`.
 
 Data flow:
 
-- **UI thread and Input thread → Engine thread:** commands, on one channel.
-- **Input thread → UI thread:** `Message::Hotkeys` (a recorded shortcut, a cancelled recording, or the controller slot), through `UiSender`.
-- **Engine thread → UI thread:** events (the result of a model load or of a capture selection) on a channel, and the engine state, published when it changes.
-- **Engine thread → Telemetry thread:** one frame record for each processed frame, and the counters of a run.
-- **Telemetry thread → UI thread:** the live values, at a limited rate (see [docs/requirements.md](./docs/requirements.md)).
+- **UI thread and Hotkeys thread → Engine thread:** `engine::Command`.
+- **UI thread → Hotkeys thread:** `hotkeys::Command` (the bindings, and start and cancel of a recording).
+- **Engine thread and Hotkeys thread → UI thread:** `Message`. The engine sends its state when it changes, the statistics at a limited rate (see [docs/requirements.md](./docs/requirements.md)), and the success of a model load or of a display change. The Hotkeys thread sends a recorded shortcut, a cancelled recording, and the controller slot.
 - **Inside the engine thread, for each frame:** the pipeline processes the next frame (acquire → GPU copy and preprocess → inference and postprocess) → the engine handles pending commands → output → next frame.
 - **On the GPU:** Direct3D 11 copies the captured image into one shared texture. Direct3D 12 opens the same texture for the preprocess. Fences order the two devices.
 
@@ -66,14 +65,13 @@ Data flow:
 | Directory           | What it holds                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------- |
 | `src/bin/app`       | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
-| `src/engine`        | The engine thread: commands, the engine state, and the frame loop.                          |
-| `src/engine/worker` | The frame transaction, the run, model loading, pipeline replacement, and the MAKCU lifecycle. |
+| `src/engine`        | The engine thread: commands, the engine state, the statistics, and the frame loop.          |
+| `src/engine/worker` | The frame transaction, the run, model loading, pipeline replacement, and the output lifecycle. |
 | `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. It holds the GPU layer, the capture, the GPU preprocess, and the inference with its postprocess. |
-| `src/telemetry`     | The Telemetry thread: the frame records, the statistics, the loop metrics, the frame trace, and the live values. |
 | `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
 | `src/aim`           | The aim: the target tracker, the move that each frame plans, and the rounding to whole counts. It knows nothing about MAKCU. |
 | `src/output`        | The output: the MAKCU link (the wire protocol, the serial port, and the connect) and the write of a move. |
-| `src`               | The library crate root. Also holds the small modules that serve many parts (settings, logging, and the clock with its deadline wait). |
+| `src`               | The library crate root. Also holds the small modules that serve many parts (channels and the UI message, settings, logging, and the clock with its deadline wait). |
 
 ## Invariants
 
@@ -83,14 +81,13 @@ Data flow:
 - A pipeline checks that the GPU completed its work on the shared texture before the capture can write to it again. A pipeline waits for its GPU work before it releases its resources.
 - The capture adapter is the single GPU identity. Inference runs on the same adapter as the capture.
 - A pipeline is replaced as a unit. The engine commits a new pipeline only when every part of it is ready. If one part fails, the engine keeps the pipeline that it had.
-- After a display change, a continuous run resumes under a new run generation. After a model change, the engine stays stopped, on success and on failure.
+- After a display change, a continuous run resumes as a new run. After a model change, the engine stays stopped, on success and on failure.
 - A failed model load keeps the model that was active. Only a successful load is written to the settings file.
 - A model and a display are validated one time: the model when it loads, the captured image when the duplication is created. The frame path checks no shape, size, or format.
 - A model is a file name in `models/`. The settings hold no path.
 - The engine never reuses a frame. A capture attempt without a new desktop update does no inference and sends no move.
 - The engine thread waits only for a command or for its capture deadline. It does not sleep on the frame path. It sets the next capture time from the start of the capture that got the new frame, and it gives no credit for lost time.
-- The engine thread does not lock shared data on the frame path. It publishes its state only when the state changes, and it sends one frame record for each processed frame.
-- The engine thread never waits for the Telemetry thread between a capture and its output. A failure of the Telemetry thread never stops the engine.
+- The engine thread shares no data with another thread. It sends its state only when the state changes, and the statistics at most every 100 ms.
 - Only the engine thread uses the MAKCU link. The engine stops the run before it reconnects MAKCU.
 - The MAKCU link has no thread of its own. The engine thread waits for a MAKCU reply only in a connect and in the Move interpolation request, for at most 100 ms for each request. A move is one write with no reply. Every end of the link (a failed write, a missing reply, or the device going away) is reported to the engine as a lost MAKCU.
 - The engine thread writes a move to the MAKCU port itself. No thread or queue sits between the move and the port.

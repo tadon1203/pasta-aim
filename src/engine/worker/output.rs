@@ -2,42 +2,40 @@
 
 use super::Worker;
 use crate::{
-    engine::MakcuPhase,
+    engine::OutputPhase,
     output::{self, Device},
-    telemetry::TraceEvent,
 };
 
 impl Worker {
     /// Connects again: the MAKCU ports in order, or only the one that the user chose. A run stops first.
-    pub(super) fn reconnect_makcu(&mut self) {
+    pub(super) fn reconnect_output(&mut self) {
         tracing::info!("reconnecting MAKCU in engine");
         self.stop_run();
-        self.connect_makcu();
+        self.connect_output();
     }
 
     /// Lists the ports, shows the connecting state, and connects. Each connect starts here.
-    pub(super) fn connect_makcu(&mut self) {
+    pub(super) fn connect_output(&mut self) {
         let ports = output::ports();
-        self.status.edit(|status| status.makcu.ports = ports);
-        self.set_makcu_status(MakcuPhase::Connecting, None, None);
-        self.status.flush();
+        self.edit(|state| state.output.ports = ports);
+        self.set_output_state(OutputPhase::Connecting, None, None);
+        self.publish();
         match self.output.connect() {
-            Ok(device) => self.apply_makcu_connected(device),
-            Err(error) => self.set_makcu_failure(format!("{error:#}")),
+            Ok(device) => self.apply_output_connected(device),
+            Err(error) => self.set_output_failure(format!("{error:#}")),
         }
     }
 
     /// Reports a lost link: it stops the run and shows a failure. The user connects again.
-    pub(super) fn poll_makcu_link(&mut self) {
+    pub(super) fn poll_output_link(&mut self) {
         if self.output.link_lost() {
-            self.makcu_lost("MAKCU disconnected".to_owned());
+            self.output_lost("MAKCU disconnected".to_owned());
         }
     }
 
     /// The link ended, by a failed write, a missing reply, or the check. Every such end comes here.
-    pub(super) fn makcu_lost(&mut self, reason: String) {
-        self.telemetry.event(TraceEvent::MakcuDisconnected);
-        self.set_makcu_failure(reason);
+    pub(super) fn output_lost(&mut self, reason: String) {
+        self.set_output_failure(reason);
     }
 
     /// Sends the stored Move interpolation. A failure of the value is shown on the error line, and
@@ -48,45 +46,37 @@ impl Worker {
         };
         let reason = format!("{error:#}");
         if !self.output.is_connected() {
-            self.makcu_lost(reason);
+            self.output_lost(reason);
             return;
         }
         tracing::warn!(%reason, "move interpolation failed");
-        self.telemetry.event(TraceEvent::MakcuInterpolationFailed {
-            reason: reason.clone(),
-        });
         self.set_run_error(reason);
     }
 
-    fn apply_makcu_connected(&mut self, device: Device) {
+    fn apply_output_connected(&mut self, device: Device) {
         tracing::info!(port = %device.port, firmware = device.firmware, "MAKCU connected in engine");
-        self.telemetry.event(TraceEvent::MakcuConnected {
-            port: device.port.clone(),
-            firmware: device.firmware_label(),
-            baud: Some(device.baud),
-        });
-        self.set_makcu_status(MakcuPhase::Connected, Some(device), None);
+        self.set_output_state(OutputPhase::Connected, Some(device), None);
         // The device can lose the value when it restarts, so each connect sends it.
         self.send_interpolation();
     }
 
-    pub(super) fn set_makcu_failure(&mut self, error: String) {
+    pub(super) fn set_output_failure(&mut self, error: String) {
         tracing::error!(%error, "MAKCU operation failed");
         self.stop_run();
-        self.set_makcu_status(MakcuPhase::Failed, None, Some(error));
+        self.set_output_state(OutputPhase::Failed, None, Some(error));
     }
 
-    /// The one place that edits the MAKCU status. Each phase sets the device and the error it has.
-    fn set_makcu_status(
+    /// The one place that edits the MAKCU state. Each phase sets the device and the error it has.
+    fn set_output_state(
         &mut self,
-        phase: MakcuPhase,
+        phase: OutputPhase,
         device: Option<Device>,
         error: Option<String>,
     ) {
-        self.status.edit(|status| {
-            status.makcu.phase = phase;
-            status.makcu.device = device;
-            status.makcu.error = error;
+        self.edit(|state| {
+            state.output.phase = phase;
+            state.output.device = device;
+            state.output.error = error;
         });
     }
 }

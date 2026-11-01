@@ -6,34 +6,34 @@ use std::{fs, process::Command};
 
 use anyhow::Context;
 use nice_aimassist::{
-    engine::{EngineState, ModelPhase, RunPhase},
+    engine::{ModelPhase, RunPhase, State},
     pipeline::Precision,
     settings,
 };
 
 impl App {
-    pub(super) fn draw_model(&mut self, ui: &mut egui::Ui, status: &EngineState) {
+    pub(super) fn draw_model(&mut self, ui: &mut egui::Ui, engine: &State) {
         ui.group(|ui| {
             ui.horizontal(|ui| {
                 ui.strong("Model");
-                if status.model.phase == ModelPhase::Loading {
+                if engine.model.phase == ModelPhase::Loading {
                     ui.spinner();
                     ui.label("Loading…");
                 }
             });
 
-            let selected_text = status
+            let selected_text = engine
                 .model
                 .loading_name
                 .as_ref()
-                .or(status.model.active_name.as_ref())
-                .or(self.config.model.as_ref())
+                .or(engine.model.active_name.as_ref())
+                .or(self.settings.model.as_ref())
                 .cloned()
                 .unwrap_or_else(|| "Select a model".to_owned());
 
             ui.horizontal(|ui| {
                 let can_change =
-                    status.model.phase != ModelPhase::Loading && status.run.phase == RunPhase::Idle;
+                    engine.model.phase != ModelPhase::Loading && engine.run.phase == RunPhase::Idle;
                 ui.add_enabled_ui(can_change, |ui| {
                     egui::ComboBox::from_id_salt("model_selector")
                         .selected_text(selected_text)
@@ -42,7 +42,7 @@ impl App {
                             let names = self.models.clone();
                             for name in names {
                                 let active =
-                                    status.model.active_name.as_deref() == Some(name.as_str());
+                                    engine.model.active_name.as_deref() == Some(name.as_str());
                                 if ui.selectable_label(active, &name).clicked() {
                                     self.select_model(name);
                                 }
@@ -63,11 +63,11 @@ impl App {
             if self.models.is_empty() {
                 ui.small("No .onnx models found in the models folder.");
             }
-            if let Some((width, height)) = status.model.input_size {
-                let precision = status.model.precision.map_or("", Precision::label);
+            if let Some((width, height)) = engine.model.input_size {
+                let precision = engine.model.precision.map_or("", Precision::label);
                 ui.small(format!("Active input: {width}×{height} {precision}"));
             }
-            if let Some(error) = &status.model.error {
+            if let Some(error) = &engine.model.error {
                 error_label(ui, format!("Model: {error}"));
             }
             if let Some(error) = &self.model_catalog_error {

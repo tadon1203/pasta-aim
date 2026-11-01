@@ -181,8 +181,6 @@ pub struct Settings {
     pub log_level: LogLevel,
     /// D3D12 debug layer. Applied at startup only; slows inference.
     pub gpu_debug: bool,
-    /// Writes a per-frame JSON Lines trace to `logs/` for each run.
-    pub frame_trace: bool,
 }
 
 impl Default for Settings {
@@ -202,7 +200,6 @@ impl Default for Settings {
             hotkeys: default_hotkeys(),
             log_level: LogLevel::default(),
             gpu_debug: false,
-            frame_trace: false,
         }
     }
 }

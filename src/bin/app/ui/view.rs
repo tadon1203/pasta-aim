@@ -5,6 +5,8 @@ mod labels;
 mod model;
 mod widgets;
 
+use std::sync::Arc;
+
 use eframe::egui;
 
 use self::widgets::{Edit, error_label, warn_label};
@@ -41,10 +43,9 @@ impl eframe::App for App {
             self.rescan_displays();
         }
 
-        self.process_engine_events();
-        self.process_hotkey_messages();
-        let status = self.engine.state();
-        let live = self.engine.live();
+        self.process_messages();
+        let engine = Arc::clone(&self.state);
+        let stats = self.stats;
 
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -53,7 +54,7 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.heading("nice-aimassist");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let ready = status.ready();
+                            let ready = engine.ready();
                             let label = if ready {
                                 "Ready".to_owned()
                             } else {
@@ -68,25 +69,25 @@ impl eframe::App for App {
                     });
 
                     ui.add_space(8.0);
-                    self.draw_devices(ui, &status);
+                    self.draw_devices(ui, &engine);
                     ui.add_space(6.0);
-                    self.draw_model(ui, &status);
+                    self.draw_model(ui, &engine);
                     ui.add_space(6.0);
-                    self.draw_output(ui, &status);
+                    self.draw_output(ui, &engine);
                     ui.add_space(6.0);
-                    self.draw_calibration(ui, &status, &live);
+                    self.draw_calibration(ui, &engine, &stats);
                     ui.add_space(6.0);
-                    self.draw_continuous(ui, &status, &live);
+                    self.draw_continuous(ui, &engine, &stats);
                     ui.add_space(6.0);
-                    self.draw_hotkeys(ui, &status);
+                    self.draw_hotkeys(ui, &engine);
                     ui.add_space(6.0);
-                    self.draw_diagnostics(ui, &status, &live);
+                    self.draw_diagnostics(ui, &engine, &stats);
 
-                    if let Some(warning) = &self.config_load_warning {
+                    if let Some(warning) = &self.settings_warning {
                         ui.add_space(6.0);
                         warn_label(ui, warning);
                     }
-                    if let Some(error) = &self.config_save_error {
+                    if let Some(error) = &self.settings_save_error {
                         ui.add_space(6.0);
                         error_label(ui, error);
                     }
@@ -97,8 +98,8 @@ impl eframe::App for App {
     }
 }
 
-fn bindings_summary(config: &Settings, action: Action) -> String {
-    config
+fn bindings_summary(settings: &Settings, action: Action) -> String {
+    settings
         .bindings_for(action)
         .map(|binding| binding.shortcut.label())
         .collect::<Vec<_>>()

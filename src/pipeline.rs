@@ -23,8 +23,8 @@ use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
 #[cfg(test)]
 pub(crate) use self::capture::AcquiredDesktopFrame;
+pub(crate) use self::capture::CapturePoll;
 pub use self::capture::DxgiCapture;
-pub(crate) use self::capture::{CapturePoll, NoDesktopUpdateReason};
 pub(crate) use self::gpu::GpuDeviceContext;
 use self::{
     gpu::{CaptureFrame, InferenceFrame},
@@ -155,54 +155,6 @@ pub struct Detection {
     pub class_id: i32,
 }
 
-impl Detection {
-    const ZERO: Self = Self {
-        center_x: 0.0,
-        center_y: 0.0,
-        box_width: 0.0,
-        box_height: 0.0,
-        confidence: 0.0,
-        class_id: 0,
-    };
-}
-
-pub const MAX_DETECTIONS: usize = 16;
-
-/// Up to `MAX_DETECTIONS` detections that passed the confidence filter, in detection order, and the
-/// full count. Fixed-size, so the frame path does not allocate.
-#[derive(Debug, Clone, Copy)]
-pub struct Detections {
-    items: [Detection; MAX_DETECTIONS],
-    len: usize,
-    total: usize,
-}
-
-impl Detections {
-    pub const EMPTY: Self = Self {
-        items: [Detection::ZERO; MAX_DETECTIONS],
-        len: 0,
-        total: 0,
-    };
-
-    /// Stores the detection while there is room, and always counts it.
-    pub(crate) fn push(&mut self, detection: Detection) {
-        if self.len < MAX_DETECTIONS {
-            self.items[self.len] = detection;
-            self.len += 1;
-        }
-        self.total += 1;
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Detection> {
-        self.items[..self.len].iter()
-    }
-
-    /// How many passed the filter, including any beyond `MAX_DETECTIONS`.
-    pub fn total(&self) -> usize {
-        self.total
-    }
-}
-
 /// The stage boundaries of one frame, as QPC ticks.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameTimes {
@@ -222,23 +174,6 @@ pub struct FrameTimes {
     pub inference_done: i64,
     /// After the postprocess.
     pub postprocess_done: i64,
-}
-
-/// Why the engine dropped a frame that a pipeline produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpuDropReason {
-    StaleGeneration,
-    PipelinePoisoned,
-}
-
-impl GpuDropReason {
-    /// The name of the reason in the frame trace.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::StaleGeneration => "stale_generation",
-            Self::PipelinePoisoned => "pipeline_poisoned",
-        }
-    }
 }
 
 /// The GPU stage in which a fault happened. The fault log names it.
@@ -285,21 +220,18 @@ pub(crate) struct PipelineConfig<'a> {
 /// A new frame after the inference and the postprocess.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProcessedFrame {
-    pub frame_seq: u64,
-    pub accumulated_frames: u32,
     pub desktop_size: (usize, usize),
     pub times: FrameTimes,
     pub gpu_preprocess_ms: Option<f64>,
     pub gpu_copy_ms: Option<f64>,
     pub selected: Option<Detection>,
-    pub detections: Detections,
 }
 
 // The frame is handed over by value, so the frame path does not allocate.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FrameOutcome {
     NewFrame(ProcessedFrame),
-    NoDesktopUpdate(NoDesktopUpdateReason),
+    NoDesktopUpdate,
 }
 
 /// The pipeline cannot be used any more. The engine suspends it until the user retries.
@@ -395,9 +327,7 @@ impl Pipeline {
         let attempt_start = Clock::now();
         let frame = match self.capture.acquire(wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => frame,
-            Ok(CapturePoll::NoDesktopUpdate(reason)) => {
-                return Ok(FrameOutcome::NoDesktopUpdate(reason));
-            }
+            Ok(CapturePoll::NoDesktopUpdate) => return Ok(FrameOutcome::NoDesktopUpdate),
             Err(error) => return Err(self.capture_fault(&error)),
         };
         let acquired_qpc = Clock::now();
@@ -458,8 +388,6 @@ impl Pipeline {
         };
 
         Ok(FrameOutcome::NewFrame(ProcessedFrame {
-            frame_seq,
-            accumulated_frames: frame.accumulated_frames(),
             desktop_size: frame.desktop_size(),
             times: FrameTimes {
                 present: frame.present_qpc(),
@@ -474,7 +402,6 @@ impl Pipeline {
             gpu_preprocess_ms,
             gpu_copy_ms,
             selected: output.selection.nearest,
-            detections: output.selection.detections,
         }))
     }
 

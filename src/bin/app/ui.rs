@@ -1,42 +1,45 @@
 mod view;
 
-use std::{
-    collections::HashSet,
-    sync::{Arc, mpsc},
-};
+use std::{collections::HashSet, sync::Arc};
 
 use nice_aimassist::{
-    Message, Repaint, UiSender,
-    engine::{Command, Engine, EngineEvent},
-    hotkeys::{Action, Event, Hotkey, Hotkeys, Shortcut},
+    channel::{self, Message, Receiver, Sender},
+    engine::{Command, Engine, State, Stats},
+    hotkeys::{self, Action, Event, Hotkey, Hotkeys, Shortcut},
     settings::{
-        self, Confidence, Display, FpsLimit, Interpolation, Loaded, MaxDelta, Sensitivity,
-        Settings, TargetYOffset,
+        self, Confidence, FpsLimit, Interpolation, Loaded, MaxDelta, Sensitivity, Settings,
+        TargetYOffset,
     },
 };
 
 pub struct App {
-    config: Settings,
+    settings: Settings,
     /// `gpu_debug` as applied at process start; the toggle only takes effect on restart.
     gpu_debug_at_startup: bool,
-    engine: Engine,
+    /// Stops the engine thread when the app drops it.
+    _engine: Engine,
+    /// Sends to the engine thread.
+    commands: Sender<Command>,
     /// The `.onnx` file names in `models/`.
     models: Vec<String>,
-    /// `None` when the input thread could not start; `hotkey_error` says why.
+    /// `None` when the hotkeys thread could not start; `hotkey_error` says why.
     hotkeys: Option<Hotkeys>,
-    /// What the input thread reports to the UI.
-    messages: mpsc::Receiver<Message>,
-    /// The `XInput` controller in use, as the input thread last reported it.
+    /// What the engine thread and the hotkeys thread send to the UI.
+    messages: Receiver<Message>,
+    /// The engine state and the statistics, as they last arrived.
+    state: Arc<State>,
+    stats: Stats,
+    /// The `XInput` controller in use, as the hotkeys thread last reported it.
     controller_slot: Option<u32>,
     /// The action of the binding that the user is adding. Some while the dialog is open.
     hotkey_capture: Option<Action>,
     hotkey_capture_error: Option<String>,
     hotkey_error: Option<String>,
     model_catalog_error: Option<String>,
-    config_load_warning: Option<String>,
+    settings_warning: Option<String>,
     /// The settings file could not be read at startup; the next save backs it up first.
-    config_file_unusable: bool,
-    config_save_error: Option<String>,
+    settings_unusable: bool,
+    settings_save_error: Option<String>,
     /// Value fields edited since they were last saved (see `view::widgets::drag_value`).
     dirty: HashSet<EditField>,
     model_load_requested: bool,
@@ -54,12 +57,12 @@ enum EditField {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, loaded: Loaded) -> anyhow::Result<Self> {
-        let config = loaded.settings;
-        let gpu_debug_at_startup = config.gpu_debug;
-        let config_load_warning = loaded.warning;
-        let config_file_unusable = loaded.unusable;
-        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.get(), fps_limit = config.fps_limit.get(), "application initialized with settings");
+    pub fn new(cc: &eframe::CreationContext<'_>, loaded: Loaded) -> Self {
+        let settings = loaded.settings;
+        let gpu_debug_at_startup = settings.gpu_debug;
+        let settings_warning = loaded.warning;
+        let settings_unusable = loaded.unusable;
+        tracing::info!(model = ?settings.model, sensitivity = settings.sensitivity.get(), fps_limit = settings.fps_limit.get(), "application initialized with settings");
         let (models, model_catalog_error) = match settings::models() {
             Ok(names) => (names, None),
             Err(error) => {
@@ -68,50 +71,43 @@ impl App {
             }
         };
 
-        let repaint: Repaint = {
+        let (ui, messages) = channel::channel({
             let ctx = cc.egui_ctx.clone();
-            Arc::new(move || {
+            move || {
                 if ctx.input(|input| input.viewport().minimized) != Some(true) {
                     ctx.request_repaint();
                 }
-            })
-        };
-        let engine = Engine::new(&config, Arc::clone(&repaint))?;
-
-        let (tx, messages) = mpsc::channel();
-        let ui = UiSender::new(tx, Arc::clone(&repaint));
-        let control = engine.control();
-        let on_action = move |action: Action, down: bool| {
-            match action {
-                Action::Hold => control.send(Command::SetContinuous(down)),
-                Action::RunOnce if down => control.send(Command::RunOnce),
-                Action::RunOnce => {}
             }
-            repaint();
-        };
-        let (hotkeys, hotkey_error) = match Hotkeys::spawn(&config.hotkeys, ui, on_action) {
+        });
+        let engine = Engine::spawn(&settings, ui.clone());
+        let commands = engine.sender().clone();
+        let (hotkeys, hotkey_error) = match Hotkeys::spawn(&settings.hotkeys, ui, commands.clone())
+        {
             Ok(hotkeys) => (Some(hotkeys), None),
             Err(error) => {
-                tracing::error!(error = %format_args!("{error:#}"), "hotkey input thread did not start");
+                tracing::error!(error = %format_args!("{error:#}"), "hotkeys thread did not start");
                 (None, Some(format!("{error:#}")))
             }
         };
 
         let app = Self {
-            config,
+            settings,
             gpu_debug_at_startup,
-            engine,
+            _engine: engine,
+            commands,
             models,
             hotkeys,
             messages,
+            state: Arc::new(State::default()),
+            stats: Stats::default(),
             controller_slot: None,
             hotkey_capture: None,
             hotkey_capture_error: None,
             hotkey_error,
             model_catalog_error,
-            config_load_warning,
-            config_file_unusable,
-            config_save_error: None,
+            settings_warning,
+            settings_unusable,
+            settings_save_error: None,
             dirty: HashSet::new(),
             model_load_requested: false,
         };
@@ -121,56 +117,20 @@ impl App {
         let mut app = app;
         app.request_sole_model_load();
 
-        Ok(app)
+        app
     }
 
     fn persist(&mut self) {
-        match self.config.save(self.config_file_unusable) {
+        match self.settings.save(self.settings_unusable) {
             Ok(()) => {
                 tracing::debug!("settings persistence succeeded");
-                self.config_save_error = None;
-                self.config_load_warning = None;
-                self.config_file_unusable = false;
+                self.settings_save_error = None;
+                self.settings_warning = None;
+                self.settings_unusable = false;
             }
             Err(error) => {
                 tracing::error!(error = %format_args!("{error:#}"), "settings persistence failed");
-                self.config_save_error = Some(format!("Settings save failed: {error:#}"));
-            }
-        }
-    }
-
-    fn process_engine_events(&mut self) {
-        let events: Vec<_> = self.engine.poll_events().collect();
-        for event in events {
-            match event {
-                EngineEvent::Model { name, result } => {
-                    self.model_load_requested = false;
-                    tracing::debug!(model = %name, success = result.is_ok(), "received model operation result");
-                    if result.is_ok() {
-                        self.config.model = Some(name);
-                        self.persist();
-                    }
-                }
-                EngineEvent::Capture {
-                    adapter,
-                    output,
-                    adapter_luid,
-                    result,
-                } => {
-                    tracing::debug!(
-                        adapter,
-                        output,
-                        success = result.is_ok(),
-                        "received capture operation result"
-                    );
-                    if result.is_ok() {
-                        self.config.display = Display {
-                            adapter: u64::from(adapter_luid),
-                            output,
-                        };
-                        self.persist();
-                    }
-                }
+                self.settings_save_error = Some(format!("Settings save failed: {error:#}"));
             }
         }
     }
@@ -199,7 +159,8 @@ impl App {
     fn load_model(&mut self, name: String, notify: bool) {
         match settings::model_path(&name) {
             Ok(path) => {
-                self.engine.send(Command::LoadModel { name, path, notify });
+                self.commands
+                    .send(Command::LoadModel { name, path, notify });
             }
             Err(error) => {
                 tracing::warn!(model = %name, error = %format_args!("{error:#}"), "model could not be loaded");
@@ -209,7 +170,7 @@ impl App {
     }
 
     fn request_sole_model_load(&mut self) {
-        if self.config.model.is_none()
+        if self.settings.model.is_none()
             && !self.model_load_requested
             && let [name] = self.models.as_slice()
         {
@@ -221,71 +182,84 @@ impl App {
 
     fn rescan_displays(&self) {
         tracing::debug!("display rescan requested from UI");
-        self.engine.send(Command::RescanDisplays);
+        self.commands.send(Command::RescanDisplays);
     }
 
     fn select_display(&mut self, adapter: u32, output: u32) {
         tracing::debug!(adapter, output, "display selected from UI");
-        self.engine
+        self.commands
             .send(Command::SetCaptureSelection { adapter, output });
     }
 
     fn set_sensitivity(&mut self, sensitivity: Sensitivity) {
         tracing::debug!(value = sensitivity.get(), "sensitivity changed");
-        self.config.sensitivity = sensitivity;
-        self.engine.send(Command::SetSensitivity(sensitivity));
+        self.settings.sensitivity = sensitivity;
+        self.commands.send(Command::SetSensitivity(sensitivity));
     }
 
     fn set_confidence(&mut self, value: Confidence) {
         tracing::debug!(value = value.get(), "confidence threshold changed");
-        self.config.confidence = value;
-        self.engine.send(Command::SetConfidence(value));
+        self.settings.confidence = value;
+        self.commands.send(Command::SetConfidence(value));
     }
 
     fn set_target_y_offset(&mut self, value: TargetYOffset) {
         tracing::debug!(value = value.get(), "target Y offset changed");
-        self.config.target_y_offset = value;
-        self.engine.send(Command::SetTargetYOffset(value));
+        self.settings.target_y_offset = value;
+        self.commands.send(Command::SetTargetYOffset(value));
     }
 
     fn set_max_delta(&mut self, value: MaxDelta) {
         tracing::debug!(value = value.get(), "max delta changed");
-        self.config.max_delta = value;
-        self.engine.send(Command::SetMaxDelta(value));
+        self.settings.max_delta = value;
+        self.commands.send(Command::SetMaxDelta(value));
     }
 
     /// Only stores and sends the value. The caller saves it with `persist`, after the drag or click ends.
     fn set_interpolation(&mut self, interpolation: Interpolation) {
         tracing::debug!(?interpolation, "move interpolation changed");
-        self.config.interpolation = interpolation;
-        self.engine.send(Command::SetInterpolation(interpolation));
+        self.settings.interpolation = interpolation;
+        self.commands.send(Command::SetInterpolation(interpolation));
     }
 
     /// `None` is auto-detect. The engine connects again, and the choice is saved.
     fn set_makcu_port(&mut self, port: Option<String>) {
         tracing::debug!(?port, "MAKCU port selected from UI");
-        self.config.makcu_port.clone_from(&port);
-        self.engine.send(Command::SetMakcuPort(port));
+        self.settings.makcu_port.clone_from(&port);
+        self.commands.send(Command::SetOutputPort(port));
         self.persist();
     }
 
     fn set_fps_limit(&mut self, fps_limit: FpsLimit) {
         tracing::debug!(value = fps_limit.get(), "FPS limit changed");
-        self.config.fps_limit = fps_limit;
-        self.engine.send(Command::SetFpsLimit(fps_limit));
+        self.settings.fps_limit = fps_limit;
+        self.commands.send(Command::SetFpsLimit(fps_limit));
     }
 
-    /// Applies what the input thread reported since the last frame.
-    fn process_hotkey_messages(&mut self) {
-        while let Ok(Message::Hotkeys(event)) = self.messages.try_recv() {
-            match event {
-                Event::Controller(slot) => self.controller_slot = slot,
-                Event::Recorded(shortcut) => {
+    /// Applies what the other threads sent since the last frame.
+    fn process_messages(&mut self) {
+        while let Ok(message) = self.messages.try_recv() {
+            match message {
+                Message::State(state) => self.state = state,
+                Message::Stats(stats) => self.stats = stats,
+                Message::ModelLoaded(name) => {
+                    self.model_load_requested = false;
+                    tracing::debug!(model = %name, "model loaded");
+                    self.settings.model = Some(name);
+                    self.persist();
+                }
+                Message::DisplayChanged(selected) => {
+                    tracing::debug!(?selected, "display changed");
+                    self.settings.display = selected;
+                    self.persist();
+                }
+                Message::Hotkeys(Event::Controller(slot)) => self.controller_slot = slot,
+                Message::Hotkeys(Event::Recorded(shortcut)) => {
                     if let Some(action) = self.hotkey_capture {
                         self.add_hotkey(action, shortcut);
                     }
                 }
-                Event::RecordCancelled => {
+                Message::Hotkeys(Event::RecordCancelled) => {
                     self.hotkey_capture = None;
                     self.hotkey_capture_error = None;
                 }
@@ -293,12 +267,16 @@ impl App {
         }
     }
 
-    /// Replaces the bindings in the input thread. The error is text for the UI.
+    /// Replaces the bindings in the hotkeys thread. The error is text for the UI.
     fn apply_hotkeys(&self, hotkeys: &[Hotkey]) -> Result<(), String> {
-        match &self.hotkeys {
-            Some(running) => running.set(hotkeys).map_err(|error| format!("{error:#}")),
-            None => Err("Hotkeys are not running".to_owned()),
-        }
+        let Some(running) = &self.hotkeys else {
+            return Err("Hotkeys are not running".to_owned());
+        };
+        let bindings = hotkeys::bindings(hotkeys).map_err(|error| format!("{error:#}"))?;
+        running
+            .sender()
+            .send(hotkeys::Command::SetBindings(bindings));
+        Ok(())
     }
 
     fn begin_hotkey_capture(&mut self, action: Action) {
@@ -306,7 +284,7 @@ impl App {
         self.hotkey_capture = Some(action);
         self.hotkey_capture_error = None;
         if let Some(hotkeys) = &self.hotkeys {
-            hotkeys.record();
+            hotkeys.sender().send(hotkeys::Command::Record);
         }
     }
 
@@ -315,17 +293,17 @@ impl App {
         self.hotkey_capture = None;
         self.hotkey_capture_error = None;
         if let Some(hotkeys) = &self.hotkeys {
-            hotkeys.cancel_record();
+            hotkeys.sender().send(hotkeys::Command::CancelRecord);
         }
     }
 
     fn add_hotkey(&mut self, action: Action, shortcut: Shortcut) {
         tracing::debug!(?action, %shortcut, "adding hotkey binding");
-        let mut candidate = self.config.clone();
+        let mut candidate = self.settings.clone();
         candidate.add_binding(Hotkey { action, shortcut });
         match self.apply_hotkeys(&candidate.hotkeys) {
             Ok(()) => {
-                self.config = candidate;
+                self.settings = candidate;
                 self.hotkey_error = None;
                 self.persist();
                 self.cancel_hotkey_capture();
@@ -335,7 +313,7 @@ impl App {
                 tracing::warn!(%error, "hotkey binding was rejected");
                 self.hotkey_capture_error = Some(error);
                 if let Some(hotkeys) = &self.hotkeys {
-                    hotkeys.record();
+                    hotkeys.sender().send(hotkeys::Command::Record);
                 }
             }
         }
@@ -343,11 +321,11 @@ impl App {
 
     fn remove_hotkey(&mut self, action: Action, shortcut: Shortcut) {
         tracing::debug!(?action, %shortcut, "removing hotkey binding");
-        let mut candidate = self.config.clone();
+        let mut candidate = self.settings.clone();
         candidate.remove_binding(action, shortcut);
         match self.apply_hotkeys(&candidate.hotkeys) {
             Ok(()) => {
-                self.config = candidate;
+                self.settings = candidate;
                 self.hotkey_error = None;
                 self.persist();
             }

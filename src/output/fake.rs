@@ -1,13 +1,13 @@
 //! A MAKCU in memory, for the tests of the output.
 //!
-//! Each write of a port is one request, as the output sends it. The fake answers the requests
+//! Each write of a port is one query, as the output sends it. The fake answers the queries
 //! that the output needs, and it can be made to fail the way the device fails.
 
 use std::{collections::VecDeque, io, sync::Arc, sync::Mutex, thread, time::Duration};
 
 use super::{
     Port as Entry,
-    port::{Connector, Port},
+    port::{Connector, Serial},
     protocol::{CMD_DEVICE, CMD_FIRMWARE_VERSION, CMD_INTERPOLATE, CMD_SET_BAUD, HEADER, REJECT},
 };
 use crate::sync::MutexExt;
@@ -27,13 +27,13 @@ struct State {
     firmware: u32,
     kinds: u8,
     connected: bool,
-    /// Every request that the device received, in order. One port write can hold several.
+    /// Every query that the device received, in order. One port write can hold several.
     frames: Vec<Vec<u8>>,
     /// The bytes that wait for the host.
     replies: VecDeque<u8>,
-    /// The command whose next request gets no reply.
+    /// The command whose next query gets no reply.
     mute: Option<u8>,
-    /// The command whose next request gets a reject.
+    /// The command whose next query gets a reject.
     reject: Option<u8>,
     /// The value that `INTERPOLATE` echoes instead of its own. `None` echoes the value sent.
     interpolate_echo: Option<u8>,
@@ -63,7 +63,7 @@ impl FakeMakcu {
         }
     }
 
-    /// Every request that the device received, in order. One port write can hold several.
+    /// Every query that the device received, in order. One port write can hold several.
     pub(crate) fn frames(&self) -> Vec<Vec<u8>> {
         self.state.lock_recover().frames.clone()
     }
@@ -96,12 +96,12 @@ impl FakeMakcu {
         self.state.lock_recover().accepted = bauds.to_vec();
     }
 
-    /// The next request of `cmd` gets no reply.
+    /// The next query of `cmd` gets no reply.
     pub(crate) fn mute_next(&self, cmd: u8) {
         self.state.lock_recover().mute = Some(cmd);
     }
 
-    /// The next request of `cmd` gets a reject.
+    /// The next query of `cmd` gets a reject.
     pub(crate) fn reject_next(&self, cmd: u8) {
         self.state.lock_recover().reject = Some(cmd);
     }
@@ -120,7 +120,7 @@ impl Connector for FakeMakcu {
         }])
     }
 
-    fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Port>> {
+    fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Serial>> {
         if port != PORT_NAME {
             return Err(io::Error::new(io::ErrorKind::NotFound, "no such port"));
         }
@@ -142,7 +142,7 @@ struct FakePort {
     baud: u32,
 }
 
-impl Port for FakePort {
+impl Serial for FakePort {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut state = self.state.lock_recover();
         if !state.connected {
@@ -168,11 +168,11 @@ impl Port for FakePort {
         if !state.connected {
             return Err(unplugged());
         }
-        for request in split_requests(bytes) {
-            state.frames.push(request.to_vec());
+        for query in split_requests(bytes) {
+            state.frames.push(query.to_vec());
             // A device does not hear a host at another rate.
             if self.baud == state.baud {
-                state.answer(request[4], &request[5..]);
+                state.answer(query[4], &query[5..]);
             }
         }
         Ok(())
@@ -188,7 +188,7 @@ impl Port for FakePort {
 }
 
 impl State {
-    /// Answers one request. `payload` is the payload of the request, `cmd` its command.
+    /// Answers one query. `payload` is the payload of the query, `cmd` its command.
     fn answer(&mut self, cmd: u8, payload: &[u8]) {
         if self.mute == Some(cmd) {
             self.mute = None;
@@ -239,10 +239,10 @@ impl State {
     }
 }
 
-/// The requests in one port write. A `SET_BAUD` packet is 9 bytes whatever its length byte says.
+/// The queries in one port write. A `SET_BAUD` packet is 9 bytes whatever its length byte says.
 /// See "Baud switch" in `docs/makcu-protocol.md`.
 fn split_requests(mut bytes: &[u8]) -> Vec<&[u8]> {
-    let mut requests = Vec::new();
+    let mut queries = Vec::new();
     while bytes.len() >= 5 {
         let total = if bytes[4] == CMD_SET_BAUD {
             9
@@ -250,8 +250,8 @@ fn split_requests(mut bytes: &[u8]) -> Vec<&[u8]> {
             5 + usize::from(u16::from_le_bytes([bytes[2], bytes[3]]))
         };
         let total = total.min(bytes.len());
-        requests.push(&bytes[..total]);
+        queries.push(&bytes[..total]);
         bytes = &bytes[total..];
     }
-    requests
+    queries
 }
