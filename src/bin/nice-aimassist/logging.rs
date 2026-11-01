@@ -7,10 +7,9 @@ use std::{
 };
 
 use anyhow::Result;
+use nice_aimassist::settings::{LogLevel, logs_dir};
 use tracing_appender::non_blocking::{ErrorCounter, WorkerGuard};
 use tracing_subscriber::{fmt, layer::SubscriberExt, registry::Registry, reload};
-
-use crate::settings::{LogLevel, logs_dir};
 
 static LEVEL_HANDLE: OnceLock<reload::Handle<tracing_subscriber::filter::LevelFilter, Registry>> =
     OnceLock::new();

@@ -1,12 +1,10 @@
+//! The Diagnostics panel, and the text that its Copy button puts on the clipboard.
+
 use eframe::egui;
 
-use super::{
-    labels::{capture_phase_label, makcu_line, model_phase_label},
-    widgets::{error_label, warn_label},
-};
-use crate::ui::App;
+use super::{App, controller_line, error_label, makcu_line, percent, warn_label};
 use nice_aimassist::{
-    engine::{Command, Percentiles, Rates, Stages, State, Stats},
+    engine::{CapturePhase, Command, ModelPhase, Percentiles, Rates, Stages, State, Stats},
     pipeline::DisplayInfo,
     settings::LogLevel,
 };
@@ -51,7 +49,7 @@ impl App {
                 });
             if level != self.settings.log_level {
                 self.settings.log_level = level;
-                nice_aimassist::logging::set_level(level);
+                crate::logging::set_level(level);
                 self.persist();
             }
         });
@@ -159,13 +157,10 @@ impl App {
             .as_ref()
             .is_some_and(|device| device.mouse_route);
         let makcu_routes = format!("mouse={mouse_route}");
-        let xinput = self
-            .controller_slot
-            .map_or_else(|| "not connected".to_owned(), |slot| format!("slot {slot}"));
         let warning = self.settings_warning.as_deref().unwrap_or("none");
         let save_error = self.settings_save_error.as_deref().unwrap_or("none");
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nsettings warning: {warning}\nsettings save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nsettings warning: {warning}\nsettings save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             engine
                 .capture
@@ -174,6 +169,7 @@ impl App {
                 .map_or("Unavailable", |display| display.adapter_name.as_str()),
             cpu_fallback_line(engine),
             makcu_line(engine.output.phase, engine.output.device.as_ref()),
+            controller_line(self.controller_slot),
             self.settings.fps_limit.get(),
             stats.rates.fresh_fps,
             stats.rates.processed_fps,
@@ -196,6 +192,22 @@ impl App {
     }
 }
 
+fn model_phase_label(phase: ModelPhase) -> &'static str {
+    match phase {
+        ModelPhase::Empty => "No active model",
+        ModelPhase::Loading => "Loading",
+        ModelPhase::Ready => "Ready",
+    }
+}
+
+fn capture_phase_label(phase: CapturePhase) -> &'static str {
+    match phase {
+        CapturePhase::Initializing => "Initializing",
+        CapturePhase::Ready => "Ready",
+        CapturePhase::Failed => "Failed",
+    }
+}
+
 /// The input rows: MAKCU, `XInput`, and the value settings in use.
 fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) {
     ui.label("MAKCU");
@@ -206,10 +218,7 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) 
     ui.end_row();
 
     ui.label("XInput hotkey pad");
-    ui.label(
-        app.controller_slot
-            .map_or_else(|| "Not connected".to_owned(), |slot| format!("Slot {slot}")),
-    );
+    ui.label(controller_line(app.controller_slot));
     ui.end_row();
 
     ui.label("FPS limit");
@@ -217,7 +226,7 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) 
     ui.end_row();
 
     ui.label("Confidence threshold");
-    ui.label(format!("{}%", app.settings.confidence.get()));
+    ui.label(percent(app.settings.confidence.get()));
     ui.end_row();
 
     if let Some((_, _, confidence, class_id)) = stats.last_target {
@@ -227,7 +236,7 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) 
     }
 }
 
-/// The CPU fallback line of the panel and the clipboard text: `N`, or `unknown` when ORT reports none.
+/// The CPU fallback value of the panel and the clipboard text: `N`, or `unknown` when ORT reports none.
 fn cpu_fallback_value(engine: &State) -> String {
     engine
         .model
@@ -240,6 +249,7 @@ fn cpu_fallback_line(engine: &State) -> String {
     format!("CPU fallback nodes: {}", cpu_fallback_value(engine))
 }
 
+/// The rates, and when a run has samples, the timing grid of each stage.
 fn draw_performance(ui: &mut egui::Ui, performance: &Stages, rates: &Rates) {
     ui.label(format!(
         "Fresh FPS {:.1} · Processed FPS {:.1}",
@@ -254,6 +264,12 @@ fn draw_performance(ui: &mut egui::Ui, performance: &Stages, rates: &Rates) {
         "{:.1} FPS · {} samples",
         performance.fps, performance.sample_count
     ));
+    draw_stage_grid(ui, performance);
+    ui.small("pipeline: DXGI LastPresentTime → MAKCU write completion");
+}
+
+/// The p50 and p95 of each stage, from the capture to the MAKCU write.
+fn draw_stage_grid(ui: &mut egui::Ui, performance: &Stages) {
     egui::Grid::new("performance_grid")
         .num_columns(3)
         .spacing([16.0, 4.0])
@@ -283,7 +299,6 @@ fn draw_performance(ui: &mut egui::Ui, performance: &Stages, rates: &Rates) {
             metric_row(ui, "MAKCU write", performance.output_write);
             metric_row(ui, "Cadence", performance.cadence);
         });
-    ui.small("pipeline: DXGI LastPresentTime → MAKCU write completion");
 }
 
 fn metric_row(ui: &mut egui::Ui, name: &str, metric: Percentiles) {

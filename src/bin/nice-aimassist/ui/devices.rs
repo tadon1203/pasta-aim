@@ -1,12 +1,10 @@
+//! The Devices panel: the capture display, the MAKCU link, and the `XInput` hotkey pad.
+
 use eframe::egui;
 
-use super::{
-    labels::{makcu_line, route_label},
-    widgets::error_label,
-};
-use crate::ui::App;
+use super::{App, controller_line, error_label, makcu_line, run_idle};
 use nice_aimassist::{
-    engine::{Command, OutputPhase, RunPhase, State},
+    engine::{Command, OutputPhase, State},
     pipeline::DisplayInfo,
     settings::Display,
 };
@@ -14,6 +12,14 @@ use nice_aimassist::{
 /// Whether the MAKCU connection attempt is still running.
 fn is_busy(phase: OutputPhase) -> bool {
     phase == OutputPhase::Connecting
+}
+
+fn route_label(available: bool) -> &'static str {
+    if available {
+        "● Ready"
+    } else {
+        "— Not routed"
+    }
 }
 
 impl App {
@@ -40,8 +46,7 @@ impl App {
                 .selected
                 .as_ref()
                 .map_or_else(|| "Select a display".to_owned(), DisplayInfo::label);
-            let can_change = engine.run.phase == RunPhase::Idle;
-            ui.add_enabled_ui(can_change, |ui| {
+            ui.add_enabled_ui(run_idle(engine), |ui| {
                 egui::ComboBox::from_id_salt("capture_display_selector")
                     .selected_text(selected_text)
                     .width(430.0)
@@ -95,10 +100,7 @@ impl App {
                 ui.end_row();
 
                 ui.label("XInput hotkey pad");
-                ui.label(self.controller_slot.map_or_else(
-                    || "○ Not connected".to_owned(),
-                    |slot| format!("● Connected · slot {slot}"),
-                ));
+                ui.label(controller_line(self.controller_slot));
                 ui.end_row();
             });
     }

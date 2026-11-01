@@ -44,11 +44,13 @@ The template of this document. Text in `<>` is a placeholder: replace it, and ke
 
 ## Mental model
 
-One Windows process, written in Rust. Each thread owns its resources, and the threads talk through channels. The domain terms are defined in [docs/requirements.md](./docs/requirements.md).
+One Windows process, written in Rust, in two crates: the lib (`src`, its `*.rs` files and their directories) and the bin (`src/bin/nice-aimassist`). The lib holds the capture, inference, aim, output, shortcuts, and settings. The bin holds the app: the UI, the logging, and the process setup. The library never uses `eframe` or `egui`. Each thread owns its resources, and the threads talk through channels. The domain terms are defined in [docs/requirements.md](./docs/requirements.md).
 
-- **UI thread** (`src/bin/app`): egui (eframe). It shows the settings and the engine state, and it writes the settings file. It holds no capture, inference, or device resource.
+- **UI thread** (`src/bin/nice-aimassist/ui`): egui (eframe). It shows the settings and the engine state, and it writes the settings file. It holds no capture, inference, or device resource.
 - **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`), the aim (`src/aim`), and the output (`src/output`), which holds the MAKCU link. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time. It also makes the statistics of the run.
 - **Hotkeys thread** (`src/hotkeys`): keyboard and XInput polling, read every millisecond. It turns a shortcut into an engine command, and it reports the recorded shortcut and the controller slot to the UI. It holds no run state of the engine.
+
+The MAKCU link has no thread of its own. The engine thread owns it.
 
 A thread takes its input from one `Receiver`. Any thread sends to it through a `Sender` (`src/channel.rs`), which also tells the receiving thread: a wake-up for the engine and hotkeys threads, a repaint for the UI. What goes into a thread is a `Command`. What goes to the UI is a `Message`.
 
@@ -64,13 +66,15 @@ Data flow:
 
 | Directory           | What it holds                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------- |
-| `src/bin/app`       | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
-| `src/engine`        | The engine thread: the commands, the thread loop, the runs, model and display changes, the output lifecycle, the frame step and pacing, the engine state, and the statistics. |
+| `src/bin/nice-aimassist` | The app binary: the UI (the app and its message handling, and the run, hotkeys, devices, model, and diagnostics panels), the logging, and the process setup. The entry point is `main.rs`. |
+| `src/settings`      | The settings: the settings file (its load, its save, and its validation), the value types with their ranges, the hotkey bindings, and the paths of the program folder. |
+| `src/clock`         | The clock: the QPC time, and the wait for a deadline or a wake-up.                          |
+| `src/engine`        | The engine thread: the commands, the thread loop, the runs, model and display changes, the output lifecycle, the frame step and pacing, the engine state, the statistics, and the thread boost. |
 | `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. It holds the GPU layer, the capture, the GPU preprocess, and the inference with its postprocess. |
 | `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
 | `src/aim`           | The aim: the target tracker, the move that each frame plans, and the rounding to whole counts. It knows nothing about MAKCU. |
 | `src/output`        | The output: the MAKCU link (the wire protocol, the serial port, and the connect) and the write of a move. |
-| `src`               | The library crate root. Also holds the small modules that serve many parts (channels and the UI message, settings, logging, and the clock with its deadline wait). |
+| `src`               | The library crate root. It also holds `channel.rs`, the channels and the UI message, which every thread uses. |
 
 ## Invariants
 
@@ -92,3 +96,5 @@ Data flow:
 - The engine thread writes a move to the MAKCU port itself. No thread or queue sits between the move and the port.
 - The remainder stays inside one track. A target switch, a lost target, and the start of a run clear it.
 - Global shortcut dispatch stops while the user records a new shortcut.
+- A display change stops the run. The UI saves the model and the display from `Message::ModelLoaded` and `Message::DisplayChanged`.
+- The library never uses `eframe` or `egui`. The bin makes the repaint closure that it gives to `channel::channel`.

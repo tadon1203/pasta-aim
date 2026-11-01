@@ -1,22 +1,27 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod logging;
+mod process;
 mod ui;
 
-use nice_aimassist::{logging, pipeline, platform, settings::Settings};
+use anyhow::Result;
+use nice_aimassist::{pipeline, settings::Settings};
 
-fn main() -> eframe::Result {
+fn main() -> Result<()> {
     // The logs folder is found first, so a missing install folder is reported before any settings file is read.
-    let _logging = logging::init()
-        .map_err(|error| eframe::Error::AppCreation(error.into_boxed_dyn_error()))?;
+    let _logging = logging::init()?;
     let loaded = Settings::load();
+    if let Some(warning) = &loaded.warning {
+        tracing::warn!(%warning, "settings loaded with a problem");
+    }
     logging::set_level(loaded.settings.log_level);
     tracing::info!("nice-aimassist starting");
-    platform::disable_process_power_throttling();
     if let Err(error) = pipeline::init(loaded.settings.gpu_debug) {
         tracing::error!(error = %format_args!("{error:#}"), "GPU pipeline initialization failed");
-        return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
+        return Err(error);
     }
-    if !platform::enable_per_monitor_dpi_awareness() {
+    process::disable_power_throttling();
+    if !process::enable_per_monitor_dpi_awareness() {
         tracing::warn!("failed to set per-monitor-v2 DPI awareness");
     }
 
@@ -33,5 +38,5 @@ fn main() -> eframe::Result {
         Box::new(move |cc| Ok(Box::new(ui::App::new(cc, loaded)))),
     );
     tracing::info!(?result, "nice-aimassist exiting");
-    result
+    result.map_err(|error| anyhow::anyhow!("{error}"))
 }

@@ -1,11 +1,17 @@
-mod view;
+mod devices;
+mod diagnostics;
+mod hotkeys;
+mod model;
+mod run;
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, fmt, sync::Arc};
 
+use eframe::egui;
 use nice_aimassist::{
     channel::{self, Message, Receiver, Sender},
-    engine::{Command, Engine, State, Stats},
-    hotkeys::{self, Action, Event, Hotkey, Hotkeys, Shortcut},
+    engine::{Command, Engine, OutputPhase, RunPhase, State, Stats},
+    hotkeys::{self as hotkey_thread, Action, Event, Hotkey, Hotkeys, Shortcut},
+    output::Device,
     settings::{self, Display, Loaded, Settings},
 };
 
@@ -37,7 +43,7 @@ pub struct App {
     /// The settings file could not be read at startup; the next save backs it up first.
     settings_unusable: bool,
     settings_save_error: Option<String>,
-    /// Value fields edited since they were last saved (see `view::widgets::drag_value`).
+    /// Value fields edited since they were last saved (see `run::drag_value`).
     dirty: HashSet<EditField>,
 }
 
@@ -210,10 +216,10 @@ impl App {
         let Some(running) = &self.hotkeys else {
             return Err("Hotkeys are not running".to_owned());
         };
-        let bindings = hotkeys::bindings(hotkeys).map_err(|error| format!("{error:#}"))?;
+        let bindings = hotkey_thread::bindings(hotkeys).map_err(|error| format!("{error:#}"))?;
         running
             .sender()
-            .send(hotkeys::Command::SetBindings(bindings));
+            .send(hotkey_thread::Command::SetBindings(bindings));
         Ok(())
     }
 
@@ -222,7 +228,7 @@ impl App {
         self.hotkey_capture = Some(action);
         self.hotkey_capture_error = None;
         if let Some(hotkeys) = &self.hotkeys {
-            hotkeys.sender().send(hotkeys::Command::Record);
+            hotkeys.sender().send(hotkey_thread::Command::Record);
         }
     }
 
@@ -231,7 +237,7 @@ impl App {
         self.hotkey_capture = None;
         self.hotkey_capture_error = None;
         if let Some(hotkeys) = &self.hotkeys {
-            hotkeys.sender().send(hotkeys::Command::CancelRecord);
+            hotkeys.sender().send(hotkey_thread::Command::CancelRecord);
         }
     }
 
@@ -251,7 +257,7 @@ impl App {
                 tracing::warn!(%error, "hotkey binding was rejected");
                 self.hotkey_capture_error = Some(error);
                 if let Some(hotkeys) = &self.hotkeys {
-                    hotkeys.sender().send(hotkeys::Command::Record);
+                    hotkeys.sender().send(hotkey_thread::Command::Record);
                 }
             }
         }
@@ -273,4 +279,124 @@ impl App {
             }
         }
     }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let regained_focus = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(true)))
+        });
+        if regained_focus {
+            self.rescan_models();
+            self.rescan_displays();
+        }
+
+        self.process_messages();
+        let engine = Arc::clone(&self.state);
+        let stats = self.stats;
+
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("nice-aimassist");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let ready = engine.blocked().is_none();
+                            let label = if ready {
+                                "Ready".to_owned()
+                            } else {
+                                "Not ready".to_owned()
+                            };
+                            if ready {
+                                ui.label(label);
+                            } else {
+                                warn_label(ui, label);
+                            }
+                        });
+                    });
+
+                    ui.add_space(8.0);
+                    self.draw_devices(ui, &engine);
+                    ui.add_space(6.0);
+                    self.draw_model(ui, &engine);
+                    ui.add_space(6.0);
+                    self.draw_output(ui, &engine);
+                    ui.add_space(6.0);
+                    self.draw_calibration(ui, &engine, &stats);
+                    ui.add_space(6.0);
+                    self.draw_continuous(ui, &engine, &stats);
+                    ui.add_space(6.0);
+                    self.draw_hotkeys(ui, &engine);
+                    ui.add_space(6.0);
+                    self.draw_diagnostics(ui, &engine, &stats);
+
+                    if let Some(warning) = &self.settings_warning {
+                        ui.add_space(6.0);
+                        warn_label(ui, warning);
+                    }
+                    if let Some(error) = &self.settings_save_error {
+                        ui.add_space(6.0);
+                        error_label(ui, error);
+                    }
+                });
+        });
+
+        self.draw_hotkey_capture(ui.ctx());
+    }
+}
+
+/// Whether no run is active. The settings that a run uses change only while it is idle.
+fn run_idle(engine: &State) -> bool {
+    engine.run.phase == RunPhase::Idle
+}
+
+fn error_label(ui: &mut egui::Ui, text: impl Into<egui::RichText>) {
+    ui.colored_label(ui.visuals().error_fg_color, text.into());
+}
+
+fn warn_label(ui: &mut egui::Ui, text: impl Into<egui::RichText>) {
+    ui.colored_label(ui.visuals().warn_fg_color, text.into());
+}
+
+/// The one line for the MAKCU link: the phase, then the port and the firmware once it is connected.
+/// The Devices panel and the diagnostics show it.
+fn makcu_line(phase: OutputPhase, device: Option<&Device>) -> String {
+    let phase = format!("{} {}", makcu_phase_mark(phase), makcu_phase_label(phase));
+    match device {
+        Some(device) => format!("{phase} · {} · FW {}", device.port, device.firmware_label()),
+        None => phase,
+    }
+}
+
+fn makcu_phase_label(phase: OutputPhase) -> &'static str {
+    match phase {
+        OutputPhase::Connecting => "Connecting",
+        OutputPhase::Connected => "Connected",
+        OutputPhase::Failed => "Disconnected",
+    }
+}
+
+fn makcu_phase_mark(phase: OutputPhase) -> &'static str {
+    match phase {
+        OutputPhase::Connected => "●",
+        OutputPhase::Connecting => "◌",
+        OutputPhase::Failed => "○",
+    }
+}
+
+/// The `XInput` hotkey pad: the slot, or that no pad is connected.
+fn controller_line(slot: Option<u32>) -> String {
+    match slot {
+        Some(slot) => format!("● Connected · slot {slot}"),
+        None => "○ Not connected".to_owned(),
+    }
+}
+
+/// A percentage, as the panels show it.
+fn percent(value: impl fmt::Display) -> String {
+    format!("{value}%")
 }

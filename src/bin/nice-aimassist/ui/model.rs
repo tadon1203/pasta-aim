@@ -1,12 +1,13 @@
-use eframe::egui;
+//! The Model panel: the model choice, the rescan, and the models folder.
 
-use super::widgets::error_label;
-use crate::ui::App;
 use std::{fs, process::Command};
 
 use anyhow::Context;
+use eframe::egui;
+
+use super::{App, error_label, run_idle};
 use nice_aimassist::{
-    engine::{ModelPhase, RunPhase, State},
+    engine::{ModelPhase, State},
     pipeline::Precision,
     settings,
 };
@@ -32,8 +33,7 @@ impl App {
                 .unwrap_or_else(|| "Select a model".to_owned());
 
             ui.horizontal(|ui| {
-                let can_change =
-                    engine.model.phase != ModelPhase::Loading && engine.run.phase == RunPhase::Idle;
+                let can_change = engine.model.phase != ModelPhase::Loading && run_idle(engine);
                 ui.add_enabled_ui(can_change, |ui| {
                     egui::ComboBox::from_id_salt("model_selector")
                         .selected_text(selected_text)
