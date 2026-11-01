@@ -1,31 +1,19 @@
 use std::{
-    fmt::{self as std_fmt, Display},
     fs::{self, File},
     io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::OnceLock,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::Result;
 use tracing_appender::non_blocking::{ErrorCounter, WorkerGuard};
 use tracing_subscriber::{fmt, layer::SubscriberExt, registry::Registry, reload};
 
-use crate::{config::LogLevel, paths};
+use crate::settings::{LogLevel, logs_dir};
 
 static LEVEL_HANDLE: OnceLock<reload::Handle<tracing_subscriber::filter::LevelFilter, Registry>> =
     OnceLock::new();
-
-/// An error with its causes on one line, for a log field: `error = %chain(&error)`.
-pub fn chain<E: Display + ?Sized>(error: &E) -> impl Display + '_ {
-    struct Chain<'a, E: ?Sized>(&'a E);
-
-    impl<E: Display + ?Sized> Display for Chain<'_, E> {
-        fn fmt(&self, formatter: &mut std_fmt::Formatter<'_>) -> std_fmt::Result {
-            write!(formatter, "{:#}", self.0)
-        }
-    }
-
-    Chain(error)
-}
 
 pub fn set_level(level: LogLevel) {
     if let Some(handle) = LEVEL_HANDLE.get()
@@ -51,8 +39,10 @@ impl Drop for Logging {
     }
 }
 
-pub fn init() -> Option<Logging> {
-    let path = paths::session_log_path();
+/// Starts the file logger. A file that cannot be created is reported on stderr and gives `None`.
+/// The logs folder itself cannot be found, which is an error.
+pub fn init() -> Result<Option<Logging>> {
+    let path = session_log_path()?;
     let file = match create_session_file(&path) {
         Ok(file) => file,
         Err(error) => {
@@ -60,7 +50,7 @@ pub fn init() -> Option<Logging> {
                 "nice-aimassist: failed to initialize {}: {error}",
                 path.display()
             );
-            return None;
+            return Ok(None);
         }
     };
 
@@ -77,7 +67,7 @@ pub fn init() -> Option<Logging> {
     );
     if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
         eprintln!("nice-aimassist: failed to install file logger: {error}");
-        return None;
+        return Ok(None);
     }
 
     let _ = LEVEL_HANDLE.set(handle);
@@ -89,10 +79,19 @@ pub fn init() -> Option<Logging> {
         "session_started"
     );
 
-    Some(Logging {
+    Ok(Some(Logging {
         _guard: guard,
         error_counter,
-    })
+    }))
+}
+
+/// A new file for each run, named by the start time and the process id.
+fn session_log_path() -> Result<PathBuf> {
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    Ok(logs_dir()?.join(format!("session-{unix_ms}-{}.log", std::process::id())))
 }
 
 fn level_filter(level: LogLevel) -> tracing_subscriber::filter::LevelFilter {
@@ -129,16 +128,6 @@ mod tests {
         writeln!(create_session_file(&path).unwrap(), "after").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "after\n");
         let _ = fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn chain_writes_an_error_with_its_causes_on_one_line() {
-        let error = anyhow::anyhow!("port busy").context("MAKCU did not connect");
-        assert_eq!(
-            chain(&error).to_string(),
-            "MAKCU did not connect: port busy"
-        );
-        assert_eq!(chain("plain text").to_string(), "plain text");
     }
 
     #[test]

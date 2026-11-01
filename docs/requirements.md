@@ -101,11 +101,11 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 
 ## Settings file
 
-- `settings.json` has no version and no migration.
+- `settings.json` has no version and no migration. The field names can change between versions; a file from an older version loses the renamed fields once, and they take their defaults.
 - A field that is missing gets its default. The other fields keep their values.
-- An unknown field is removed. A value that is out of range or of the wrong type is replaced with the default of its field. An invalid hotkey entry is removed. The other fields keep their values.
-- Invalid JSON, or a file that cannot be read, makes the app use the defaults for the whole file.
-- The app shows one warning that names the removed fields and the reset fields.
-- Loading does not change the file. The next save writes the settings that the app uses.
-- When the file could not be read or parsed, the next save first copies it to `settings.json.bak`. An earlier `settings.json.bak` is replaced.
+- An unknown field is ignored, and the next save drops it.
+- A numeric value that is out of range is clamped to its range. A number that is negative or above 65535 is a wrong type instead (see the next rule).
+- An invalid hotkey entry is removed, with a warning. The other fields keep their values.
+- A value of the wrong type, invalid JSON, or a file that cannot be read makes the app use the defaults for the whole file, with one warning.
+- Loading does not change the file. The next save writes the settings that the app uses. When the file could not be read or parsed, the next save first copies it to `settings.json.bak`, and an earlier `settings.json.bak` is replaced.
 - Hotkeys, the selected display, and the selected model are part of the settings.

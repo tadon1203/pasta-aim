@@ -176,7 +176,7 @@ impl MakcuClient {
     pub fn interpolation(&self) -> Interpolation {
         match self.interpolation.load(Ordering::Acquire) {
             INTERPOLATE_AUTO => Interpolation::Auto,
-            percent => Interpolation::Percent(InterpolationPercent::new(percent)),
+            percent => Interpolation::Percent(InterpolationPercent::new(u16::from(percent))),
         }
     }
 

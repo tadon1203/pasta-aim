@@ -6,10 +6,10 @@ use super::{
 };
 use crate::ui::App;
 use nice_aimassist::{
-    config::LogLevel,
     engine::{Command, EngineState, cpu_fallback_nodes, provider_display_name},
     graphics::DisplayInfo,
     inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
+    settings::LogLevel,
     telemetry::{LiveTelemetry, LoopSnapshot, MetricSummary, PerformanceSnapshot},
 };
 
@@ -93,30 +93,23 @@ impl App {
     fn draw_log_settings(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.strong("Log level");
-            let mut level = self.config.diagnostics.level;
+            let mut level = self.config.log_level;
             egui::ComboBox::from_id_salt("log_level_selector")
-                .selected_text(log_level_label(level))
+                .selected_text(level.label())
                 .show_ui(ui, |ui| {
-                    for option in [
-                        LogLevel::Off,
-                        LogLevel::Error,
-                        LogLevel::Warn,
-                        LogLevel::Info,
-                        LogLevel::Debug,
-                        LogLevel::Trace,
-                    ] {
-                        ui.selectable_value(&mut level, option, log_level_label(option));
+                    for option in LogLevel::ALL {
+                        ui.selectable_value(&mut level, option, option.label());
                     }
                 });
-            if level != self.config.diagnostics.level {
-                self.config.diagnostics.level = level;
+            if level != self.config.log_level {
+                self.config.log_level = level;
                 nice_aimassist::logging::set_level(level);
                 self.persist();
             }
         });
         ui.small("The selected level and more severe logs are written to the log file.");
 
-        let mut gpu_debug = self.config.diagnostics.gpu_debug;
+        let mut gpu_debug = self.config.gpu_debug;
         if ui
             .checkbox(
                 &mut gpu_debug,
@@ -124,20 +117,20 @@ impl App {
             )
             .changed()
         {
-            self.config.diagnostics.gpu_debug = gpu_debug;
+            self.config.gpu_debug = gpu_debug;
             self.persist();
         }
         ui.small("Slows inference by ~1-2 ms. Turn off when measuring performance.");
-        if self.config.diagnostics.gpu_debug != self.gpu_debug_at_startup {
+        if self.config.gpu_debug != self.gpu_debug_at_startup {
             warn_label(ui, "Restart to apply.");
         }
 
-        let mut frame_trace = self.config.diagnostics.frame_trace;
+        let mut frame_trace = self.config.frame_trace;
         if ui
             .checkbox(&mut frame_trace, "Write a per-frame trace for each run")
             .changed()
         {
-            self.config.diagnostics.frame_trace = frame_trace;
+            self.config.frame_trace = frame_trace;
             self.engine.send(Command::SetFrameTrace(frame_trace));
             self.persist();
         }
@@ -249,7 +242,7 @@ impl App {
                 .makcu
                 .firmware
                 .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
-            self.config.fps_limit.value(),
+            self.config.fps_limit.get(),
             live.performance.capture_source.fresh_fps,
             live.performance.capture_source.processed_fps,
             live.performance.sample_count,
@@ -297,28 +290,17 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, status: &EngineState, live: &Li
     ui.end_row();
 
     ui.label("FPS limit");
-    ui.label(app.config.fps_limit.value().to_string());
+    ui.label(app.config.fps_limit.get().to_string());
     ui.end_row();
 
     ui.label("Confidence threshold");
-    ui.label(format!("{}%", app.config.confidence_threshold.value()));
+    ui.label(format!("{}%", app.config.confidence.get()));
     ui.end_row();
 
     if let Some((_, _, confidence, class_id)) = live.last_target {
         ui.label("Last detection");
         ui.label(format!("conf={confidence:.3}, class={class_id}"));
         ui.end_row();
-    }
-}
-
-fn log_level_label(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Off => "Off",
-        LogLevel::Error => "Error",
-        LogLevel::Warn => "Warn",
-        LogLevel::Info => "Info",
-        LogLevel::Debug => "Debug",
-        LogLevel::Trace => "Trace",
     }
 }
 

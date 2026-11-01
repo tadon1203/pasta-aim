@@ -10,7 +10,7 @@ use eframe::egui;
 use self::widgets::{Edit, error_label, warn_label};
 use super::App;
 use crate::ui::EditField;
-use nice_aimassist::{config::Config, hotkeys::Action};
+use nice_aimassist::{hotkeys::Action, settings::Settings};
 
 impl App {
     fn apply_edit<T>(&mut self, field: EditField, edit: Edit<T>, set: impl FnOnce(&mut Self, T)) {
@@ -97,7 +97,7 @@ impl eframe::App for App {
     }
 }
 
-fn bindings_summary(config: &Config, action: Action) -> String {
+fn bindings_summary(config: &Settings, action: Action) -> String {
     config
         .bindings_for(action)
         .map(|binding| binding.shortcut.label())

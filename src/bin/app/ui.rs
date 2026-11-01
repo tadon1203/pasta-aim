@@ -7,21 +7,21 @@ use std::{
 
 use nice_aimassist::{
     Message, Repaint, UiSender,
-    config::{Config, ConfigLoad},
     engine::{Command, Engine, EngineEvent},
     hotkeys::{Action, Event, Hotkey, Hotkeys, Shortcut},
-    models::ModelCatalog,
     settings::{
-        ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity, TargetYOffset,
+        self, Confidence, Display, FpsLimit, Interpolation, Loaded, MaxDelta, Sensitivity,
+        Settings, TargetYOffset,
     },
 };
 
 pub struct App {
-    config: Config,
+    config: Settings,
     /// `gpu_debug` as applied at process start; the toggle only takes effect on restart.
     gpu_debug_at_startup: bool,
     engine: Engine,
-    models: ModelCatalog,
+    /// The `.onnx` file names in `models/`.
+    models: Vec<String>,
     /// `None` when the input thread could not start; `hotkey_error` says why.
     hotkeys: Option<Hotkeys>,
     /// What the input thread reports to the UI.
@@ -47,24 +47,24 @@ pub struct App {
 enum EditField {
     Interpolation,
     Sensitivity,
-    ConfidenceThreshold,
+    Confidence,
     TargetYOffset,
     MaxDelta,
     FpsLimit,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, loaded: ConfigLoad) -> Self {
-        let config = loaded.config;
-        let gpu_debug_at_startup = config.diagnostics.gpu_debug;
+    pub fn new(cc: &eframe::CreationContext<'_>, loaded: Loaded) -> anyhow::Result<Self> {
+        let config = loaded.settings;
+        let gpu_debug_at_startup = config.gpu_debug;
         let config_load_warning = loaded.warning;
-        let config_file_unusable = loaded.file_unusable;
-        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.value(), fps_limit = config.fps_limit.value(), "application initialized with settings");
-        let (models, model_catalog_error) = match ModelCatalog::scan() {
-            Ok(catalog) => (catalog, None),
+        let config_file_unusable = loaded.unusable;
+        tracing::info!(model = ?config.model, sensitivity = config.sensitivity.get(), fps_limit = config.fps_limit.get(), "application initialized with settings");
+        let (models, model_catalog_error) = match settings::models() {
+            Ok(names) => (names, None),
             Err(error) => {
-                tracing::error!(error = %nice_aimassist::logging::chain(&error), "initial model scan failed");
-                (ModelCatalog::default(), Some(format!("{error:#}")))
+                tracing::error!(error = %format_args!("{error:#}"), "initial model scan failed");
+                (Vec::new(), Some(format!("{error:#}")))
             }
         };
 
@@ -76,7 +76,7 @@ impl App {
                 }
             })
         };
-        let engine = Engine::new(&config, Arc::clone(&repaint));
+        let engine = Engine::new(&config, Arc::clone(&repaint))?;
 
         let (tx, messages) = mpsc::channel();
         let ui = UiSender::new(tx, Arc::clone(&repaint));
@@ -92,7 +92,7 @@ impl App {
         let (hotkeys, hotkey_error) = match Hotkeys::spawn(&config.hotkeys, ui, on_action) {
             Ok(hotkeys) => (Some(hotkeys), None),
             Err(error) => {
-                tracing::error!(error = %nice_aimassist::logging::chain(&error), "hotkey input thread did not start");
+                tracing::error!(error = %format_args!("{error:#}"), "hotkey input thread did not start");
                 (None, Some(format!("{error:#}")))
             }
         };
@@ -121,7 +121,7 @@ impl App {
         let mut app = app;
         app.request_sole_model_load();
 
-        app
+        Ok(app)
     }
 
     fn persist(&mut self) {
@@ -133,7 +133,7 @@ impl App {
                 self.config_file_unusable = false;
             }
             Err(error) => {
-                tracing::error!(error = %nice_aimassist::logging::chain(&error), "settings persistence failed");
+                tracing::error!(error = %format_args!("{error:#}"), "settings persistence failed");
                 self.config_save_error = Some(format!("Settings save failed: {error:#}"));
             }
         }
@@ -164,8 +164,10 @@ impl App {
                         "received capture operation result"
                     );
                     if result.is_ok() {
-                        self.config.selected_adapter = adapter_luid;
-                        self.config.capture_output = output;
+                        self.config.display = Display {
+                            adapter: u64::from(adapter_luid),
+                            output,
+                        };
                         self.persist();
                     }
                 }
@@ -175,14 +177,14 @@ impl App {
 
     fn rescan_models(&mut self) {
         tracing::debug!("rescanning models from UI");
-        match ModelCatalog::scan() {
-            Ok(catalog) => {
-                self.models = catalog;
+        match settings::models() {
+            Ok(names) => {
+                self.models = names;
                 self.model_catalog_error = None;
                 self.request_sole_model_load();
             }
             Err(error) => {
-                tracing::error!(error = %nice_aimassist::logging::chain(&error), "model rescan failed");
+                tracing::error!(error = %format_args!("{error:#}"), "model rescan failed");
                 self.model_catalog_error = Some(format!("{error:#}"));
             }
         }
@@ -190,26 +192,30 @@ impl App {
 
     fn select_model(&mut self, name: String) {
         tracing::debug!(model = %name, "model selected from UI");
-        if let Some(path) = self.models.path_for(&name) {
-            self.engine.send(Command::LoadModel {
-                name,
-                path,
-                notify: true,
-            });
+        self.load_model(name, true);
+    }
+
+    /// Sends the load of a model in `models/`. `notify` asks the engine to report the result, so the choice is saved.
+    fn load_model(&mut self, name: String, notify: bool) {
+        match settings::model_path(&name) {
+            Ok(path) => {
+                self.engine.send(Command::LoadModel { name, path, notify });
+            }
+            Err(error) => {
+                tracing::warn!(model = %name, error = %format_args!("{error:#}"), "model could not be loaded");
+                self.model_catalog_error = Some(format!("{error:#}"));
+            }
         }
     }
 
     fn request_sole_model_load(&mut self) {
         if self.config.model.is_none()
             && !self.model_load_requested
-            && let Some(entry) = self.models.sole_model()
+            && let [name] = self.models.as_slice()
         {
+            let name = name.clone();
             self.model_load_requested = true;
-            self.engine.send(Command::LoadModel {
-                name: entry.name.clone(),
-                path: entry.path.clone(),
-                notify: false,
-            });
+            self.load_model(name, false);
         }
     }
 
@@ -225,25 +231,25 @@ impl App {
     }
 
     fn set_sensitivity(&mut self, sensitivity: Sensitivity) {
-        tracing::debug!(value = sensitivity.value(), "sensitivity changed");
+        tracing::debug!(value = sensitivity.get(), "sensitivity changed");
         self.config.sensitivity = sensitivity;
         self.engine.send(Command::SetSensitivity(sensitivity));
     }
 
-    fn set_confidence_threshold(&mut self, value: ConfidenceThreshold) {
-        tracing::debug!(value = value.value(), "confidence threshold changed");
-        self.config.confidence_threshold = value;
-        self.engine.send(Command::SetConfidenceThreshold(value));
+    fn set_confidence(&mut self, value: Confidence) {
+        tracing::debug!(value = value.get(), "confidence threshold changed");
+        self.config.confidence = value;
+        self.engine.send(Command::SetConfidence(value));
     }
 
     fn set_target_y_offset(&mut self, value: TargetYOffset) {
-        tracing::debug!(value = value.value(), "target Y offset changed");
+        tracing::debug!(value = value.get(), "target Y offset changed");
         self.config.target_y_offset = value;
         self.engine.send(Command::SetTargetYOffset(value));
     }
 
     fn set_max_delta(&mut self, value: MaxDelta) {
-        tracing::debug!(value = value.value(), "max delta changed");
+        tracing::debug!(value = value.get(), "max delta changed");
         self.config.max_delta = value;
         self.engine.send(Command::SetMaxDelta(value));
     }
@@ -264,7 +270,7 @@ impl App {
     }
 
     fn set_fps_limit(&mut self, fps_limit: FpsLimit) {
-        tracing::debug!(value = fps_limit.value(), "FPS limit changed");
+        tracing::debug!(value = fps_limit.get(), "FPS limit changed");
         self.config.fps_limit = fps_limit;
         self.engine.send(Command::SetFpsLimit(fps_limit));
     }

@@ -24,7 +24,7 @@ use crate::{
         EpAssignmentState, ModelInputSpec, TensorPrecision, ep_assignment,
         postprocess::{Selection, select_nearest},
     },
-    settings::ConfidenceThreshold,
+    settings::Confidence,
 };
 
 use super::{append_dml1, d3d12_resource_from_dml_tensor};
@@ -111,7 +111,7 @@ pub struct OrtDirectMlBackend {
     output_precision: TensorPrecision,
     /// Rows of the static `[1, rows, 6]` output, validated at load.
     output_rows: usize,
-    confidence_threshold: ConfidenceThreshold,
+    confidence_threshold: Confidence,
     ep_assignment: EpAssignmentState,
 }
 
@@ -131,7 +131,7 @@ impl OrtDirectMlBackend {
                 Ok(backend)
             }
             Err(error) => {
-                tracing::error!(prepare_id = %prepare_id, error = %crate::logging::chain(&error), "directml_prepare_failed");
+                tracing::error!(prepare_id = %prepare_id, error = %format_args!("{error:#}"), "directml_prepare_failed");
                 Err(error)
             }
         }
@@ -229,7 +229,7 @@ impl OrtDirectMlBackend {
             output_name,
             output_precision,
             output_rows,
-            confidence_threshold: ConfidenceThreshold::default(),
+            confidence_threshold: Confidence::default(),
             ep_assignment,
         })
     }
@@ -250,7 +250,7 @@ impl OrtDirectMlBackend {
         &self.input_resource
     }
 
-    pub fn set_confidence_threshold(&mut self, value: ConfidenceThreshold) {
+    pub fn set_confidence_threshold(&mut self, value: Confidence) {
         self.confidence_threshold = value;
     }
 

@@ -55,9 +55,9 @@ pub(crate) struct SettingsInfo {
     pub fps_limit: u16,
     pub capture_wait_ms: u32,
     pub low_latency: bool,
-    pub confidence_threshold_percent: u8,
+    pub confidence_threshold_percent: u16,
     pub sensitivity_percent: u16,
-    pub target_y_offset_percent: i16,
+    pub target_y_offset_percent: u16,
     pub max_delta: u16,
 }
 

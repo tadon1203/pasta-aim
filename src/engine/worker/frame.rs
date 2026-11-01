@@ -29,7 +29,7 @@ impl CaptureDeadline {
 
     /// Called for a capture that got a new frame. `start` is the start of that capture attempt.
     pub(super) fn arm(&mut self, start: Instant, fps: FpsLimit) {
-        self.next = start + Duration::from_secs_f64(1.0 / f64::from(fps.value()));
+        self.next = start + Duration::from_secs_f64(1.0 / f64::from(fps.get()));
     }
 
     /// Called at the start of a run and when the FPS limit changes.
@@ -71,7 +71,7 @@ impl Worker {
             return StepOutcome::NoDesktopUpdate;
         };
         let attempt_start = Instant::now();
-        let wait_ms = self.tuning.capture.wait_ms;
+        let wait_ms = u32::from(self.tuning.new_frame_wait.get());
         let result = if let Some(pipeline) = self.capture.pipeline_mut() {
             pipeline.process_next(wait_ms)
         } else {
@@ -184,7 +184,6 @@ mod tests {
     use super::*;
     use crate::{
         clock::{self, Clock, Wake},
-        config::Config,
         engine::{
             CapturePhase, EngineState, RunPhase,
             output::{OutputSettings, OutputStage},
@@ -192,6 +191,7 @@ mod tests {
         },
         inference::{AdapterLuid, Candidates, Detection},
         makcu::{FakeMakcu, MakcuClient},
+        settings::Settings,
         telemetry::{FrameTimes, RunCounters, TelemetryMessage, TelemetrySink},
     };
     use std::sync::{Arc, Mutex, mpsc, mpsc::Receiver as TestReceiver};
@@ -226,16 +226,16 @@ mod tests {
     /// The fixture, with the waker of its wait, which the test raises to wake the loop, and the telemetry queue.
     /// It has no GPU, so it begins the run without the readiness check.
     fn worker_with_waker() -> (Worker, FakeMakcu, Wake, TestReceiver<TelemetryMessage>) {
-        let config = Config::default();
+        let config = Settings::default();
         let tuning = Tuning {
             output: OutputSettings {
                 sensitivity: config.sensitivity,
                 target_y_offset: config.target_y_offset,
                 max_delta: config.max_delta,
             },
-            confidence_threshold: config.confidence_threshold,
+            confidence: config.confidence,
             fps_limit: config.fps_limit,
-            capture: config.capture,
+            new_frame_wait: config.new_frame_wait,
             low_latency: config.low_latency,
             frame_trace: false,
         };

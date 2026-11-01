@@ -74,7 +74,7 @@ Data flow:
 | `src/inference`     | The inference session, the postprocess, and the selection of the target.                    |
 | `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
 | `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
-| `src`               | The library crate root. Also holds the small modules that serve many parts (settings, paths, logging, and the clock with its deadline wait). |
+| `src`               | The library crate root. Also holds the small modules that serve many parts (settings, logging, and the clock with its deadline wait). |
 
 ## Invariants
 

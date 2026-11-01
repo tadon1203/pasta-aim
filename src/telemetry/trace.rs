@@ -28,7 +28,6 @@ use self::{
     frame::{FrameLine, TraceClock},
 };
 use super::FrameRecord;
-use crate::logging::chain;
 
 /// One line of the file. `type` names the kind.
 #[derive(Serialize)]
@@ -88,7 +87,7 @@ impl FrameTrace {
         match Active::create(&self.logs_dir, header) {
             Ok(active) => self.active = Some(active),
             Err(error) => {
-                tracing::warn!(error = %chain(&error), "frame trace could not be started");
+                tracing::warn!(error = %format_args!("{error:#}"), "frame trace could not be started");
             }
         }
     }
@@ -142,7 +141,7 @@ impl FrameTrace {
                 "frame trace finished"
             ),
             Err(error) => {
-                tracing::warn!(error = %chain(&error), "frame trace footer could not be written");
+                tracing::warn!(error = %format_args!("{error:#}"), "frame trace footer could not be written");
             }
         }
     }
@@ -153,7 +152,7 @@ impl FrameTrace {
             return;
         };
         if let Err(error) = write(active) {
-            tracing::warn!(error = %chain(&error), "frame trace stopped");
+            tracing::warn!(error = %format_args!("{error:#}"), "frame trace stopped");
             self.active = None;
         }
     }

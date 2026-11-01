@@ -2,10 +2,13 @@ use eframe::egui;
 
 use super::widgets::error_label;
 use crate::ui::App;
+use std::{fs, process::Command};
+
+use anyhow::Context;
 use nice_aimassist::{
     engine::{EngineState, ModelPhase, RunPhase},
     inference::TensorPrecision,
-    models,
+    settings,
 };
 
 impl App {
@@ -36,12 +39,12 @@ impl App {
                         .selected_text(selected_text)
                         .width(330.0)
                         .show_ui(ui, |ui| {
-                            let entries = self.models.entries().to_vec();
-                            for entry in entries {
-                                let active = status.model.active_name.as_deref()
-                                    == Some(entry.name.as_str());
-                                if ui.selectable_label(active, &entry.name).clicked() {
-                                    self.select_model(entry.name);
+                            let names = self.models.clone();
+                            for name in names {
+                                let active =
+                                    status.model.active_name.as_deref() == Some(name.as_str());
+                                if ui.selectable_label(active, &name).clicked() {
+                                    self.select_model(name);
                                 }
                             }
                         });
@@ -51,7 +54,7 @@ impl App {
                     self.rescan_models();
                 }
                 if ui.button("Open models folder").clicked()
-                    && let Err(error) = models::open_models_folder()
+                    && let Err(error) = open_models_folder()
                 {
                     self.model_catalog_error = Some(format!("{error:#}"));
                 }
@@ -72,4 +75,16 @@ impl App {
             }
         });
     }
+}
+
+/// Opens `models/` in Explorer, creating it first.
+fn open_models_folder() -> anyhow::Result<()> {
+    let dir = settings::models_dir()?;
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .with_context(|| format!("failed to open {}", dir.display()))?;
+    tracing::debug!(path = %dir.display(), "opened models folder");
+    Ok(())
 }

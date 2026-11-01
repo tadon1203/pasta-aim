@@ -26,7 +26,7 @@ impl Worker {
     /// hides the choices: the connect does not need it.
     fn refresh_makcu_ports(&mut self) {
         let ports = MakcuClient::available_ports().unwrap_or_else(|error| {
-            tracing::warn!(error = %crate::logging::chain(&error), "serial ports could not be listed");
+            tracing::warn!(error = %format_args!("{error:#}"), "serial ports could not be listed");
             Vec::new()
         });
         self.status.edit(|status| status.makcu.ports = ports);

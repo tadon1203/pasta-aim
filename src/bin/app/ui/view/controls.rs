@@ -9,14 +9,14 @@ use nice_aimassist::{
     engine::{CapturePhase, Command, EngineState, ModelPhase, RunPhase},
     hotkeys::{Action, Shortcut},
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, InterpolationPercent,
-        MaxDelta, Sensitivity, TargetYOffset,
+        Confidence, FpsLimit, Interpolation, InterpolationPercent, MaxDelta, NewFrameWait,
+        Sensitivity, TargetYOffset,
     },
     telemetry::LiveTelemetry,
 };
 
 /// The fixed interpolation that a switch from Auto starts with.
-const FIXED_INTERPOLATION_START: u8 = 50;
+const FIXED_INTERPOLATION_START: u16 = 50;
 
 impl App {
     pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineState) {
@@ -42,7 +42,7 @@ impl App {
                 let edit = percent_row(
                     ui,
                     "Fixed",
-                    percent.value(),
+                    percent.get(),
                     InterpolationPercent::MIN..=InterpolationPercent::MAX,
                     self.dirty.contains(&EditField::Interpolation),
                 );
@@ -64,7 +64,7 @@ impl App {
             let edit = percent_row(
                 ui,
                 "Sensitivity",
-                self.config.sensitivity.value(),
+                self.config.sensitivity.get(),
                 Sensitivity::MIN..=Sensitivity::MAX,
                 self.dirty.contains(&EditField::Sensitivity),
             );
@@ -76,19 +76,19 @@ impl App {
             let edit = percent_row(
                 ui,
                 "Confidence",
-                self.config.confidence_threshold.value(),
-                ConfidenceThreshold::MIN..=ConfidenceThreshold::MAX,
-                self.dirty.contains(&EditField::ConfidenceThreshold),
+                self.config.confidence.get(),
+                Confidence::MIN..=Confidence::MAX,
+                self.dirty.contains(&EditField::Confidence),
             );
-            self.apply_edit(EditField::ConfidenceThreshold, edit, |app, value| {
-                app.set_confidence_threshold(ConfidenceThreshold::new(value));
+            self.apply_edit(EditField::Confidence, edit, |app, value| {
+                app.set_confidence(Confidence::new(value));
             });
             ui.small("Minimum confidence required to accept a detection.");
 
             let edit = percent_row(
                 ui,
                 "Target Y offset",
-                self.config.target_y_offset.value(),
+                self.config.target_y_offset.get(),
                 TargetYOffset::MIN..=TargetYOffset::MAX,
                 self.dirty.contains(&EditField::TargetYOffset),
             );
@@ -101,7 +101,7 @@ impl App {
                 ui.label("Max delta");
                 let edit = drag_value(
                     ui,
-                    self.config.max_delta.value(),
+                    self.config.max_delta.get(),
                     0..=MaxDelta::MAX,
                     self.dirty.contains(&EditField::MaxDelta),
                 );
@@ -181,7 +181,7 @@ impl App {
                 ui.label("FPS limit");
                 let edit = drag_value(
                     ui,
-                    self.config.fps_limit.value(),
+                    self.config.fps_limit.get(),
                     FpsLimit::MIN..=FpsLimit::MAX,
                     self.dirty.contains(&EditField::FpsLimit),
                 );
@@ -191,15 +191,17 @@ impl App {
                 ui.small("Continuous only");
             });
 
-            let mut capture = self.config.capture;
+            let mut wait = self.config.new_frame_wait;
             ui.horizontal(|ui| {
                 ui.label("New frame wait");
-                ui.add(egui::DragValue::new(&mut capture.wait_ms).range(CaptureSettings::WAIT_RANGE).suffix(" ms"))
+                let mut milliseconds = wait.get();
+                ui.add(egui::DragValue::new(&mut milliseconds).range(NewFrameWait::MIN..=NewFrameWait::MAX).suffix(" ms"))
                     .on_hover_text("Maximum wait per capture attempt. FPS limit still applies to new frames.");
+                wait = NewFrameWait::new(milliseconds);
             });
-            if capture != self.config.capture {
-                self.config.capture = capture;
-                self.engine.send(Command::SetCaptureSettings(capture));
+            if wait != self.config.new_frame_wait {
+                self.config.new_frame_wait = wait;
+                self.engine.send(Command::SetNewFrameWait(wait));
                 self.persist();
             }
 
@@ -236,7 +238,7 @@ impl App {
                 ui.small(format!(
                     "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
                     live.performance.fps,
-                    self.config.fps_limit.value(),
+                    self.config.fps_limit.get(),
                     live.performance.total.p50,
                     live.performance.total.p95,
                     live.performance.inference.p50,

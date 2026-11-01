@@ -32,9 +32,8 @@ use std::{
 use crate::{
     Repaint,
     clock::Clock,
-    config::Config,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity,
+        Confidence, FpsLimit, Interpolation, MaxDelta, NewFrameWait, Sensitivity, Settings,
         TargetYOffset,
     },
     telemetry::{LiveTelemetry, Telemetry},
@@ -66,12 +65,12 @@ pub enum Command {
         notify: bool,
     },
     SetSensitivity(Sensitivity),
-    SetConfidenceThreshold(ConfidenceThreshold),
+    SetConfidence(Confidence),
     SetTargetYOffset(TargetYOffset),
     SetMaxDelta(MaxDelta),
     SetInterpolation(Interpolation),
     SetFpsLimit(FpsLimit),
-    SetCaptureSettings(CaptureSettings),
+    SetNewFrameWait(NewFrameWait),
     /// Reloads the active model, since the `DirectML` wait mode is a session option.
     SetLowLatency(bool),
     /// Applies to the next run.
@@ -129,16 +128,20 @@ pub struct Engine {
 impl Engine {
     /// Starts the engine worker thread.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the logs folder cannot be found.
+    ///
     /// # Panics
     ///
     /// Panics if the wait handle, the QPC clock, or the worker thread cannot be created.
-    pub fn new(config: &Config, repaint: Repaint) -> Self {
+    pub fn new(config: &Settings, repaint: Repaint) -> anyhow::Result<Self> {
         tracing::info!("spawning engine worker");
         let (tx, rx) = mpsc::channel();
         let (wait, waker) = clock::wait().expect("failed to create the engine wait");
         let (event_tx, events) = mpsc::channel();
         let qpc = Clock::new().expect("failed to read the QPC frequency");
-        let (telemetry, sink) = Telemetry::spawn(qpc, repaint.clone());
+        let (telemetry, sink) = Telemetry::spawn(qpc, repaint.clone())?;
         let state = Arc::new(Mutex::new(Arc::new(EngineState::default())));
         let links = WorkerLinks {
             commands: rx,
@@ -155,13 +158,13 @@ impl Engine {
             .spawn(move || run_worker(links, initial))
             .expect("failed to spawn engine worker");
 
-        Self {
+        Ok(Self {
             control: EngineControl { tx, waker },
             events,
             state,
             telemetry,
             join: Some(join),
-        }
+        })
     }
 
     pub fn control(&self) -> EngineControl {

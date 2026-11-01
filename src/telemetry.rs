@@ -30,8 +30,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 
 use self::aggregator::Aggregator;
 use crate::{
-    Repaint, clock::Clock, engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths,
-    sync::MutexExt,
+    Repaint, clock::Clock, engine::RunGeneration, graphics::GpuDropReason, makcu::Movement,
+    settings, sync::MutexExt,
 };
 
 const QUEUE_CAPACITY: usize = 8192;
@@ -168,11 +168,12 @@ pub(crate) struct Telemetry {
 }
 
 impl Telemetry {
-    pub(crate) fn spawn(qpc: Clock, repaint: Repaint) -> (Self, TelemetrySink) {
+    pub(crate) fn spawn(qpc: Clock, repaint: Repaint) -> anyhow::Result<(Self, TelemetrySink)> {
         let (tx, rx) = sync_channel(QUEUE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         let live = Arc::new(Mutex::new(LiveTelemetry::default()));
-        let mut aggregator = Aggregator::new(qpc, paths::logs_dir(), Arc::clone(&dropped));
+        let logs_dir = settings::logs_dir()?;
+        let mut aggregator = Aggregator::new(qpc, logs_dir, Arc::clone(&dropped));
         let thread_live = Arc::clone(&live);
         let join = thread::Builder::new()
             .name("nice-aimassist-telemetry".to_owned())
@@ -182,14 +183,14 @@ impl Telemetry {
             tx: tx.clone(),
             dropped,
         };
-        (
+        Ok((
             Self {
                 tx,
                 live,
                 join: Some(join),
             },
             sink,
-        )
+        ))
     }
 
     pub(crate) fn live(&self) -> LiveTelemetry {

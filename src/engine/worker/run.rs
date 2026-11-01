@@ -85,7 +85,7 @@ impl Worker {
         let phase = match mode {
             RunMode::Continuous => {
                 tracing::info!(
-                    fps_limit = self.tuning.fps_limit.value(),
+                    fps_limit = self.tuning.fps_limit.get(),
                     "continuous inference started"
                 );
                 RunPhase::Continuous
@@ -150,13 +150,13 @@ impl Worker {
                     .map(crate::pipeline::Pipeline::input_size),
             },
             settings: SettingsInfo {
-                fps_limit: tuning.fps_limit.value(),
-                capture_wait_ms: tuning.capture.wait_ms,
+                fps_limit: tuning.fps_limit.get(),
+                capture_wait_ms: u32::from(tuning.new_frame_wait.get()),
                 low_latency: tuning.low_latency,
-                confidence_threshold_percent: tuning.confidence_threshold.value(),
-                sensitivity_percent: tuning.output.sensitivity.value(),
-                target_y_offset_percent: tuning.output.target_y_offset.value(),
-                max_delta: tuning.output.max_delta.value(),
+                confidence_threshold_percent: tuning.confidence.get(),
+                sensitivity_percent: tuning.output.sensitivity.get(),
+                target_y_offset_percent: tuning.output.target_y_offset.get(),
+                max_delta: tuning.output.max_delta.get(),
             },
         })
     }

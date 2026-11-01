@@ -26,13 +26,11 @@ use crate::{
     Repaint,
     clock::Clock,
     clock::Wait,
-    config::Config,
     graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
     makcu::MakcuClient,
-    models,
     pipeline::Pipeline,
-    settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
+    settings::{self, Confidence, FpsLimit, NewFrameWait, Settings},
     telemetry::{RunCounters, TelemetrySink, TraceEvent},
 };
 
@@ -45,9 +43,9 @@ const CAPTURE_SPIN: Duration = Duration::from_millis(1);
 #[derive(Clone, Copy)]
 struct Tuning {
     output: OutputSettings,
-    confidence_threshold: ConfidenceThreshold,
+    confidence: Confidence,
     fps_limit: FpsLimit,
-    capture: CaptureSettings,
+    new_frame_wait: NewFrameWait,
     low_latency: bool,
     frame_trace: bool,
 }
@@ -160,7 +158,7 @@ fn log_pipeline_state(
     );
 }
 
-pub(super) fn run_worker(links: WorkerLinks, config: Config) {
+pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
     tracing::info!("engine worker started");
     let WorkerLinks {
         commands,
@@ -175,7 +173,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
     let graphics = match GraphicsThread::initialize() {
         Ok(apartment) => Some(apartment),
         Err(error) => {
-            tracing::error!(error = %crate::logging::chain(&error), "graphics thread COM initialization failed");
+            tracing::error!(error = %format_args!("{error:#}"), "graphics thread COM initialization failed");
             let message = format!("Graphics thread COM initialization failed: {error:#}");
             status.edit(|status| {
                 status.capture.phase = CapturePhase::Failed;
@@ -193,17 +191,23 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
             target_y_offset: config.target_y_offset,
             max_delta: config.max_delta,
         },
-        confidence_threshold: config.confidence_threshold,
+        confidence: config.confidence,
         fps_limit: config.fps_limit,
-        capture: config.capture,
+        new_frame_wait: config.new_frame_wait,
         low_latency: config.low_latency,
-        frame_trace: config.diagnostics.frame_trace,
+        frame_trace: config.frame_trace,
     };
     let mut makcu = MakcuClient::new();
-    makcu.set_port(config.makcu_port.clone());
+    // A blank port in the file means auto-detect, as `None` does.
+    makcu.set_port(
+        config
+            .makcu_port
+            .clone()
+            .filter(|port| !port.trim().is_empty()),
+    );
     // Before the first connect, so this sends nothing: the value is sent when the connect succeeds.
     if let Err(error) = makcu.set_interpolation(config.interpolation) {
-        tracing::warn!(error = %crate::logging::chain(&error), "move interpolation could not be applied");
+        tracing::warn!(error = %format_args!("{error:#}"), "move interpolation could not be applied");
     }
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
@@ -224,8 +228,8 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
         auto_reprepare_attempted: false,
         next_pipeline_id: 1,
         capture_adapter: 0,
-        capture_output: config.capture_output,
-        selected_adapter_luid: config.selected_adapter,
+        capture_output: config.display.output,
+        selected_adapter_luid: AdapterLuid::from(config.display.adapter),
         makcu,
         run: RunControl::default(),
         graphics,
@@ -235,10 +239,10 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
     worker.initialize_capture();
     worker.connect_makcu_initial();
     if let Some(name) = config.model {
-        match models::resolve_model(&name) {
+        match settings::model_path(&name) {
             Ok(path) => worker.load_model(false, name, path),
             Err(error) => {
-                tracing::error!(model = %name, error = %crate::logging::chain(&error), "configured model could not be resolved");
+                tracing::error!(model = %name, error = %format_args!("{error:#}"), "configured model could not be resolved");
                 worker
                     .status
                     .edit(|status| status.model.error = Some(format!("{error:#}")));
@@ -335,15 +339,15 @@ impl Worker {
                 self.tuning.output.max_delta = value;
                 self.push_output_settings();
             }
-            Command::SetConfidenceThreshold(value) => {
-                self.tuning.confidence_threshold = value;
+            Command::SetConfidence(value) => {
+                self.tuning.confidence = value;
                 if let Some(pipeline) = self.capture.pipeline_mut() {
                     pipeline.set_confidence_threshold(value);
                 }
             }
             Command::SetInterpolation(interpolation) => {
                 if let Err(error) = self.makcu.set_interpolation(interpolation) {
-                    tracing::warn!(error = %crate::logging::chain(&error), "move interpolation failed");
+                    tracing::warn!(error = %format_args!("{error:#}"), "move interpolation failed");
                     self.telemetry.event(TraceEvent::MakcuInterpolationFailed {
                         reason: format!("{error:#}"),
                     });
@@ -360,8 +364,8 @@ impl Worker {
                     self.load_model(false, name, path);
                 }
             }
-            Command::SetCaptureSettings(settings) => {
-                self.tuning.capture = settings;
+            Command::SetNewFrameWait(value) => {
+                self.tuning.new_frame_wait = value;
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetCaptureSelection { adapter, output } => {

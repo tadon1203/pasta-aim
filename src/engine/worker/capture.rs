@@ -98,7 +98,7 @@ impl Worker {
                 tracing::info!("selected capture initialized");
             }
             Err(error) => {
-                tracing::error!(error = %crate::logging::chain(&error), "selected capture initialization failed");
+                tracing::error!(error = %format_args!("{error:#}"), "selected capture initialization failed");
                 self.status.edit(|status| {
                     status.capture.phase = CapturePhase::Failed;
                     status.capture.selected = None;
@@ -211,7 +211,7 @@ impl Worker {
         let config = PipelineConfig {
             model: path.as_path(),
             pipeline_id,
-            confidence_threshold: self.tuning.confidence_threshold,
+            confidence_threshold: self.tuning.confidence,
             low_latency: self.tuning.low_latency,
             qpc: self.qpc,
         };

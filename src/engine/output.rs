@@ -165,7 +165,7 @@ mod tests {
         }
     }
 
-    fn settings(sensitivity: u16, target_y_offset: i16) -> OutputSettings {
+    fn settings(sensitivity: u16, target_y_offset: u16) -> OutputSettings {
         OutputSettings {
             sensitivity: Sensitivity::new(sensitivity),
             target_y_offset: TargetYOffset::new(target_y_offset),

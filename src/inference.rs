@@ -14,6 +14,22 @@ pub struct AdapterLuid {
     pub high: i32,
 }
 
+/// The settings store a LUID as one number: `(high << 32) | low`.
+impl From<u64> for AdapterLuid {
+    fn from(value: u64) -> Self {
+        Self {
+            low: value as u32,
+            high: ((value >> 32) as u32).cast_signed(),
+        }
+    }
+}
+
+impl From<AdapterLuid> for u64 {
+    fn from(luid: AdapterLuid) -> Self {
+        (u64::from(luid.high.cast_unsigned()) << 32) | u64::from(luid.low)
+    }
+}
+
 /// Floating point element type of a model's input tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TensorPrecision {

@@ -1,13 +1,10 @@
 pub mod clock;
-pub mod config;
 pub mod engine;
 pub mod graphics;
 pub mod hotkeys;
 pub mod inference;
 pub mod logging;
 pub mod makcu;
-pub mod models;
-mod paths;
 mod pipeline;
 pub mod platform;
 pub mod settings;

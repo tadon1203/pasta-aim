@@ -19,7 +19,7 @@ use crate::{
         shared_frame::CaptureFrame,
     },
     inference::{Candidates, Detection, EpAssignmentState, TensorPrecision},
-    settings::ConfidenceThreshold,
+    settings::Confidence,
     telemetry::FrameTimes,
 };
 
@@ -27,7 +27,7 @@ use crate::{
 pub(crate) struct PipelineConfig<'a> {
     pub model: &'a Path,
     pub pipeline_id: u64,
-    pub confidence_threshold: ConfidenceThreshold,
+    pub confidence_threshold: Confidence,
     pub low_latency: bool,
     pub qpc: Clock,
 }
@@ -228,7 +228,7 @@ impl Pipeline {
         }))
     }
 
-    pub(crate) fn set_confidence_threshold(&mut self, value: ConfidenceThreshold) {
+    pub(crate) fn set_confidence_threshold(&mut self, value: Confidence) {
         self.model.backend.set_confidence_threshold(value);
     }
 

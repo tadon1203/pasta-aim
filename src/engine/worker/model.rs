@@ -28,7 +28,7 @@ impl Worker {
         let config = PipelineConfig {
             model: path.as_path(),
             pipeline_id,
-            confidence_threshold: self.tuning.confidence_threshold,
+            confidence_threshold: self.tuning.confidence,
             low_latency: self.tuning.low_latency,
             qpc: self.qpc,
         };

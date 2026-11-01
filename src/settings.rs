@@ -1,209 +1,96 @@
-use serde::{Deserialize, Serialize};
+//! The settings file, its value types, the runtime paths, and the model list.
+//!
+//! The file loads with plain serde rules. A missing field gets its default, an
+//! unknown field is ignored, and a value out of range is clamped. An invalid
+//! hotkey entry is dropped. Any other error resets the whole file to the defaults.
 
-/// Capture policy shared by persistence, UI, capture and inference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CaptureSettings {
-    pub wait_ms: u32,
-}
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-impl CaptureSettings {
-    pub const WAIT_RANGE: std::ops::RangeInclusive<u32> = 1..=20;
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
-    pub(crate) fn is_valid(self) -> bool {
-        Self::WAIT_RANGE.contains(&self.wait_ms)
+use crate::hotkeys::{Action, Hotkey, Shortcut};
+
+/// An integer setting that is kept inside `MIN..=MAX`. `DEFAULT` is used when the value is missing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "u16", into = "u16")]
+pub struct Ranged<const MIN: u16, const DEFAULT: u16, const MAX: u16>(u16);
+
+impl<const MIN: u16, const DEFAULT: u16, const MAX: u16> Ranged<MIN, DEFAULT, MAX> {
+    pub const MIN: u16 = MIN;
+    pub const DEFAULT: u16 = DEFAULT;
+    pub const MAX: u16 = MAX;
+
+    pub fn new(value: u16) -> Self {
+        Self(value.clamp(MIN, MAX))
+    }
+
+    pub fn get(self) -> u16 {
+        self.0
     }
 }
 
-impl Default for CaptureSettings {
+impl<const MIN: u16, const DEFAULT: u16, const MAX: u16> Default for Ranged<MIN, DEFAULT, MAX> {
     fn default() -> Self {
-        Self { wait_ms: 2 }
+        Self(DEFAULT)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Sensitivity(u16);
+impl<const MIN: u16, const DEFAULT: u16, const MAX: u16> From<u16> for Ranged<MIN, DEFAULT, MAX> {
+    fn from(value: u16) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<const MIN: u16, const DEFAULT: u16, const MAX: u16> From<Ranged<MIN, DEFAULT, MAX>> for u16 {
+    fn from(value: Ranged<MIN, DEFAULT, MAX>) -> Self {
+        value.0
+    }
+}
+
+/// Mouse movement gain in percent. 100 is 1:1.
+pub type Sensitivity = Ranged<1, 100, 10_000>;
+/// Minimum detection confidence in percent.
+pub type Confidence = Ranged<0, 50, 100>;
+/// Aim point inside the target box in percent of its height. 0 is the top edge, 100 the bottom.
+pub type TargetYOffset = Ranged<0, 50, 100>;
+/// Per-frame cap on the output movement length, in command units. 0 is no cap.
+pub type MaxDelta = Ranged<0, 512, 32_767>;
+/// Frame rate cap.
+pub type FpsLimit = Ranged<1, 240, 1_000>;
+/// Milliseconds to wait for a new frame.
+pub type NewFrameWait = Ranged<1, 2, 20>;
+/// The fixed Move interpolation, in percent.
+pub type InterpolationPercent = Ranged<0, 0, 100>;
 
 impl Sensitivity {
-    pub const MIN: u16 = 1;
-    pub const DEFAULT: u16 = 100;
-    pub const MAX: u16 = 10_000;
-
-    pub fn new(value: u16) -> Self {
-        Self(value.clamp(Self::MIN, Self::MAX))
-    }
-
-    pub fn value(self) -> u16 {
-        self.0
-    }
-
     pub fn gain(self) -> f32 {
-        f32::from(self.0) / f32::from(Self::DEFAULT)
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        (Self::MIN..=Self::MAX).contains(&self.0)
+        f32::from(self.get()) / f32::from(Self::DEFAULT)
     }
 }
 
-impl Default for Sensitivity {
-    fn default() -> Self {
-        Self(Self::DEFAULT)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ConfidenceThreshold(u8);
-
-impl ConfidenceThreshold {
-    pub const MIN: u8 = 0;
-    pub const DEFAULT: u8 = 50;
-    pub const MAX: u8 = 100;
-
-    pub fn new(value: u8) -> Self {
-        Self(value.clamp(Self::MIN, Self::MAX))
-    }
-
-    pub fn value(self) -> u8 {
-        self.0
-    }
-
+impl Confidence {
     pub fn ratio(self) -> f32 {
-        f32::from(self.0) / f32::from(Self::MAX)
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        (Self::MIN..=Self::MAX).contains(&self.0)
+        f32::from(self.get()) / f32::from(Self::MAX)
     }
 }
-
-impl Default for ConfidenceThreshold {
-    fn default() -> Self {
-        Self(Self::DEFAULT)
-    }
-}
-
-/// Per-frame cap on the output movement length, in command units (after sensitivity).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MaxDelta(u16);
-
-impl MaxDelta {
-    /// No cap.
-    pub const UNLIMITED: u16 = 0;
-    pub const DEFAULT: u16 = 512;
-    pub const MAX: u16 = i16::MAX as u16;
-
-    pub fn new(value: u16) -> Self {
-        Self(value.min(Self::MAX))
-    }
-
-    pub fn value(self) -> u16 {
-        self.0
-    }
-
-    /// The cap, or `None` when unlimited.
-    pub fn limit(self) -> Option<f32> {
-        (self.0 != Self::UNLIMITED).then_some(f32::from(self.0))
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        self.0 <= Self::MAX
-    }
-}
-
-impl Default for MaxDelta {
-    fn default() -> Self {
-        Self(Self::DEFAULT)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct TargetYOffset(i16);
 
 impl TargetYOffset {
-    /// Top edge of the target box.
-    pub const MIN: i16 = 0;
-    /// Center of the target box.
-    pub const DEFAULT: i16 = 50;
-    /// Bottom edge of the target box.
-    pub const MAX: i16 = 100;
-
-    pub fn new(value: i16) -> Self {
-        Self(value.clamp(Self::MIN, Self::MAX))
-    }
-
     /// The aim point as a fraction of box height measured from the box center
     /// (-0.5 = top edge, 0.0 = center, 0.5 = bottom edge).
     pub fn center_relative(self) -> f32 {
-        (f32::from(self.0) - f32::from(Self::DEFAULT)) / 100.0
-    }
-
-    pub fn value(self) -> i16 {
-        self.0
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        (Self::MIN..=Self::MAX).contains(&self.0)
+        (f32::from(self.get()) - f32::from(Self::DEFAULT)) / 100.0
     }
 }
 
-impl Default for TargetYOffset {
-    fn default() -> Self {
-        Self(Self::DEFAULT)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct FpsLimit(u16);
-
-impl FpsLimit {
-    pub const MIN: u16 = 1;
-    pub const DEFAULT: u16 = 240;
-    pub const MAX: u16 = 1_000;
-
-    pub fn new(value: u16) -> Self {
-        Self(value.clamp(Self::MIN, Self::MAX))
-    }
-
-    pub fn value(self) -> u16 {
-        self.0
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        (Self::MIN..=Self::MAX).contains(&self.0)
-    }
-}
-
-impl Default for FpsLimit {
-    fn default() -> Self {
-        Self(Self::DEFAULT)
-    }
-}
-
-/// The fixed Move interpolation, in percent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct InterpolationPercent(u8);
-
-impl InterpolationPercent {
-    pub const MIN: u8 = 0;
-    pub const MAX: u8 = 100;
-
-    pub fn new(value: u8) -> Self {
-        Self(value.clamp(Self::MIN, Self::MAX))
-    }
-
-    pub fn value(self) -> u8 {
-        self.0
-    }
-
-    pub(crate) fn is_valid(self) -> bool {
-        (Self::MIN..=Self::MAX).contains(&self.0)
+impl MaxDelta {
+    /// The cap, or `None` when unlimited.
+    pub fn limit(self) -> Option<f32> {
+        (self.get() != Self::MIN).then(|| f32::from(self.get()))
     }
 }
 
@@ -222,40 +109,442 @@ impl Interpolation {
     pub fn wire_value(self) -> u8 {
         match self {
             Self::Auto => 255,
-            Self::Percent(percent) => percent.value(),
+            // The percent is kept in 0..=100, so it fits a byte.
+            Self::Percent(percent) => percent.get() as u8,
         }
     }
+}
+
+/// The DirectX adapter and output that capture uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Display {
+    /// The adapter LUID: `(high << 32) | low`.
+    pub adapter: u64,
+    pub output: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub const ALL: [Self; 6] = [
+        Self::Off,
+        Self::Error,
+        Self::Warn,
+        Self::Info,
+        Self::Debug,
+        Self::Trace,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Error => "Error",
+            Self::Warn => "Warn",
+            Self::Info => "Info",
+            Self::Debug => "Debug",
+            Self::Trace => "Trace",
+        }
+    }
+}
+
+/// The whole settings file. Missing fields take their defaults.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// The loaded model file name in `models/`.
+    pub model: Option<String>,
+    pub display: Display,
+    pub sensitivity: Sensitivity,
+    pub confidence: Confidence,
+    pub target_y_offset: TargetYOffset,
+    pub max_delta: MaxDelta,
+    pub fps_limit: FpsLimit,
+    pub new_frame_wait: NewFrameWait,
+    pub interpolation: Interpolation,
+    /// The serial port of MAKCU, such as `COM4`. `None` detects it automatically.
+    pub makcu_port: Option<String>,
+    /// Busy-waits on `DirectML` completion for lower tail latency at the cost of one CPU core.
+    pub low_latency: bool,
+    #[serde(deserialize_with = "deserialize_hotkeys")]
+    pub hotkeys: Vec<Hotkey>,
+    pub log_level: LogLevel,
+    /// D3D12 debug layer + DRED. Applied at startup only; slows inference.
+    pub gpu_debug: bool,
+    /// Writes a per-frame JSON Lines trace to `logs/` for each run.
+    pub frame_trace: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            model: None,
+            display: Display::default(),
+            sensitivity: Sensitivity::default(),
+            confidence: Confidence::default(),
+            target_y_offset: TargetYOffset::default(),
+            max_delta: MaxDelta::default(),
+            fps_limit: FpsLimit::default(),
+            new_frame_wait: NewFrameWait::default(),
+            interpolation: Interpolation::default(),
+            makcu_port: None,
+            low_latency: false,
+            hotkeys: default_hotkeys(),
+            log_level: LogLevel::default(),
+            gpu_debug: false,
+            frame_trace: false,
+        }
+    }
+}
+
+/// The result of reading the settings file.
+#[derive(Debug)]
+pub struct Loaded {
+    pub settings: Settings,
+    /// One message for the UI, or `None` when the file loaded without a problem.
+    pub warning: Option<String>,
+    /// The file could not be read or parsed. The next save copies it to `settings.json.bak` first.
+    pub unusable: bool,
+}
+
+impl Settings {
+    /// Reads `settings.json` next to the program. A missing file gives the defaults with no warning.
+    pub fn load() -> Loaded {
+        let path = match settings_path() {
+            Ok(path) => path,
+            Err(error) => {
+                return Loaded {
+                    settings: Self::default(),
+                    warning: Some(format!("Settings could not be read: {error:#}")),
+                    unusable: true,
+                };
+            }
+        };
+        tracing::debug!(path = %path.display(), "loading settings");
+        match fs::read(&path) {
+            Ok(bytes) => Self::from_json(&bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(path = %path.display(), "settings file not found; using defaults");
+                Loaded {
+                    settings: Self::default(),
+                    warning: None,
+                    unusable: false,
+                }
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "settings file could not be read; using defaults");
+                Loaded {
+                    settings: Self::default(),
+                    warning: Some(format!("Settings could not be read: {error}")),
+                    unusable: true,
+                }
+            }
+        }
+    }
+
+    /// Parses settings JSON. Invalid JSON, a value of the wrong type, or a file that is not an object resets everything.
+    pub fn from_json(bytes: &[u8]) -> Loaded {
+        let raw: Value = match serde_json::from_slice(bytes) {
+            Ok(raw) => raw,
+            Err(error) => return unusable(&error),
+        };
+        let listed = raw
+            .get("hotkeys")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        match serde_json::from_value::<Self>(raw) {
+            Ok(settings) => {
+                let dropped = listed.saturating_sub(settings.hotkeys.len());
+                let warning = (dropped > 0).then(|| {
+                    format!(
+                        "Settings: {dropped} hotkey {} could not be read and {} removed",
+                        if dropped == 1 { "entry" } else { "entries" },
+                        if dropped == 1 { "was" } else { "were" },
+                    )
+                });
+                Loaded {
+                    settings,
+                    warning,
+                    unusable: false,
+                }
+            }
+            Err(error) => unusable(&error),
+        }
+    }
+
+    /// Writes the settings. When the file was unusable at load, it is copied to
+    /// `settings.json.bak` first, so that the save does not lose its content.
+    pub fn save(&self, unusable: bool) -> Result<()> {
+        self.save_at(&settings_path()?, unusable)
+    }
+
+    fn save_at(&self, path: &Path, unusable: bool) -> Result<()> {
+        if unusable && path.exists() {
+            back_up(path)?;
+        }
+        let bytes = serde_json::to_vec_pretty(self)?;
+        fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+        tracing::debug!(path = %path.display(), "settings saved");
+        Ok(())
+    }
+
+    pub fn bindings_for(&self, action: Action) -> impl Iterator<Item = &Hotkey> {
+        self.hotkeys
+            .iter()
+            .filter(move |binding| binding.action == action)
+    }
+
+    pub fn add_binding(&mut self, binding: Hotkey) {
+        self.hotkeys.push(binding);
+    }
+
+    pub fn remove_binding(&mut self, action: Action, shortcut: Shortcut) {
+        self.hotkeys
+            .retain(|binding| !(binding.action == action && binding.shortcut == shortcut));
+    }
+}
+
+fn unusable(error: &impl std::fmt::Display) -> Loaded {
+    tracing::warn!(error = %error, "settings file could not be parsed; using defaults");
+    Loaded {
+        settings: Settings::default(),
+        warning: Some(format!(
+            "Settings could not be loaded. Using defaults until the next settings change: {error}"
+        )),
+        unusable: true,
+    }
+}
+
+/// Keeps the entries that parse as a hotkey. The caller counts the dropped ones.
+fn deserialize_hotkeys<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Hotkey>, D::Error> {
+    let entries = Vec::<Value>::deserialize(deserializer)?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value::<Hotkey>(entry).ok())
+        .collect())
+}
+
+fn default_hotkeys() -> Vec<Hotkey> {
+    vec![
+        Hotkey {
+            action: Action::Hold,
+            shortcut: "F8".parse().expect("F8 is a valid shortcut"),
+        },
+        Hotkey {
+            action: Action::RunOnce,
+            shortcut: "F9".parse().expect("F9 is a valid shortcut"),
+        },
+    ]
+}
+
+fn back_up(path: &Path) -> Result<()> {
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bak");
+    fs::copy(path, &backup).with_context(|| format!("failed to back up {}", path.display()))?;
+    Ok(())
+}
+
+/// The folder that holds the program.
+fn exe_dir() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("failed to find the program's path")?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("the program's path has no folder: {}", exe.display()))
+}
+
+pub fn settings_path() -> Result<PathBuf> {
+    Ok(exe_dir()?.join("settings.json"))
+}
+
+pub fn models_dir() -> Result<PathBuf> {
+    Ok(exe_dir()?.join("models"))
+}
+
+pub fn logs_dir() -> Result<PathBuf> {
+    Ok(exe_dir()?.join("logs"))
+}
+
+/// The `.onnx` file names in `models/`, sorted case-insensitively. Creates `models/`.
+pub fn models() -> Result<Vec<String>> {
+    let dir = models_dir()?;
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let mut names = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() || !is_onnx(&path) {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort_by_key(|name| name.to_ascii_lowercase());
+    Ok(names)
+}
+
+/// The path of a model in `models/`. Rejects an empty name, a path, and a file that is not there.
+pub fn model_path(name: &str) -> Result<PathBuf> {
+    if name.is_empty() {
+        bail!("model filename is empty");
+    }
+    if Path::new(name).components().count() != 1 || !is_onnx(Path::new(name)) {
+        bail!("model must be a .onnx filename inside models/");
+    }
+    let path = models_dir()?.join(name);
+    if !path.is_file() {
+        bail!("model is not present in models/: {name}");
+    }
+    Ok(path)
+}
+
+fn is_onnx(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("onnx"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn interpolation_round_trips_through_json() {
-        let percent = Interpolation::Percent(InterpolationPercent::new(40));
-        assert_eq!(
-            serde_json::to_string(&percent).unwrap(),
-            r#"{"percent":40}"#
-        );
-        assert_eq!(
-            serde_json::from_str::<Interpolation>(r#"{"percent":40}"#).unwrap(),
-            percent
-        );
-        assert_eq!(
-            serde_json::to_string(&Interpolation::Auto).unwrap(),
-            r#""auto""#
-        );
-        assert_eq!(
-            serde_json::from_str::<Interpolation>(r#""auto""#).unwrap(),
-            Interpolation::Auto
-        );
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nice-aimassist-settings-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
-    fn interpolation_percent_is_clamped_at_construction() {
-        assert_eq!(InterpolationPercent::new(150).value(), 100);
-        assert_eq!(InterpolationPercent::new(0).value(), 0);
+    fn a_missing_field_gets_its_default_and_the_others_keep_their_values() {
+        let loaded = Settings::from_json(br#"{"sensitivity": 250, "low_latency": true}"#);
+        assert!(!loaded.unusable);
+        assert!(loaded.warning.is_none());
+        assert_eq!(loaded.settings.sensitivity.get(), 250);
+        assert!(loaded.settings.low_latency);
+        assert_eq!(loaded.settings.confidence, Confidence::default());
+        assert_eq!(loaded.settings.hotkeys, default_hotkeys());
+    }
+
+    #[test]
+    fn an_unknown_field_is_dropped_on_the_next_save() {
+        let loaded = Settings::from_json(br#"{"fps_limit": 120, "version": 2}"#);
+        assert!(loaded.warning.is_none());
+        let dir = temp_dir("unknown");
+        let path = dir.join("settings.json");
+        loaded.settings.save_at(&path, false).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("version"));
+        assert!(saved.contains("fps_limit"));
+    }
+
+    #[test]
+    fn a_value_out_of_range_is_clamped() {
+        let loaded = Settings::from_json(
+            br#"{"sensitivity": 20000, "new_frame_wait": 0, "target_y_offset": 101}"#,
+        );
+        assert!(!loaded.unusable);
+        assert_eq!(loaded.settings.sensitivity.get(), Sensitivity::MAX);
+        assert_eq!(loaded.settings.new_frame_wait.get(), NewFrameWait::MIN);
+        assert_eq!(loaded.settings.target_y_offset.get(), TargetYOffset::MAX);
+    }
+
+    #[test]
+    fn a_value_of_the_wrong_type_resets_all_fields_and_is_unusable() {
+        let loaded = Settings::from_json(br#"{"sensitivity": 150, "fps_limit": "fast"}"#);
+        assert!(loaded.unusable);
+        assert!(loaded.warning.is_some());
+        assert_eq!(loaded.settings, Settings::default());
+    }
+
+    #[test]
+    fn invalid_json_resets_all_fields_and_is_unusable() {
+        let loaded = Settings::from_json(br#"{"sensitivity": 150"#);
+        assert!(loaded.unusable);
+        assert!(loaded.warning.is_some());
+        assert_eq!(loaded.settings, Settings::default());
+        assert!(Settings::from_json(b"[1, 2]").unusable);
+    }
+
+    #[test]
+    fn an_invalid_hotkey_entry_is_dropped_with_a_warning_and_the_others_stay() {
+        let loaded = Settings::from_json(
+            br#"{"hotkeys": [
+                {"action": "run_once", "shortcut": "F9"},
+                {"action": "run_once", "shortcut": " "},
+                {"action": "continuous_hold", "shortcut": "F8"}
+            ]}"#,
+        );
+        assert!(!loaded.unusable);
+        assert_eq!(loaded.settings.hotkeys.len(), 2);
+        assert_eq!(loaded.settings.hotkeys[0].shortcut.to_string(), "F9");
+        assert_eq!(loaded.settings.hotkeys[1].shortcut.to_string(), "F8");
+        assert!(loaded.warning.unwrap().contains("1 hotkey entry"));
+    }
+
+    #[test]
+    fn the_makcu_port_and_an_xinput_binding_round_trip_through_the_file() {
+        let settings = Settings {
+            makcu_port: Some("COM4".to_owned()),
+            hotkeys: vec![Hotkey {
+                action: Action::RunOnce,
+                shortcut: "xinput:a".parse().unwrap(),
+            }],
+            ..Settings::default()
+        };
+        let restored = Settings::from_json(&serde_json::to_vec(&settings).unwrap());
+        assert!(restored.warning.is_none());
+        assert_eq!(restored.settings, settings);
+    }
+
+    #[test]
+    fn two_invalid_hotkey_entries_give_a_plural_warning() {
+        let loaded = Settings::from_json(
+            br#"{"hotkeys": [
+                {"action": "run_once", "shortcut": " "},
+                {"action": "run_once", "shortcut": ""}
+            ]}"#,
+        );
+        assert_eq!(loaded.settings.hotkeys, Vec::new());
+        let warning = loaded.warning.unwrap();
+        assert!(warning.contains("2 hotkey entries"));
+        assert!(warning.contains("were removed"));
+    }
+
+    #[test]
+    fn save_of_an_unusable_file_copies_it_to_bak_first() {
+        let dir = temp_dir("backup");
+        let path = dir.join("settings.json");
+        fs::write(&path, "{ broken").unwrap();
+        Settings::default().save_at(&path, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json.bak")).unwrap(),
+            "{ broken"
+        );
+        assert!(serde_json::from_str::<Value>(&fs::read_to_string(&path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn ranged_values_clamp_at_construction() {
+        assert_eq!(InterpolationPercent::new(150).get(), 100);
+        assert_eq!(Sensitivity::new(0).get(), Sensitivity::MIN);
+        assert_eq!(FpsLimit::new(2_000).get(), FpsLimit::MAX);
+        assert_eq!(MaxDelta::new(u16::MAX).get(), MaxDelta::MAX);
     }
 
     #[test]
@@ -268,45 +557,26 @@ mod tests {
     }
 
     #[test]
-    fn sensitivity_is_integer_and_normalized_at_construction() {
-        assert_eq!(Sensitivity::new(0).value(), 1);
+    fn value_methods_give_the_documented_values() {
         assert_eq!(Sensitivity::default().gain(), 1.0);
         assert_eq!(Sensitivity::new(50).gain(), 0.5);
-        assert_eq!(Sensitivity::new(200).gain(), 2.0);
-        assert_eq!(Sensitivity::new(20_000).value(), 10_000);
-    }
-
-    #[test]
-    fn fps_limit_is_integer_and_normalized_at_construction() {
-        assert_eq!(FpsLimit::new(0).value(), FpsLimit::MIN);
-        assert_eq!(FpsLimit::default().value(), 240);
-        assert_eq!(FpsLimit::new(2_000).value(), FpsLimit::MAX);
-    }
-
-    #[test]
-    fn confidence_threshold_is_percentage_and_normalized_at_construction() {
-        assert_eq!(ConfidenceThreshold::default().value(), 50);
-        assert_eq!(ConfidenceThreshold::default().ratio(), 0.5);
-        assert_eq!(ConfidenceThreshold::new(0).ratio(), 0.0);
-        assert_eq!(ConfidenceThreshold::new(100).ratio(), 1.0);
-        assert_eq!(ConfidenceThreshold::new(101).value(), 100);
-    }
-
-    #[test]
-    fn max_delta_defaults_to_512_zero_is_unlimited_and_large_values_are_clamped() {
-        assert_eq!(MaxDelta::default().value(), 512);
-        assert_eq!(MaxDelta::new(MaxDelta::UNLIMITED).limit(), None);
-        assert_eq!(MaxDelta::new(25).limit(), Some(25.0));
-        assert_eq!(MaxDelta::new(u16::MAX).value(), MaxDelta::MAX);
-    }
-
-    #[test]
-    fn target_y_offset_is_a_box_position_normalized_at_construction() {
-        assert_eq!(TargetYOffset::default().value(), 50);
-        assert_eq!(TargetYOffset::new(-1).value(), TargetYOffset::MIN);
-        assert_eq!(TargetYOffset::new(101).value(), TargetYOffset::MAX);
         assert_eq!(TargetYOffset::new(0).center_relative(), -0.5);
         assert_eq!(TargetYOffset::new(50).center_relative(), 0.0);
         assert_eq!(TargetYOffset::new(100).center_relative(), 0.5);
+        assert_eq!(MaxDelta::new(MaxDelta::MIN).limit(), None);
+        assert_eq!(MaxDelta::new(25).limit(), Some(25.0));
+    }
+
+    #[test]
+    fn model_path_rejects_a_path_and_a_missing_file() {
+        assert!(model_path("nested/yolo.onnx").is_err());
+        assert!(model_path("model.txt").is_err());
+        assert!(model_path("no-such-model-for-tests.onnx").is_err());
+    }
+
+    #[test]
+    fn log_level_labels_follow_the_order_of_all() {
+        assert_eq!(LogLevel::ALL[0].label(), "Off");
+        assert_eq!(LogLevel::ALL[5].label(), "Trace");
     }
 }

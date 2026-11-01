@@ -2,18 +2,20 @@
 
 mod ui;
 
-use nice_aimassist::{config, graphics, logging, platform};
+use nice_aimassist::{graphics, logging, platform, settings::Settings};
 
 fn main() -> eframe::Result {
-    let loaded = config::Config::load();
-    let _logging = logging::init();
-    logging::set_level(loaded.config.diagnostics.level);
+    // The logs folder is found first, so a missing install folder is reported before any settings file is read.
+    let _logging = logging::init()
+        .map_err(|error| eframe::Error::AppCreation(error.into_boxed_dyn_error()))?;
+    let loaded = Settings::load();
+    logging::set_level(loaded.settings.log_level);
     tracing::info!("nice-aimassist starting");
     platform::disable_process_power_throttling();
     if let Err(error) =
-        graphics::bootstrap::initialize_graphics_diagnostics(loaded.config.diagnostics.gpu_debug)
+        graphics::bootstrap::initialize_graphics_diagnostics(loaded.settings.gpu_debug)
     {
-        tracing::error!(error = %nice_aimassist::logging::chain(&error), "graphics diagnostics initialization failed");
+        tracing::error!(error = %format_args!("{error:#}"), "graphics diagnostics initialization failed");
         return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
     }
     if !platform::enable_per_monitor_dpi_awareness() {
@@ -30,7 +32,7 @@ fn main() -> eframe::Result {
     let result = eframe::run_native(
         "nice-aimassist",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, loaded)))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, loaded)?))),
     );
     tracing::info!(?result, "nice-aimassist exiting");
     result
