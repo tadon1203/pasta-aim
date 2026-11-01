@@ -54,8 +54,8 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 - A track is the target followed across consecutive frames: two boxes that overlap enough are the same target. A target switch is the first frame of a track.
 - The remainder is the part of a move that is lost when the move is rounded to whole counts. The remainder goes to the next frame of the same track. A target switch, a lost target, and the start of a run clear it.
 - The output is mouse movement only, through MAKCU. There is no controller output.
-- MAKCU needs firmware V4.076 or newer. An older device is refused, and the Devices panel shows the error, such as `MAKCU firmware V4.075 is older than V4.076`.
-- The UI shows the MAKCU connection, the firmware, and the Mouse route. The user can refresh the routes, rescan for the device, and connect again.
+- The UI shows the MAKCU connection, the firmware, and the Mouse route. The app shows the firmware and does not refuse any version. The user has one Reconnect action. It tries the ports of the MAKCU chips in the order of the list, unless the user chose a port. If every port fails, the Devices panel shows the reason of each port.
+- A lost connection is shown the same way, whether the cause is a failed move, a missing reply to the Move interpolation, or the device going away. The run stops, and the user connects again.
 - The MAKCU port is Auto or a port that the user chooses from the list of serial ports. Auto tries the ports of the MAKCU chips. A chosen port is the only one that is tried, also after a disconnect, even when its chip is not a MAKCU chip. A change connects again at once and is saved. If the chosen port is not present, the Devices panel shows the connect error and `not found`, and the choice is kept.
 
 ## Runs

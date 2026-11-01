@@ -5,7 +5,6 @@ These are the rules for code and documentation that lint cannot check. Do not wr
 ## All code and documentation
 
 - Write comments and documentation in English. Follow ASD-STE100 (Simplified Technical English).
-- Use the terms in [requirements.md](requirements.md), not synonyms.
 - Documentation is the single source of truth. Keep each fact in one file. Link; do not copy.
 
 ## Rust

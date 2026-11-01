@@ -30,8 +30,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 
 use self::aggregator::Aggregator;
 use crate::{
-    Repaint, clock::Clock, engine::RunGeneration, makcu::Movement, pipeline::GpuDropReason,
-    settings, sync::MutexExt,
+    Repaint, aim::Move, clock::Clock, engine::RunGeneration, pipeline::GpuDropReason, settings,
+    sync::MutexExt,
 };
 
 const QUEUE_CAPACITY: usize = 8192;
@@ -154,7 +154,7 @@ impl TelemetrySink {
 pub struct LiveTelemetry {
     /// `(dx, dy, confidence, class_id)` of the last detection, relative to the model input center.
     pub last_target: Option<(f32, f32, f32, i32)>,
-    pub last_movement: Option<Movement>,
+    pub last_movement: Option<Move>,
     pub last_total_ms: Option<f64>,
     pub performance: PerformanceSnapshot,
     pub tracking: LoopSnapshot,

@@ -55,7 +55,7 @@ pub(super) struct FrameLine {
     pub detections: Vec<DetectionFields>,
     pub candidate_total: usize,
     pub selected: Option<DetectionFields>,
-    pub target_id: Option<u32>,
+    pub target_id: Option<u64>,
     pub target_switched: Option<bool>,
     /// The distance to the aim point, in model input pixels.
     pub aim_error: Option<(f32, f32)>,
@@ -112,8 +112,7 @@ fn detection_fields(detection: &Detection) -> DetectionFields {
 mod tests {
     use super::*;
     use crate::{
-        engine::target_track::Track,
-        makcu::Movement,
+        aim::{Move, Track},
         pipeline::Detections,
         telemetry::{FrameRecord, FrameTimes},
     };
@@ -153,7 +152,7 @@ mod tests {
             }),
             aim_error: Some((1.0, -2.0)),
             planned: Some((1.5, -2.0)),
-            sent: Some(Movement { x: 2, y: -2 }),
+            sent: Some(Move { x: 2, y: -2 }),
         }
     }
 

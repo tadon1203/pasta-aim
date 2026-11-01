@@ -1,13 +1,12 @@
 use eframe::egui;
 
 use super::{
-    labels::{makcu_phase_label, makcu_phase_mark, route_label},
+    labels::{makcu_line, route_label},
     widgets::error_label,
 };
 use crate::ui::App;
 use nice_aimassist::{
     engine::{Command, EngineState, MakcuPhase, RunPhase},
-    makcu::format_firmware,
     pipeline::DisplayInfo,
 };
 
@@ -70,14 +69,7 @@ impl App {
             .show(ui, |ui| {
                 ui.label("MAKCU");
                 ui.horizontal(|ui| {
-                    ui.label(makcu_phase_mark(status.makcu.phase));
-                    ui.label(makcu_phase_label(status.makcu.phase));
-                    if let Some(port) = &status.makcu.port {
-                        ui.weak(format!("· {port}"));
-                    }
-                    if let Some(firmware) = status.makcu.firmware {
-                        ui.weak(format!("· FW {}", format_firmware(firmware)));
-                    }
+                    ui.label(makcu_line(status.makcu.phase, status.makcu.device.as_ref()));
                     if is_busy(status.makcu.phase) {
                         ui.spinner();
                     }
@@ -87,7 +79,12 @@ impl App {
                 self.draw_makcu_port_row(ui, status);
 
                 ui.label("Mouse route");
-                ui.label(route_label(status.makcu.routes.mouse));
+                let mouse_route = status
+                    .makcu
+                    .device
+                    .as_ref()
+                    .is_some_and(|device| device.mouse_route);
+                ui.label(route_label(mouse_route));
                 ui.end_row();
 
                 ui.label("XInput hotkey pad");
@@ -113,10 +110,10 @@ impl App {
                             self.set_makcu_port(None);
                         }
                         for entry in &status.makcu.ports {
-                            let label = if entry.makcu {
-                                format!("{} · MAKCU", entry.name)
-                            } else {
+                            let label = if entry.description.is_empty() {
                                 entry.name.clone()
+                            } else {
+                                format!("{} · {}", entry.name, entry.description)
                             };
                             let active = chosen.as_deref() == Some(entry.name.as_str());
                             if ui.selectable_label(active, label).clicked() {
@@ -134,23 +131,13 @@ impl App {
         ui.end_row();
     }
 
+    /// The one MAKCU action. It is off while a connect is running.
     fn draw_makcu_actions(&mut self, ui: &mut egui::Ui, status: &EngineState) {
-        ui.horizontal(|ui| match status.makcu.phase {
-            MakcuPhase::Connected => {
-                if ui.button("Refresh routes").clicked() {
-                    self.engine.send(Command::RefreshMakcuRoutes);
-                }
-                if ui.button("Rescan device").clicked() {
-                    self.engine.send(Command::RescanMakcu);
-                }
-            }
-            MakcuPhase::Connecting => {
+        ui.horizontal(|ui| {
+            if status.makcu.phase == MakcuPhase::Connecting {
                 ui.add_enabled(false, egui::Button::new("Connecting…"));
-            }
-            MakcuPhase::Failed => {
-                if ui.button("Connect MAKCU").clicked() {
-                    self.engine.send(Command::RescanMakcu);
-                }
+            } else if ui.button("Reconnect").clicked() {
+                self.engine.send(Command::ReconnectMakcu);
             }
         });
     }

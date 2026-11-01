@@ -187,8 +187,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        engine::target_track::Track, makcu::Movement, pipeline::Detections,
-        pipeline::GpuDropReason, telemetry::FrameTimes,
+        aim::{Move, Track},
+        pipeline::Detections,
+        pipeline::GpuDropReason,
+        telemetry::FrameTimes,
     };
 
     fn scratch_dir(name: &str) -> PathBuf {
@@ -224,7 +226,7 @@ mod tests {
             }),
             aim_error: None,
             planned: Some((1.5, -2.0)),
-            sent: Some(Movement { x: 2, y: -2 }),
+            sent: Some(Move { x: 2, y: -2 }),
         }
     }
 

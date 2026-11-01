@@ -1,4 +1,4 @@
-//! The engine thread: it owns the pipeline and the MAKCU client, and runs one frame at a time.
+//! The engine thread: it owns the pipeline, the aim, and the MAKCU link, and runs one frame at a time.
 
 mod capture;
 mod frame;
@@ -17,19 +17,16 @@ use std::{
 };
 
 use self::{frame::StepOutcome, run::RunControl};
-use super::{
-    CapturePhase, Command, EngineEvent, EngineState,
-    output::{OutputSettings, OutputStage},
-    status::StatusHub,
-};
+use super::{CapturePhase, Command, EngineEvent, EngineState, status::StatusHub};
 use crate::{
     Repaint,
+    aim::{Aim, AimSettings},
     clock::Clock,
     clock::Wait,
-    makcu::MakcuClient,
+    output::Output,
     pipeline::{AdapterLuid, DisplayInfo, DxgiCapture, Pipeline, init_thread},
-    settings::{self, Confidence, FpsLimit, NewFrameWait, Settings},
-    telemetry::{RunCounters, TelemetrySink, TraceEvent},
+    settings::{self, Confidence, FpsLimit, Interpolation, NewFrameWait, Settings},
+    telemetry::{RunCounters, TelemetrySink},
 };
 
 /// How often the engine polls MAKCU connection state and sends the counters, when no other event wakes it.
@@ -40,7 +37,9 @@ const CAPTURE_SPIN: Duration = Duration::from_millis(1);
 /// Settings applied directly to the serial pipeline.
 #[derive(Clone, Copy)]
 struct Tuning {
-    output: OutputSettings,
+    aim: AimSettings,
+    /// The Move interpolation. The engine sends it to MAKCU after each connect.
+    interpolation: Interpolation,
     confidence: Confidence,
     fps_limit: FpsLimit,
     new_frame_wait: NewFrameWait,
@@ -114,7 +113,8 @@ struct Worker {
 
     /// The capture of the selected display, and the pipeline when a model is loaded.
     capture: CaptureState,
-    output_stage: OutputStage,
+    /// The model input size that the output plans against. The capture of a loaded model sets it.
+    input_size: (u32, u32),
     /// Wakes the engine for a command, the housekeeping, or the capture deadline.
     wait: Wait,
     capture_deadline: frame::CaptureDeadline,
@@ -127,7 +127,10 @@ struct Worker {
     capture_output: u32,
     selected_adapter_luid: AdapterLuid,
 
-    makcu: MakcuClient,
+    /// The target and the move that each frame plans.
+    aim: Aim,
+    /// The MAKCU link, which the planned move is written to.
+    output: Output,
     run: RunControl,
     /// The COM apartment of this thread is initialized, so that DXGI can be used.
     com_ready: bool,
@@ -179,29 +182,26 @@ pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
     };
 
     let tuning = Tuning {
-        output: OutputSettings {
+        aim: AimSettings {
             sensitivity: config.sensitivity,
             target_y_offset: config.target_y_offset,
             max_delta: config.max_delta,
         },
+        interpolation: config.interpolation,
         confidence: config.confidence,
         fps_limit: config.fps_limit,
         new_frame_wait: config.new_frame_wait,
         low_latency: config.low_latency,
         frame_trace: config.frame_trace,
     };
-    let mut makcu = MakcuClient::new();
+    let mut output = Output::default();
     // A blank port in the file means auto-detect, as `None` does.
-    makcu.set_port(
+    output.set_port(
         config
             .makcu_port
             .clone()
             .filter(|port| !port.trim().is_empty()),
     );
-    // Before the first connect, so this sends nothing: the value is sent when the connect succeeds.
-    if let Err(error) = makcu.set_interpolation(config.interpolation) {
-        tracing::warn!(error = %format_args!("{error:#}"), "move interpolation could not be applied");
-    }
     let _boost = crate::platform::boost_current_thread("engine");
     let mut worker = Worker {
         event_tx: events,
@@ -212,7 +212,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
         tuning,
         displays: Vec::new(),
         capture: CaptureState::None,
-        output_stage: OutputStage::new(tuning.output),
+        input_size: (0, 0),
         wait,
         capture_deadline: frame::CaptureDeadline::new(),
         run_counters: RunCounters::default(),
@@ -222,14 +222,15 @@ pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
         capture_adapter: 0,
         capture_output: config.display.output,
         selected_adapter_luid: AdapterLuid::from(config.display.adapter),
-        makcu,
+        aim: Aim::new(tuning.aim),
+        output,
         run: RunControl::default(),
         com_ready,
     };
 
     worker.refresh_capture_catalog();
     worker.initialize_capture();
-    worker.connect_makcu_initial();
+    worker.connect_makcu();
     if let Some(name) = config.model {
         match settings::model_path(&name) {
             Ok(path) => worker.load_model(false, name, path),
@@ -249,7 +250,7 @@ impl Worker {
     /// Periodic work that no event triggers: MAKCU connection changes, and the run counters
     /// that the Telemetry thread shows. Each value is sent only when it changed.
     fn housekeeping(&mut self) {
-        self.poll_makcu_events();
+        self.poll_makcu_link();
         if self.run_counters != self.sent_counters {
             self.sent_counters = self.run_counters;
             self.telemetry.counters(self.run_counters);
@@ -320,15 +321,15 @@ impl Worker {
         match command {
             Command::LoadModel { name, path, notify } => self.load_model(notify, name, path),
             Command::SetSensitivity(value) => {
-                self.tuning.output.sensitivity = value;
+                self.tuning.aim.sensitivity = value;
                 self.push_output_settings();
             }
             Command::SetTargetYOffset(value) => {
-                self.tuning.output.target_y_offset = value;
+                self.tuning.aim.target_y_offset = value;
                 self.push_output_settings();
             }
             Command::SetMaxDelta(value) => {
-                self.tuning.output.max_delta = value;
+                self.tuning.aim.max_delta = value;
                 self.push_output_settings();
             }
             Command::SetConfidence(value) => {
@@ -338,12 +339,10 @@ impl Worker {
                 }
             }
             Command::SetInterpolation(interpolation) => {
-                if let Err(error) = self.makcu.set_interpolation(interpolation) {
-                    tracing::warn!(error = %format_args!("{error:#}"), "move interpolation failed");
-                    self.telemetry.event(TraceEvent::MakcuInterpolationFailed {
-                        reason: format!("{error:#}"),
-                    });
-                    self.set_run_error(format!("{error:#}"));
+                self.tuning.interpolation = interpolation;
+                // While disconnected the value only waits: the next connect sends it.
+                if self.output.is_connected() {
+                    self.send_interpolation();
                 }
             }
             Command::SetFpsLimit(value) => {
@@ -365,13 +364,10 @@ impl Worker {
             }
             Command::SetContinuous(active) => self.set_continuous(active),
             Command::RunOnce => self.run_once(),
-            Command::RefreshMakcuRoutes => {
-                self.reconnect_makcu("refreshing", MakcuClient::refresh_routes);
-            }
-            Command::RescanMakcu => self.reconnect_makcu("rescanning", MakcuClient::rescan),
+            Command::ReconnectMakcu => self.reconnect_makcu(),
             Command::SetMakcuPort(port) => {
-                self.makcu.set_port(port);
-                self.reconnect_makcu("selecting the port", MakcuClient::rescan);
+                self.output.set_port(port);
+                self.reconnect_makcu();
             }
             Command::RetryCapture => self.retry_suspended_pipeline(),
             Command::RescanDisplays => self.refresh_capture_catalog(),
@@ -385,7 +381,7 @@ impl Worker {
     }
 
     fn push_output_settings(&mut self) {
-        self.output_stage.set_settings(self.tuning.output);
+        self.aim.set_settings(self.tuning.aim);
     }
 
     fn set_run_error(&mut self, error: String) {

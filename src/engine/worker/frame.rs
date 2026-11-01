@@ -117,13 +117,13 @@ impl Worker {
             return true;
         }
         let output_start_qpc = Clock::now();
-        let outcome = match self.output_stage.emit(&mut self.makcu, frame.selected) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.fail_run(format!("Inference output failed: {error:#}"));
-                return true;
-            }
-        };
+        let outcome = self.aim.update(frame.selected, self.input_size);
+        if let Some(rounded) = outcome.rounded
+            && let Err(error) = self.output.send(rounded)
+        {
+            self.makcu_lost(format!("{error:#}"));
+            return true;
+        }
         let output_complete_qpc = Clock::now();
         self.telemetry.frame(&FrameRecord {
             generation: run.generation,
@@ -136,9 +136,9 @@ impl Worker {
             detections: frame.detections,
             selected: frame.selected,
             track: outcome.track,
-            aim_error: outcome.target.map(|(dx, dy, _, _)| (dx, dy)),
-            planned: outcome.planned,
-            sent: outcome.command,
+            aim_error: outcome.error,
+            planned: outcome.exact,
+            sent: outcome.rounded,
         });
         self.note_output(frame.desktop_size);
         if run.mode == RunMode::OneShot {
@@ -171,15 +171,12 @@ mod tests {
     use super::super::{CaptureState, Tuning, run::RunControl};
     use super::*;
     use crate::{
+        aim::{Aim, AimSettings},
         clock::{self, Clock, Wake},
-        engine::{
-            CapturePhase, EngineState, RunPhase,
-            output::{OutputSettings, OutputStage},
-            status::StatusHub,
-        },
-        makcu::{FakeMakcu, MakcuClient},
+        engine::{CapturePhase, EngineState, MakcuPhase, RunPhase, status::StatusHub},
+        output::{Output, fake::FakeMakcu},
         pipeline::{AdapterLuid, Detection, Detections},
-        settings::Settings,
+        settings::{Interpolation, InterpolationPercent, Settings},
         telemetry::{FrameTimes, RunCounters, TelemetryMessage, TelemetrySink},
     };
     use std::sync::{Arc, Mutex, mpsc, mpsc::Receiver as TestReceiver};
@@ -216,18 +213,19 @@ mod tests {
     fn worker_with_waker() -> (Worker, FakeMakcu, Wake, TestReceiver<TelemetryMessage>) {
         let config = Settings::default();
         let tuning = Tuning {
-            output: OutputSettings {
+            aim: AimSettings {
                 sensitivity: config.sensitivity,
                 target_y_offset: config.target_y_offset,
                 max_delta: config.max_delta,
             },
+            interpolation: config.interpolation,
             confidence: config.confidence,
             fps_limit: config.fps_limit,
             new_frame_wait: config.new_frame_wait,
             low_latency: config.low_latency,
             frame_trace: false,
         };
-        let (makcu, fake) = MakcuClient::fake();
+        let (output, fake) = Output::fake();
         let repaint: crate::Repaint = Arc::new(|| {});
         let (event_tx, _) = mpsc::channel();
         let (wait, waker) = clock::wait().unwrap();
@@ -245,7 +243,7 @@ mod tests {
             displays: Vec::new(),
             // The fixture has no GPU capture and no pipeline.
             capture: CaptureState::None,
-            output_stage: OutputStage::new(tuning.output),
+            input_size: (100, 100),
             wait,
             capture_deadline: CaptureDeadline::new(),
             run_counters: RunCounters::default(),
@@ -255,7 +253,8 @@ mod tests {
             capture_adapter: 0,
             capture_output: 0,
             selected_adapter_luid: AdapterLuid { low: 0, high: 0 },
-            makcu,
+            aim: Aim::new(tuning.aim),
+            output,
             run: RunControl::default(),
             com_ready: false,
         };
@@ -272,7 +271,6 @@ mod tests {
                 refresh_hz: 60.0,
             });
         });
-        worker.output_stage.set_input_size((100, 100));
         worker.begin_run(RunMode::Continuous);
         (worker, fake, waker, telemetry_rx)
     }
@@ -348,6 +346,45 @@ mod tests {
         assert_eq!(records[0].frame_seq, 1);
         assert_eq!(records[0].aim_error, Some((20.0, 0.0)));
         assert!(records[0].sent.is_some());
+    }
+
+    #[test]
+    fn a_failed_move_write_is_a_lost_makcu_and_stops_the_run() {
+        let (mut worker, fake, telemetry) = worker();
+        fake.disconnect();
+        let (_tx, rx) = mpsc::channel();
+        assert!(finish(&mut worker, &rx, &processed(Clock::now())));
+        let status = worker.status.get();
+        assert_eq!(status.makcu.phase, MakcuPhase::Failed);
+        assert!(status.makcu.error.is_some());
+        assert!(worker.run.active.is_none());
+        assert!(!worker.output.is_connected());
+        let (records, _) = output_messages(&telemetry);
+        assert!(records.is_empty(), "the frame did not reach the output");
+    }
+
+    #[test]
+    fn the_stored_interpolation_is_sent_and_a_missing_reply_is_a_lost_makcu() {
+        let (mut worker, fake, _telemetry) = worker();
+        worker.tuning.interpolation = Interpolation::Percent(InterpolationPercent::new(40));
+        worker.send_interpolation();
+        assert_eq!(fake.frames().last().unwrap()[4..], [0x1F, 40]);
+        assert!(worker.output.is_connected());
+
+        fake.mute_next(0x1F);
+        worker.send_interpolation();
+        assert_eq!(worker.status.get().makcu.phase, MakcuPhase::Failed);
+        assert!(!worker.output.is_connected());
+    }
+
+    #[test]
+    fn a_rejected_interpolation_shows_an_error_and_keeps_the_makcu() {
+        let (mut worker, fake, _telemetry) = worker();
+        worker.tuning.interpolation = Interpolation::Percent(InterpolationPercent::new(40));
+        fake.reject_next(0x1F);
+        worker.send_interpolation();
+        assert!(worker.status.get().run.error.is_some());
+        assert!(worker.output.is_connected());
     }
 
     #[test]

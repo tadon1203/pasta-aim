@@ -1,7 +1,5 @@
 use crate::sync::MutexExt;
-mod output;
 mod status;
-pub(crate) mod target_track;
 mod worker;
 
 pub(crate) type RunGeneration = u64;
@@ -78,8 +76,8 @@ pub enum Command {
     },
     SetContinuous(bool),
     RunOnce,
-    RefreshMakcuRoutes,
-    RescanMakcu,
+    /// Connects again: the MAKCU ports in order, or only the one that the user chose.
+    ReconnectMakcu,
     /// Chooses the MAKCU port (`None` is auto-detect) and connects again.
     SetMakcuPort(Option<String>),
     RetryCapture,

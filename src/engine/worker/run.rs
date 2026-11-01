@@ -9,7 +9,6 @@ use crate::{
         MakcuPhase, RunGeneration, RunMode, RunPhase,
         status::{BLOCK_CAPTURE, BLOCK_MAKCU, BLOCK_MODEL, BLOCK_MOUSE_ROUTE, run_block_reason},
     },
-    makcu::format_firmware,
     telemetry::{
         AppInfo, ClockInfo, MakcuInfo, ModelInfo, RunCounters, RunInfo, RunStart, SettingsInfo,
         TraceHeader,
@@ -74,7 +73,7 @@ impl Worker {
     /// Starts a run with no readiness check. `start_run` checks the readiness first.
     pub(super) fn begin_run(&mut self, mode: RunMode) {
         let generation = self.run.next_generation();
-        self.output_stage.reset();
+        self.aim.reset();
         self.capture_deadline.clear();
         self.run_counters = RunCounters::default();
         self.sent_counters = RunCounters::default();
@@ -109,12 +108,12 @@ impl Worker {
         }
         let tuning = &self.tuning;
         let makcu = self.status.get().makcu.clone();
-        let makcu = match (makcu.phase, makcu.port, makcu.firmware) {
-            (MakcuPhase::Connected, Some(port), Some(firmware)) => Some(MakcuInfo {
-                port,
-                firmware: format_firmware(firmware),
-                baud: makcu.baud,
-                interpolation: self.makcu.interpolation(),
+        let makcu = match (makcu.phase, makcu.device) {
+            (MakcuPhase::Connected, Some(device)) => Some(MakcuInfo {
+                firmware: device.firmware_label(),
+                port: device.port,
+                baud: Some(device.baud),
+                interpolation: self.tuning.interpolation,
             }),
             _ => None,
         };
@@ -154,9 +153,9 @@ impl Worker {
                 capture_wait_ms: u32::from(tuning.new_frame_wait.get()),
                 low_latency: tuning.low_latency,
                 confidence_threshold_percent: tuning.confidence.get(),
-                sensitivity_percent: tuning.output.sensitivity.get(),
-                target_y_offset_percent: tuning.output.target_y_offset.get(),
-                max_delta: tuning.output.max_delta.get(),
+                sensitivity_percent: tuning.aim.sensitivity.get(),
+                target_y_offset_percent: tuning.aim.target_y_offset.get(),
+                max_delta: tuning.aim.max_delta.get(),
             },
         })
     }
@@ -167,7 +166,7 @@ impl Worker {
             tracing::info!(generation = run.generation, "inference stopped");
             self.telemetry.run_stopped(run.generation);
         }
-        self.output_stage.reset();
+        self.aim.reset();
         if self.status.get().run.phase != RunPhase::Idle {
             self.status.edit(|status| status.run.phase = RunPhase::Idle);
         }
@@ -180,12 +179,11 @@ impl Worker {
     }
 
     pub(super) fn run_block_reason(&self) -> Option<String> {
-        let makcu = &self.makcu;
         run_block_reason([
             (self.capture.has_model(), BLOCK_MODEL),
             (self.capture.is_capture_ready(), BLOCK_CAPTURE),
-            (makcu.is_connected(), BLOCK_MAKCU),
-            (makcu.mouse_available(), BLOCK_MOUSE_ROUTE),
+            (self.output.is_connected(), BLOCK_MAKCU),
+            (self.output.mouse_route(), BLOCK_MOUSE_ROUTE),
         ])
         .map(str::to_owned)
     }

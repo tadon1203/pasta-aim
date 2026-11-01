@@ -1365,11 +1365,11 @@ dependencies = [
  "ort",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "windows 0.57.0",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

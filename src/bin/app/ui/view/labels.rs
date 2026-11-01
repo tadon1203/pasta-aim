@@ -1,4 +1,7 @@
-use nice_aimassist::engine::{CapturePhase, MakcuPhase, ModelPhase};
+use nice_aimassist::{
+    engine::{CapturePhase, MakcuPhase, ModelPhase},
+    output::Device,
+};
 
 pub(super) fn model_phase_label(phase: ModelPhase) -> &'static str {
     match phase {
@@ -29,6 +32,16 @@ pub(super) fn makcu_phase_mark(phase: MakcuPhase) -> &'static str {
         MakcuPhase::Connected => "●",
         MakcuPhase::Connecting => "◌",
         MakcuPhase::Failed => "○",
+    }
+}
+
+/// The MAKCU line: the phase, then the port and the firmware once it is connected. The Devices
+/// panel and the diagnostics text both show it.
+pub(super) fn makcu_line(phase: MakcuPhase, device: Option<&Device>) -> String {
+    let phase = format!("{} {}", makcu_phase_mark(phase), makcu_phase_label(phase));
+    match device {
+        Some(device) => format!("{phase} · {} · FW {}", device.port, device.firmware_label()),
+        None => phase,
     }
 }
 

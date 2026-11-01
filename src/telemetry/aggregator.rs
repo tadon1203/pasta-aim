@@ -16,7 +16,7 @@ use super::{
     metrics::{CaptureSourceMetrics, Metrics, StageTimings},
     trace::FrameTrace,
 };
-use crate::{clock::Clock, engine::RunGeneration, makcu::Movement};
+use crate::{aim::Move, clock::Clock, engine::RunGeneration};
 
 /// The capture source rates are made over this window, from the Counters messages.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -34,7 +34,7 @@ pub(super) struct Aggregator {
     reported_drops: u64,
     window: RateWindow,
     last_target: Option<(f32, f32, f32, i32)>,
-    last_movement: Option<Movement>,
+    last_movement: Option<Move>,
     last_total_ms: Option<f64>,
 }
 
@@ -225,7 +225,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        engine::target_track::Track,
+        aim::Track,
         pipeline::Detections,
         pipeline::GpuDropReason,
         telemetry::{FrameTimes, TraceHeader},

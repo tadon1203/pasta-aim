@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::{
-    labels::{capture_phase_label, makcu_phase_label, model_phase_label},
+    labels::{capture_phase_label, makcu_line, model_phase_label},
     widgets::{error_label, warn_label},
 };
 use crate::ui::App;
@@ -214,14 +214,19 @@ impl App {
                 None => format!("{w}x{h}"),
             },
         );
-        let makcu_routes = format!("mouse={}", status.makcu.routes.mouse);
+        let mouse_route = status
+            .makcu
+            .device
+            .as_ref()
+            .is_some_and(|device| device.mouse_route);
+        let makcu_routes = format!("mouse={mouse_route}");
         let xinput = self
             .controller_slot
             .map_or_else(|| "not connected".to_owned(), |slot| format!("slot {slot}"));
         let warning = self.config_load_warning.as_deref().unwrap_or("none");
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {} · port={} · firmware={}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             status
                 .capture
@@ -229,12 +234,7 @@ impl App {
                 .as_ref()
                 .map_or("Unavailable", |display| display.adapter_name.as_str()),
             cpu_fallback_line(status),
-            makcu_phase_label(status.makcu.phase),
-            status.makcu.port.as_deref().unwrap_or("unknown"),
-            status
-                .makcu
-                .firmware
-                .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+            makcu_line(status.makcu.phase, status.makcu.device.as_ref()),
             self.config.fps_limit.get(),
             live.performance.capture_source.fresh_fps,
             live.performance.capture_source.processed_fps,
@@ -260,20 +260,9 @@ impl App {
 
 /// The input rows: MAKCU, `XInput`, and the value settings in use.
 fn draw_input_rows(ui: &mut egui::Ui, app: &App, status: &EngineState, live: &LiveTelemetry) {
-    ui.label("MAKCU state");
-    ui.label(makcu_phase_label(status.makcu.phase));
+    ui.label("MAKCU");
+    ui.label(makcu_line(status.makcu.phase, status.makcu.device.as_ref()));
     ui.end_row();
-
-    if let Some(port) = &status.makcu.port {
-        ui.label("MAKCU port");
-        ui.label(port);
-        ui.end_row();
-    }
-    if let Some(firmware) = status.makcu.firmware {
-        ui.label("MAKCU firmware");
-        ui.label(firmware.to_string());
-        ui.end_row();
-    }
 
     ui.label("XInput hotkey pad");
     ui.label(

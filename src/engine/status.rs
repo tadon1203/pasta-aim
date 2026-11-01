@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     Repaint,
-    makcu::{MakcuRoutes, PortEntry},
+    output::{Device, Port},
     pipeline::{DisplayInfo, Precision},
     sync::MutexExt,
 };
@@ -82,23 +82,18 @@ pub enum MakcuPhase {
 #[derive(Debug, Clone)]
 pub struct MakcuStatus {
     pub phase: MakcuPhase,
-    pub port: Option<String>,
-    pub firmware: Option<u32>,
-    pub baud: Option<u32>,
-    pub routes: MakcuRoutes,
+    /// The MAKCU of the connected link. `None` while it is not connected.
+    pub device: Option<Device>,
     pub error: Option<String>,
     /// The serial ports of the system, listed at each connect.
-    pub ports: Vec<PortEntry>,
+    pub ports: Vec<Port>,
 }
 
 impl Default for MakcuStatus {
     fn default() -> Self {
         Self {
             phase: MakcuPhase::Connecting,
-            port: None,
-            firmware: None,
-            baud: None,
-            routes: MakcuRoutes::default(),
+            device: None,
             error: None,
             ports: Vec::new(),
         }
@@ -162,7 +157,13 @@ impl EngineState {
                 self.makcu.phase == MakcuPhase::Connected && self.makcu.error.is_none(),
                 BLOCK_MAKCU,
             ),
-            (self.makcu.routes.mouse, BLOCK_MOUSE_ROUTE),
+            (
+                self.makcu
+                    .device
+                    .as_ref()
+                    .is_some_and(|device| device.mouse_route),
+                BLOCK_MOUSE_ROUTE,
+            ),
         ])
     }
 }
@@ -211,12 +212,21 @@ impl StatusHub {
 mod tests {
     use super::*;
 
+    fn device(mouse_route: bool) -> Device {
+        Device {
+            port: "COM4".to_owned(),
+            firmware: 4094,
+            baud: 4_000_000,
+            mouse_route,
+        }
+    }
+
     fn ready_state() -> EngineState {
         let mut state = EngineState::default();
         state.model.phase = ModelPhase::Ready;
         state.capture.phase = CapturePhase::Ready;
         state.makcu.phase = MakcuPhase::Connected;
-        state.makcu.routes.mouse = true;
+        state.makcu.device = Some(device(true));
         state
     }
 
@@ -228,7 +238,7 @@ mod tests {
     #[test]
     fn missing_mouse_route_blocks_output() {
         let mut state = ready_state();
-        state.makcu.routes.mouse = false;
+        state.makcu.device = Some(device(false));
         assert_eq!(state.block_reason(), Some("Mouse route is unavailable"));
     }
 

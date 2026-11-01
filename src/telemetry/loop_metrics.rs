@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use crate::engine::target_track::Track;
+use crate::aim::Track;
 use crate::{clock::Clock, stats::percentile};
 
 const WINDOW: usize = 256;
@@ -151,7 +151,7 @@ mod tests {
 
     const QPC: Clock = Clock::test(1_000.0);
 
-    fn frame(t: i64, id: u32, switched: bool, error: (f32, f32)) -> LoopFrame {
+    fn frame(t: i64, id: u64, switched: bool, error: (f32, f32)) -> LoopFrame {
         LoopFrame {
             present_qpc: t,
             output_complete_qpc: t + 5,

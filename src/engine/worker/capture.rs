@@ -222,7 +222,8 @@ impl Worker {
         let Some(pipeline) = self.capture.pipeline() else {
             return;
         };
-        self.output_stage.set_input_size(pipeline.input_size());
+        let (width, height) = pipeline.input_size();
+        self.input_size = (width as u32, height as u32);
         super::log_pipeline_state(
             "Running",
             Some(pipeline.id()),

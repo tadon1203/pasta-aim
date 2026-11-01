@@ -2,21 +2,24 @@
 //!
 //! Every protocol fact is in `docs/makcu-protocol.md`. The comments here link to its sections.
 
-use super::MakcuRoutes;
+/// The wire value of `INTERPOLATE` for Auto.
+pub(super) const INTERPOLATE_AUTO: u8 = 255;
 
-/// The oldest firmware that the client accepts.
-/// See "Firmware version" in `docs/makcu-protocol.md`.
-pub(super) const FIRMWARE_FLOOR: u32 = 4076;
-
-const HEADER: [u8; 2] = [0xDE, 0xAD];
+pub(super) const HEADER: [u8; 2] = [0xDE, 0xAD];
 /// A packet that declares more payload than this is not a MAKCU packet.
-const MAX_PAYLOAD: usize = 64;
+pub(super) const MAX_PAYLOAD: usize = 64;
 
-const CMD_DEVICE: u8 = 0x02;
-const CMD_FIRMWARE_VERSION: u8 = 0x04;
-const CMD_MOVE: u8 = 0x18;
-const CMD_INTERPOLATE: u8 = 0x1F;
-const CMD_SET_BAUD: u8 = 0xA5;
+pub(super) const CMD_DEVICE: u8 = 0x02;
+pub(super) const CMD_FIRMWARE_VERSION: u8 = 0x04;
+pub(super) const CMD_MOVE: u8 = 0x18;
+pub(super) const CMD_INTERPOLATE: u8 = 0x1F;
+pub(super) const CMD_SET_BAUD: u8 = 0xA5;
+
+/// The bit of the `DEVICE` reply that means the mouse route is up. See "Opcodes" in `docs/makcu-protocol.md`.
+pub(super) const KIND_MOUSE: u8 = 0x01;
+
+/// The payload of a reject. See "Reject form" in `docs/makcu-protocol.md`.
+pub(super) const REJECT: u8 = 0xFF;
 
 /// A request to MAKCU. See "Opcodes" in `docs/makcu-protocol.md`.
 /// A `SET` that MAKCU accepts has no reply, except `Interpolate`.
@@ -91,16 +94,22 @@ impl Packet {
     }
 }
 
-/// A reject has the command of the request and the payload `FF`. See "Reject form" in `docs/makcu-protocol.md`.
+/// A reply that is a reject: the command of the request and the payload `FF`.
+/// See "Reject form" in `docs/makcu-protocol.md`.
 /// `INTERPOLATE 255` is the exception: its accepted echo has the same bytes, so it is never a reject.
 pub(super) fn is_reject(request: Request, packet: &Packet) -> bool {
-    packet.payload() == [0xFF] && request != Request::Interpolate(255)
+    packet.payload() == [REJECT] && request != Request::Interpolate(INTERPOLATE_AUTO)
 }
 
 /// Whether the reply to `INTERPOLATE value` confirms the value. Auto (255) is never checked,
 /// because a reject of Auto has the same bytes as its echo.
 pub(super) fn is_interpolate_echo(value: u8, packet: &Packet) -> bool {
-    value == 255 || packet.payload() == [value]
+    value == INTERPOLATE_AUTO || packet.payload() == [value]
+}
+
+/// Whether a reply to `INTERPOLATE value` confirms the value: the echo, and not a reject.
+pub(super) fn confirms_interpolate(value: u8, packet: &Packet) -> bool {
+    !is_reject(Request::Interpolate(value), packet) && is_interpolate_echo(value, packet)
 }
 
 /// Splits a byte stream into packets. Keeps the partial packet between calls.
@@ -143,30 +152,29 @@ impl PacketDecoder {
     }
 }
 
-/// The routes in the `DEVICE` reply. See "Opcodes" in `docs/makcu-protocol.md`.
-pub(super) fn routes(kinds: u8) -> MakcuRoutes {
-    MakcuRoutes {
-        mouse: kinds & 0x01 != 0,
-    }
+/// Whether the mouse route is up, from the `DEVICE` reply. See "Opcodes" in `docs/makcu-protocol.md`.
+pub(super) fn mouse_route(kinds: u8) -> bool {
+    kinds & KIND_MOUSE != 0
 }
 
 /// See "Firmware version" in `docs/makcu-protocol.md`.
-pub fn format_firmware(version: u32) -> String {
+pub(super) fn format_firmware(version: u32) -> String {
     format!("V{}.{:03}", version / 1000, version % 1000)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn encoded(request: Request) -> Vec<u8> {
+    /// The bytes that `request` puts on the wire.
+    pub(in crate::output) fn frame(request: Request) -> Vec<u8> {
         let mut out = Vec::new();
         request.encode(&mut out);
         out
     }
 
     fn packet(cmd: u8, payload: &[u8]) -> Vec<u8> {
-        let mut bytes = vec![0xDE, 0xAD, payload.len() as u8, 0, cmd];
+        let mut bytes = vec![HEADER[0], HEADER[1], payload.len() as u8, 0, cmd];
         bytes.extend_from_slice(payload);
         bytes
     }
@@ -202,51 +210,47 @@ mod tests {
             ),
         ];
         for (request, bytes) in cases {
-            assert_eq!(encoded(request), bytes, "{request:?}");
+            assert_eq!(frame(request), bytes, "{request:?}");
         }
     }
 
     #[test]
-    fn encode_appends_to_the_buffer() {
-        let mut out = vec![7];
-        Request::Device.encode(&mut out);
-        assert_eq!(out, [7, 0xDE, 0xAD, 0, 0, 0x02]);
-    }
-
-    #[test]
     fn decoder_returns_joined_packets() {
-        let mut bytes = packet(0x04, &[0xEE, 0x0F, 0, 0]);
-        bytes.extend(packet(0x1F, &[0xFF]));
+        let mut bytes = packet(CMD_FIRMWARE_VERSION, &[0xEE, 0x0F, 0, 0]);
+        bytes.extend(packet(CMD_INTERPOLATE, &[0xFF]));
         assert_eq!(
             decode(&bytes),
             [
-                Packet::new(0x04, &[0xEE, 0x0F, 0, 0]),
-                Packet::new(0x1F, &[0xFF]),
+                Packet::new(CMD_FIRMWARE_VERSION, &[0xEE, 0x0F, 0, 0]),
+                Packet::new(CMD_INTERPOLATE, &[0xFF]),
             ]
         );
     }
 
     #[test]
     fn decoder_reads_a_packet_split_at_every_byte() {
-        let bytes = packet(0x04, &[0xEE, 0x0F, 0, 0]);
+        let bytes = packet(CMD_FIRMWARE_VERSION, &[0xEE, 0x0F, 0, 0]);
         let mut decoder = PacketDecoder::default();
         let mut packets = Vec::new();
         for byte in &bytes {
             decoder.feed(&[*byte], |packet| packets.push(packet));
         }
-        assert_eq!(packets, [Packet::new(0x04, &[0xEE, 0x0F, 0, 0])]);
+        assert_eq!(
+            packets,
+            [Packet::new(CMD_FIRMWARE_VERSION, &[0xEE, 0x0F, 0, 0])]
+        );
     }
 
     #[test]
     fn decoder_skips_garbage_before_the_header() {
         let mut bytes = vec![0x00, 0xDE, 0x13, 0xAD];
-        bytes.extend(packet(0x02, &[1]));
-        assert_eq!(decode(&bytes), [Packet::new(0x02, &[1])]);
+        bytes.extend(packet(CMD_DEVICE, &[1]));
+        assert_eq!(decode(&bytes), [Packet::new(CMD_DEVICE, &[1])]);
     }
 
     #[test]
     fn decoder_keeps_a_partial_packet_between_calls() {
-        let bytes = packet(0x02, &[1]);
+        let bytes = packet(CMD_DEVICE, &[1]);
         let mut decoder = PacketDecoder::default();
         let mut count = 0;
         decoder.feed(&bytes[..3], |_| count += 1);
@@ -259,17 +263,29 @@ mod tests {
 
     #[test]
     fn decoder_drops_a_packet_with_an_impossible_length() {
-        let mut bytes = vec![0xDE, 0xAD, 0xFF, 0xFF, 0x02];
-        bytes.extend(packet(0x04, &[1, 2, 3, 4]));
-        assert_eq!(decode(&bytes), [Packet::new(0x04, &[1, 2, 3, 4])]);
+        let mut bytes = vec![0xDE, 0xAD, 0xFF, 0xFF, CMD_DEVICE];
+        bytes.extend(packet(CMD_FIRMWARE_VERSION, &[1, 2, 3, 4]));
+        assert_eq!(
+            decode(&bytes),
+            [Packet::new(CMD_FIRMWARE_VERSION, &[1, 2, 3, 4])]
+        );
     }
 
     #[test]
     fn decoder_reads_a_reject_packet() {
         assert_eq!(
-            decode(&[0xDE, 0xAD, 1, 0, 0x04, 0xFF]),
-            [Packet::new(0x04, &[0xFF])]
+            decode(&packet(CMD_FIRMWARE_VERSION, &[0xFF])),
+            [Packet::new(CMD_FIRMWARE_VERSION, &[0xFF])]
         );
+    }
+
+    #[test]
+    fn a_reject_is_ff_except_for_the_auto_echo() {
+        let reject = Packet::new(CMD_INTERPOLATE, &[0xFF]);
+        assert!(is_reject(Request::Interpolate(40), &reject));
+        assert!(!is_reject(Request::Interpolate(255), &reject));
+        assert!(is_interpolate_echo(255, &reject));
+        assert!(!is_interpolate_echo(40, &reject));
     }
 
     #[test]
@@ -280,9 +296,9 @@ mod tests {
 
     #[test]
     fn only_bit_zero_is_the_mouse_route() {
-        assert!(routes(0x01).mouse);
-        assert!(routes(0x03).mouse);
-        assert!(!routes(0x02).mouse);
-        assert!(!routes(0).mouse);
+        assert!(mouse_route(0x01));
+        assert!(mouse_route(0x03));
+        assert!(!mouse_route(0x02));
+        assert!(!mouse_route(0));
     }
 }

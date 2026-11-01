@@ -1,8 +1,9 @@
+pub mod aim;
 pub mod clock;
 pub mod engine;
 pub mod hotkeys;
 pub mod logging;
-pub mod makcu;
+pub mod output;
 pub mod pipeline;
 pub mod platform;
 pub mod settings;

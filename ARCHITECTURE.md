@@ -47,7 +47,7 @@ The template of this document. Text in `<>` is a placeholder: replace it, and ke
 One Windows process, written in Rust. Each thread owns its resources, and the threads talk through channels. The domain terms are defined in [docs/requirements.md](./docs/requirements.md).
 
 - **UI thread** (`src/bin/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
-- **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`) and the MAKCU client. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
+- **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`), the aim (`src/aim`), and the output (`src/output`), which holds the MAKCU link. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
 - **Input thread** (`src/hotkeys`): keyboard and XInput polling, read every millisecond. It turns a shortcut into an engine command, and it reports the recorded shortcut and the controller slot to the UI. It holds no run state of the engine.
 - **Telemetry thread** (`src/telemetry`): it takes the frame records. It makes the statistics and the loop metrics, writes the frame trace, and publishes the live values for the UI.
 
@@ -66,12 +66,13 @@ Data flow:
 | Directory           | What it holds                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------- |
 | `src/bin/app`       | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
-| `src/engine`        | The engine thread: commands, the engine state, output, and the track.                       |
+| `src/engine`        | The engine thread: commands, the engine state, and the frame loop.                          |
 | `src/engine/worker` | The frame transaction, the run, model loading, pipeline replacement, and the MAKCU lifecycle. |
 | `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. It holds the GPU layer, the capture, the GPU preprocess, and the inference with its postprocess. |
 | `src/telemetry`     | The Telemetry thread: the frame records, the statistics, the loop metrics, the frame trace, and the live values. |
 | `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
-| `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
+| `src/aim`           | The aim: the target tracker, the move that each frame plans, and the rounding to whole counts. It knows nothing about MAKCU. |
+| `src/output`        | The output: the MAKCU link (the wire protocol, the serial port, and the connect) and the write of a move. |
 | `src`               | The library crate root. Also holds the small modules that serve many parts (settings, logging, and the clock with its deadline wait). |
 
 ## Invariants
@@ -90,7 +91,8 @@ Data flow:
 - The engine thread waits only for a command or for its capture deadline. It does not sleep on the frame path. It sets the next capture time from the start of the capture that got the new frame, and it gives no credit for lost time.
 - The engine thread does not lock shared data on the frame path. It publishes its state only when the state changes, and it sends one frame record for each processed frame.
 - The engine thread never waits for the Telemetry thread between a capture and its output. A failure of the Telemetry thread never stops the engine.
-- Only the engine thread uses the MAKCU client. The engine stops the run before it reconnects MAKCU.
+- Only the engine thread uses the MAKCU link. The engine stops the run before it reconnects MAKCU.
+- The MAKCU link has no thread of its own. The engine thread waits for a MAKCU reply only in a connect and in the Move interpolation request, for at most 100 ms for each request. A move is one write with no reply. Every end of the link (a failed write, a missing reply, or the device going away) is reported to the engine as a lost MAKCU.
 - The engine thread writes a move to the MAKCU port itself. No thread or queue sits between the move and the port.
 - The remainder stays inside one track. A target switch, a lost target, and the start of a run clear it.
 - Global shortcut dispatch stops while the user records a new shortcut.

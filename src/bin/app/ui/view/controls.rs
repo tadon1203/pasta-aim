@@ -22,7 +22,12 @@ impl App {
     pub(super) fn draw_output(&mut self, ui: &mut egui::Ui, status: &EngineState) {
         ui.group(|ui| {
             ui.strong("Output");
-            if !status.makcu.routes.mouse {
+            if !status
+                .makcu
+                .device
+                .as_ref()
+                .is_some_and(|device| device.mouse_route)
+            {
                 warn_label(ui, "Waiting for a mouse route.");
             }
 

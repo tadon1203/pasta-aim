@@ -1,6 +1,6 @@
 use crate::{
-    engine::{RunGeneration, target_track::Track},
-    makcu::Movement,
+    aim::{Move, Track},
+    engine::RunGeneration,
     pipeline::{Detection, Detections},
 };
 
@@ -25,5 +25,5 @@ pub struct FrameRecord {
     pub aim_error: Option<(f32, f32)>,
     /// The move before rounding.
     pub planned: Option<(f32, f32)>,
-    pub sent: Option<Movement>,
+    pub sent: Option<Move>,
 }

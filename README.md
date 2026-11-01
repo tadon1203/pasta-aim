@@ -37,7 +37,7 @@ The checks to run are in [CLAUDE.md](./CLAUDE.md#commands).
 - UI: egui (eframe)
 - Capture: DXGI Desktop Duplication
 - Inference: ONNX Runtime with DirectML
-- Output: MAKCU (USB serial). It needs firmware V4.076 or newer.
+- Output: MAKCU (USB serial)
 
 ## Agent skills
 
