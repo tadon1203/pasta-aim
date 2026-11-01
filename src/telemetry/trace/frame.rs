@@ -1,17 +1,17 @@
-//! The frame line of the Frame trace, and the time base of the file.
+//! The frame line of the frame trace, and the time base of the file.
 
 use serde::Serialize;
 
 use super::header::ClockInfo;
 use crate::{inference::Detection, telemetry::FrameRecord};
 
-/// The most Candidate detections that a frame line holds. `candidate_total` has the full count.
+/// The most detections that a frame line holds. `candidate_total` has the full count.
 pub(super) const MAX_TRACED_CANDIDATES: usize = 8;
 
 /// `[center_x, center_y, width, height, confidence, class_id]`, in model input pixels.
 type DetectionFields = (f32, f32, f32, f32, f32, i32);
 
-/// Makes the times of the file: microseconds from the start of the Run.
+/// Makes the times of the file: microseconds from the start of the run.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TraceClock {
     start_qpc: i64,
@@ -26,14 +26,14 @@ impl TraceClock {
         }
     }
 
-    /// A time before the start of the Run is negative.
+    /// A time before the start of the run is negative.
     pub(super) fn micros(self, qpc: i64) -> i64 {
         let ticks = i128::from(qpc) - i128::from(self.start_qpc);
         (ticks * 1_000_000 / i128::from(self.hz)) as i64
     }
 }
 
-/// One processed frame. Every `*_us` field is in microseconds from the start of the Run.
+/// One processed frame. Every `*_us` field is in microseconds from the start of the run.
 #[derive(Debug, PartialEq, Serialize)]
 pub(super) struct FrameLine {
     pub seq: u64,
@@ -51,15 +51,15 @@ pub(super) struct FrameLine {
     pub total_us: i64,
     pub gpu_preprocess_ms: Option<f64>,
     pub gpu_copy_ms: Option<f64>,
-    /// The Candidate detections with the highest confidence first, at most `MAX_TRACED_CANDIDATES`.
+    /// The detections with the highest confidence first, at most `MAX_TRACED_CANDIDATES`.
     pub candidates: Vec<DetectionFields>,
     pub candidate_total: usize,
     pub selected: Option<DetectionFields>,
     pub target_id: Option<u32>,
     pub target_switched: Option<bool>,
-    /// The distance to the Aim point, in model input pixels.
+    /// The distance to the aim point, in model input pixels.
     pub aim_error: Option<(f32, f32)>,
-    /// The Movement before rounding.
+    /// The move before rounding.
     pub planned: Option<(f32, f32)>,
     pub sent: Option<(i16, i16)>,
 }
@@ -118,7 +118,7 @@ mod tests {
         telemetry::{FrameRecord, FrameTimes},
     };
 
-    /// One tick is one millisecond, and the Run starts at tick 100.
+    /// One tick is one millisecond, and the run starts at tick 100.
     fn clock() -> TraceClock {
         TraceClock::new(ClockInfo {
             qpc_hz: 1_000,

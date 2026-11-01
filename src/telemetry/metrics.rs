@@ -61,7 +61,7 @@ struct Sample {
     cadence_ms: Option<f64>,
 }
 
-/// The rolling statistics of the Frame records. The percentiles are made in `snapshot`.
+/// The rolling statistics of the frame records. The percentiles are made in `snapshot`.
 pub struct Metrics {
     samples: VecDeque<Sample>,
     gpu_copy_samples: VecDeque<f64>,

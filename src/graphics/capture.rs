@@ -227,7 +227,7 @@ pub struct DxgiCapture {
     context: ID3D11DeviceContext4,
     info: DisplayInfo,
     gpu_profiler: D3d11GpuProfiler,
-    /// Set by the first copy that the Pipeline binds. Empty until then.
+    /// Set by the first copy that the pipeline binds. Empty until then.
     copy_target: Option<CopyTarget>,
     /// Validated for the current duplication and copy target. Cleared when either is replaced.
     layout: Option<FrameLayout>,
@@ -296,7 +296,7 @@ impl DxgiCapture {
     }
 
     /// Sets the texture and the fence that every later copy writes to and signals, and the size of
-    /// the Model input region. The next acquired image is validated again.
+    /// the capture region. The next acquired image is validated again.
     pub(crate) fn bind_copy_target(
         &mut self,
         target: &CaptureFrame,
@@ -423,7 +423,7 @@ impl DxgiCapture {
         })
     }
 
-    /// Copies the Model input region of `frame` to the bound target and signals `ready_value`.
+    /// Copies the capture region of `frame` to the bound target and signals `ready_value`.
     /// `measure` adds the GPU timestamp queries to this copy.
     pub(crate) fn copy_to_target(
         &mut self,

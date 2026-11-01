@@ -25,7 +25,7 @@ pub struct FrameTimes {
     pub postprocess_done: i64,
 }
 
-/// One processed frame. The Telemetry thread makes the statistics, the Loop metrics, and the Frame trace from it.
+/// One processed frame. The Telemetry thread makes the statistics, the loop metrics, and the frame trace from it.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameRecord {
     pub generation: RunGeneration,
@@ -40,9 +40,9 @@ pub struct FrameRecord {
     pub candidates: Candidates,
     pub selected: Option<Detection>,
     pub track: Option<Track>,
-    /// The distance to the Aim point, in model input pixels.
+    /// The distance to the aim point, in model input pixels.
     pub aim_error: Option<(f32, f32)>,
-    /// The Movement before rounding.
+    /// The move before rounding.
     pub planned: Option<(f32, f32)>,
     pub sent: Option<Movement>,
 }

@@ -519,7 +519,7 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
     ));
     if performance.sample_count == 0 {
         if let Some(cold) = performance.cold_run {
-            ui.label(format!("Cold run: {:.2} ms total", cold.total));
+            ui.label(format!("First frame: {:.2} ms total", cold.total));
         } else {
             ui.label("No performance samples yet");
         }
@@ -539,7 +539,7 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
             ui.strong("p95");
             ui.strong("p99");
             ui.end_row();
-            metric_row(ui, "Pipeline", performance.total);
+            metric_row(ui, "pipeline", performance.total);
             metric_row(
                 ui,
                 "Present → GPU submit",
@@ -562,9 +562,9 @@ fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {
         });
 
     if let Some(cold) = performance.cold_run {
-        ui.small(format!("Cold run total: {:.2} ms", cold.total));
+        ui.small(format!("First frame total: {:.2} ms", cold.total));
     }
-    ui.small("Pipeline: DXGI LastPresentTime → MAKCU write completion");
+    ui.small("pipeline: DXGI LastPresentTime → MAKCU write completion");
 }
 
 fn metric_row(ui: &mut egui::Ui, name: &str, metric: MetricSummary) {

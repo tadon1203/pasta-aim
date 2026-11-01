@@ -71,7 +71,7 @@ impl Worker {
             status.capture.error = Some(error.to_owned());
         });
 
-        // The Pipeline waits for its GPU queue before its capture and COM objects are released.
+        // The pipeline waits for its GPU queue before its capture and COM objects are released.
         self.capture = CaptureState::None;
         tracing::error!(%error, "invalid GPU pipeline dropped; capture remains suspended");
     }

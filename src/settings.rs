@@ -160,7 +160,7 @@ impl TargetYOffset {
         Self(value.clamp(Self::MIN, Self::MAX))
     }
 
-    /// Aim point as a fraction of box height measured from the box center
+    /// The aim point as a fraction of box height measured from the box center
     /// (-0.5 = top edge, 0.0 = center, 0.5 = bottom edge).
     pub fn center_relative(self) -> f32 {
         (f32::from(self.0) - f32::from(Self::DEFAULT)) / 100.0

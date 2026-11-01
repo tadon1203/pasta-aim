@@ -1,4 +1,4 @@
-//! One frame of the engine: the Pipeline's attempt, the pending commands, and the output.
+//! One frame of the engine: the pipeline's attempt, the pending commands, and the output.
 
 use std::time::{Duration, Instant};
 
@@ -27,12 +27,12 @@ impl CaptureDeadline {
         }
     }
 
-    /// Called for a capture that got a New frame. `start` is the start of that capture attempt.
+    /// Called for a capture that got a new frame. `start` is the start of that capture attempt.
     pub(super) fn arm(&mut self, start: Instant, fps: FpsLimit) {
         self.next = start + Duration::from_secs_f64(1.0 / f64::from(fps.value()));
     }
 
-    /// Called at the start of a Run and when the FPS limit changes.
+    /// Called at the start of a run and when the FPS limit changes.
     pub(super) fn clear(&mut self) {
         self.next = Instant::now();
     }
@@ -42,7 +42,7 @@ impl CaptureDeadline {
         (mode == RunMode::Continuous && now < self.next).then_some(self.next)
     }
 
-    /// Only a step that got a New frame arms the deadline. Any other step leaves it as it is.
+    /// Only a step that got a new frame arms the deadline. Any other step leaves it as it is.
     pub(super) fn after_step(&mut self, outcome: StepOutcome, fps: FpsLimit) {
         if let StepOutcome::NewFrame { attempt_start } = outcome {
             self.arm(attempt_start, fps);
@@ -53,11 +53,11 @@ impl CaptureDeadline {
 /// The result of one frame step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StepOutcome {
-    /// The attempt got a New frame, also when a stop suppresses its output.
+    /// The attempt got a new frame, also when a stop suppresses its output.
     NewFrame {
         attempt_start: Instant,
     },
-    /// A timeout, a pointer-only update, an access loss, a fault, or no active Run after the drain.
+    /// A timeout, a pointer-only update, an access loss, a fault, or no active run after the drain.
     NoDesktopUpdate,
     Shutdown,
 }
@@ -101,7 +101,7 @@ impl Worker {
         }
     }
 
-    /// The part of a frame after the Pipeline: the pending commands, the stop check, the output, and the
+    /// The part of a frame after the pipeline: the pending commands, the stop check, the output, and the
     /// Frame record. Returns false on shutdown.
     fn finish_frame(
         &mut self,
@@ -147,7 +147,7 @@ impl Worker {
         true
     }
 
-    /// Recovers from a Pipeline fault. The engine adds the Run generation to the report.
+    /// Recovers from a pipeline fault. The engine adds the run generation to the report.
     fn handle_fault(&mut self, fault: PipelineFault, generation: RunGeneration) {
         let PipelineFault {
             kind,
@@ -205,7 +205,7 @@ mod tests {
             .collect()
     }
 
-    /// The Frame records and the dropped frames that the telemetry queue received.
+    /// The frame records and the dropped frames that the telemetry queue received.
     fn output_messages(telemetry: &TestReceiver<TelemetryMessage>) -> (Vec<FrameRecord>, usize) {
         let mut records = Vec::new();
         let mut dropped = 0;
@@ -225,7 +225,7 @@ mod tests {
     }
 
     /// The fixture, with the waker of its wait, which the test raises to wake the loop, and the telemetry queue.
-    /// It has no GPU, so it begins the Run without the readiness check.
+    /// It has no GPU, so it begins the run without the readiness check.
     fn worker_with_waker() -> (Worker, FakeMakcu, Waker, TestReceiver<TelemetryMessage>) {
         let config = Config::default();
         let tuning = Tuning {
@@ -256,7 +256,7 @@ mod tests {
             telemetry,
             tuning,
             displays: Vec::new(),
-            // The fixture has no GPU capture and no Pipeline.
+            // The fixture has no GPU capture and no pipeline.
             capture: CaptureState::None,
             output_stage: OutputStage::new(tuning.output),
             wait,
@@ -291,7 +291,7 @@ mod tests {
         (worker, fake, waker, telemetry_rx)
     }
 
-    /// A New frame with a valid detection, as the Pipeline would hand it to the engine.
+    /// A new frame with a valid detection, as the pipeline would hand it to the engine.
     fn processed(present_qpc: i64) -> ProcessedFrame {
         ProcessedFrame {
             frame_seq: 1,

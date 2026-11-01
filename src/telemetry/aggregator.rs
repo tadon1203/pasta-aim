@@ -1,5 +1,5 @@
 //! The state of the Telemetry thread: it takes the messages, and it has no thread and no clock of its own.
-//! The seam for tests: messages in, live values and the Frame trace out.
+//! The seam for tests: messages in, live values and the frame trace out.
 
 use std::{
     path::PathBuf,
@@ -29,7 +29,7 @@ pub(super) struct Aggregator {
     loop_metrics: LoopMetrics,
     generation: Option<RunGeneration>,
     trace: FrameTrace,
-    /// The value of `dropped` when the Run started, and when the last drop event was made.
+    /// The value of `dropped` when the run started, and when the last drop event was made.
     dropped_at_start: u64,
     reported_drops: u64,
     window: RateWindow,
@@ -38,7 +38,7 @@ pub(super) struct Aggregator {
     last_total_ms: Option<f64>,
 }
 
-/// The engine's counters when the window started, and the Frame records since then.
+/// The engine's counters when the window started, and the frame records since then.
 struct RateWindow {
     started: Instant,
     base: RunCounters,
@@ -103,12 +103,12 @@ impl Aggregator {
         }
     }
 
-    /// Writes the buffered lines of the Frame trace.
+    /// Writes the buffered lines of the frame trace.
     pub(super) fn flush(&mut self) {
         self.trace.flush();
     }
 
-    /// Makes a Trace event for the messages that the queue refused since the last call.
+    /// Makes a trace event for the messages that the queue refused since the last call.
     /// The time of the event is the time of the report, not the time of the drop.
     fn report_dropped_messages(&mut self) {
         let dropped = self.dropped.load(Ordering::Relaxed);
@@ -140,7 +140,7 @@ impl Aggregator {
         self.stop_trace();
     }
 
-    /// Writes the footer with the messages that the queue refused since the Run started.
+    /// Writes the footer with the messages that the queue refused since the run started.
     fn stop_trace(&mut self) {
         let dropped = self
             .dropped

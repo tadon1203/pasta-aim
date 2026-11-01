@@ -313,7 +313,7 @@ fn ensure_typed_uav_store(
     .context("failed to query the format support of the GPU")?;
     if support.Support2.0 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE.0 == 0 {
         bail!(
-            "this display's GPU cannot store {} model input through typed unordered access; the Pipeline cannot be built",
+            "this display's GPU cannot store {} model input through typed unordered access; the pipeline cannot be built",
             precision.label()
         );
     }

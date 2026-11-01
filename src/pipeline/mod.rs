@@ -1,6 +1,6 @@
-//! The Pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit.
+//! The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit.
 //!
-//! The Pipeline owns the capture, the shared frame, the preprocess, and the inference session.
+//! The pipeline owns the capture, the shared frame, the preprocess, and the inference session.
 //! The engine sees no fence, no texture, and no fence value. This module has no `unsafe`.
 
 mod model;
@@ -23,7 +23,7 @@ use crate::{
     timing::QpcClock,
 };
 
-/// What the engine asks of a Pipeline when it is built or its model is replaced.
+/// What the engine asks of a pipeline when it is built or its model is replaced.
 pub(crate) struct PipelineConfig<'a> {
     pub model: &'a Path,
     pub pipeline_id: u64,
@@ -32,7 +32,7 @@ pub(crate) struct PipelineConfig<'a> {
     pub qpc: QpcClock,
 }
 
-/// A New frame after the inference and the postprocess.
+/// A new frame after the inference and the postprocess.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProcessedFrame {
     pub frame_seq: u64,
@@ -53,9 +53,9 @@ pub(crate) enum FrameOutcome {
 }
 
 pub(crate) enum FaultKind {
-    /// The GPU transport is poisoned. The engine rebuilds the Pipeline one time.
+    /// The GPU transport is poisoned. The engine rebuilds the pipeline one time.
     Poisoned { device_lost: bool },
-    /// The Pipeline cannot be used. The engine suspends it.
+    /// The pipeline cannot be used. The engine suspends it.
     Invalid,
 }
 
@@ -73,7 +73,7 @@ pub(crate) struct Pipeline {
     capture: DxgiCapture,
     qpc: QpcClock,
     id: u64,
-    /// The New frames of this Pipeline. Each frame uses its count as the fence value.
+    /// The New frames of this pipeline. Each frame uses its count as the fence value.
     frame_seq: u64,
     /// The fence value of the last submitted frame. The shared frame is free once it completes.
     last_submitted: u64,
@@ -81,7 +81,7 @@ pub(crate) struct Pipeline {
 }
 
 impl Pipeline {
-    /// Builds a Pipeline on `capture`. On failure the capture comes back with the error.
+    /// Builds a pipeline on `capture`. On failure the capture comes back with the error.
     // The capture comes back by value on failure. A build runs once per model or display change.
     #[allow(clippy::result_large_err)]
     pub(crate) fn build(
@@ -107,7 +107,7 @@ impl Pipeline {
         })
     }
 
-    /// Builds the model half again on the same capture. On failure the Pipeline is not changed.
+    /// Builds the model half again on the same capture. On failure the pipeline is not changed.
     pub(crate) fn replace_model(&mut self, config: &PipelineConfig<'_>) -> Result<()> {
         let (model, capture_frame) = model::build(&self.capture, config)?;
         self.capture
@@ -125,7 +125,7 @@ impl Pipeline {
         Ok(())
     }
 
-    /// One capture attempt and, for a New frame, the copy, the preprocess, the inference, and the postprocess.
+    /// One capture attempt and, for a new frame, the copy, the preprocess, the inference, and the postprocess.
     pub(crate) fn process_next(&mut self, wait_ms: u32) -> Result<FrameOutcome, PipelineFault> {
         let reuse_completed = self.check_reuse_fence()?;
 
@@ -149,7 +149,7 @@ impl Pipeline {
             Ok(copy) => copy,
             Err(error) => return Err(self.copy_fault(frame_seq, &error)),
         };
-        // One GPU copy time per New frame. A sample that is not ready yet waits for the next frame.
+        // One GPU copy time per new frame. A sample that is not ready yet waits for the next frame.
         let gpu_copy_ms = self
             .capture
             .try_take_gpu_copy_sample()
@@ -232,7 +232,7 @@ impl Pipeline {
         self.model.backend.set_confidence_threshold(value);
     }
 
-    /// Called at the start of a Run: the first frames are measured again.
+    /// Called at the start of a run: the first frames are measured again.
     pub(crate) fn reset_profiling(&mut self) {
         self.sampler.reset();
         self.capture.reset_gpu_profiler();
@@ -290,7 +290,7 @@ impl Pipeline {
         }
     }
 
-    /// The capture failed. A lost device poisons the transport; anything else suspends the Pipeline.
+    /// The capture failed. A lost device poisons the transport; anything else suspends the pipeline.
     fn capture_fault(&self, error: &anyhow::Error) -> PipelineFault {
         let device_lost = self.capture.device_lost();
         PipelineFault {

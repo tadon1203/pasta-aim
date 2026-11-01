@@ -1,4 +1,4 @@
-//! Display catalog, capture selection, and building the Pipeline of the selected display.
+//! Display catalog, capture selection, and building the pipeline of the selected display.
 
 use super::{CaptureState, Worker};
 use crate::{
@@ -9,8 +9,8 @@ use crate::{
 use anyhow::Result;
 
 impl CaptureState {
-    /// Loads a model on this state. A bare capture gets a Pipeline; a Pipeline gets its model replaced.
-    /// On failure the state keeps the capture, or the Pipeline with the model it had.
+    /// Loads a model on this state. A bare capture gets a pipeline; a pipeline gets its model replaced.
+    /// On failure the state keeps the capture, or the pipeline with the model it had.
     pub(super) fn load_model(&mut self, config: &PipelineConfig<'_>) -> Result<()> {
         match std::mem::replace(self, CaptureState::None) {
             CaptureState::None => Err(anyhow::anyhow!("capture is not configured")),
@@ -150,7 +150,7 @@ impl Worker {
                     result: Err(message.clone()),
                 });
                 tracing::error!(adapter, output, %message, "display prepare failed; active pipeline retained");
-                // The Run was active, so its readiness held. This change left the state as it was.
+                // The run was active, so its readiness held. This change left the state as it was.
                 if resume_continuous {
                     self.begin_run(RunMode::Continuous);
                 }
@@ -202,7 +202,7 @@ impl Worker {
         GraphicsThread::create_capture(adapter, output)
     }
 
-    /// The state for a new display: a Pipeline when a model is active, otherwise a bare capture.
+    /// The state for a new display: a pipeline when a model is active, otherwise a bare capture.
     fn build_candidate(&self, adapter: u32, output: u32, pipeline_id: u64) -> Result<CaptureState> {
         let capture = self.create_capture(adapter, output)?;
         let Some((_, path)) = self.active_model.as_ref() else {
@@ -221,7 +221,7 @@ impl Worker {
         }
     }
 
-    /// Records the running Pipeline's model in the status. Does nothing without a Pipeline.
+    /// Records the running pipeline's model in the status. Does nothing without a pipeline.
     pub(super) fn commit_model_status(&mut self) {
         let Some(pipeline) = self.capture.pipeline() else {
             return;

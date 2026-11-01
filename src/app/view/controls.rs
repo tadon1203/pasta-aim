@@ -151,7 +151,7 @@ impl App {
                     ui.label(format!("Command    x={:+}   y={:+}", sent.x, sent.y));
                 }
                 if let Some(ms) = live.last_total_ms {
-                    ui.label(format!("Pipeline   {ms:.2} ms"));
+                    ui.label(format!("pipeline   {ms:.2} ms"));
                 }
             }
 

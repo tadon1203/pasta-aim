@@ -58,7 +58,7 @@ pub enum GpuDropReason {
 }
 
 impl GpuDropReason {
-    /// The name of the reason in the Frame trace.
+    /// The name of the reason in the frame trace.
     pub const fn name(self) -> &'static str {
         match self {
             Self::StaleGeneration => "stale_generation",
@@ -143,7 +143,7 @@ pub struct FenceProgress {
     pub reuse_completed: Option<u64>,
 }
 
-/// The pipeline and the frame in which a fault happened. The engine adds the Run generation.
+/// The pipeline and the frame in which a fault happened. The engine adds the run generation.
 pub struct FaultSite<'a> {
     pub pipeline_id: u64,
     pub prepare_id: &'a str,

@@ -1,4 +1,4 @@
-//! The engine thread: it owns the Pipeline and the MAKCU client, and runs one frame at a time.
+//! The engine thread: it owns the pipeline and the MAKCU client, and runs one frame at a time.
 
 mod capture;
 mod frame;
@@ -66,7 +66,7 @@ pub(super) struct WorkerLinks {
 /// What the engine holds for the selected display.
 enum CaptureState {
     None,
-    /// A capture with no model. No Run can start.
+    /// A capture with no model. No run can start.
     CaptureOnly(Box<DxgiCapture>),
     Ready(Box<Pipeline>),
 }
@@ -86,7 +86,7 @@ impl CaptureState {
         !matches!(self, Self::None)
     }
 
-    /// Whether a model is loaded, so that a Run can start.
+    /// Whether a model is loaded, so that a run can start.
     fn has_model(&self) -> bool {
         matches!(self, Self::Ready(_))
     }
@@ -120,13 +120,13 @@ struct Worker {
     /// The display catalog that the engine uses to find the remembered display.
     displays: Vec<DisplayInfo>,
 
-    /// The capture of the selected display, and the Pipeline when a model is loaded.
+    /// The capture of the selected display, and the pipeline when a model is loaded.
     capture: CaptureState,
     output_stage: OutputStage,
     /// Wakes the engine for a command, the housekeeping, or the capture deadline.
     wait: DeadlineWait,
     capture_deadline: frame::CaptureDeadline,
-    /// The counters of the current Run, and the last values sent to the Telemetry thread.
+    /// The counters of the current run, and the last values sent to the Telemetry thread.
     run_counters: RunCounters,
     sent_counters: RunCounters,
     active_model: Option<(String, PathBuf)>,
@@ -250,7 +250,7 @@ pub(super) fn run_worker(links: WorkerLinks, config: Config) {
 }
 
 impl Worker {
-    /// Periodic work that no event triggers: MAKCU connection changes, and the Run counters
+    /// Periodic work that no event triggers: MAKCU connection changes, and the run counters
     /// that the Telemetry thread shows. Each value is sent only when it changed.
     fn housekeeping(&mut self) {
         self.poll_makcu_events();

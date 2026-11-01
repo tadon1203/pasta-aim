@@ -32,10 +32,10 @@ use xinput::XInputControl;
 enum ListenerMessage {
     Key(GlobalHotKeyEvent),
     Bindings(BindingActions),
-    /// Stops dispatch and releases every Hold shortcut.
+    /// Stops dispatch and releases every hold shortcut.
     Suspend,
     Resume,
-    /// Starts the recording of a Shortcut. The controls that are down now are ignored until they are released.
+    /// Starts the recording of a shortcut. The controls that are down now are ignored until they are released.
     BeginCapture,
     EndCapture,
     Shutdown,

@@ -166,7 +166,7 @@ impl Listener {
             .any(|id| matches!(id, TriggerId::Keyboard(_)))
     }
 
-    /// `XInput` is polled at the fast rate while a bound `XInput` Shortcut or a recording needs it.
+    /// `XInput` is polled at the fast rate while a bound `XInput` shortcut or a recording needs it.
     fn wants_fast(&self) -> bool {
         !self.bindings.xinput.is_empty() || self.capture.is_some()
     }
@@ -208,7 +208,7 @@ impl Listener {
         }
     }
 
-    /// Looks for held keyboard Hold shortcuts that were released without a key event.
+    /// Looks for held keyboard hold shortcuts that were released without a key event.
     fn probe_releases_if_due(&mut self, now: Instant) {
         if !self.has_keyboard_hold() || now < self.next_release_probe {
             return;

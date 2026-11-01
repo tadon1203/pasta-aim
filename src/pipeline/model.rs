@@ -1,4 +1,4 @@
-//! The model half of a Pipeline: the ONNX Runtime session, the preprocess, and the D3D12 side of the
+//! The model half of a pipeline: the ONNX Runtime session, the preprocess, and the D3D12 side of the
 //! shared frame. It is built and replaced as a unit.
 
 use std::sync::Arc;

@@ -71,7 +71,7 @@ impl Worker {
         self.begin_run(mode);
     }
 
-    /// Starts a Run with no readiness check. `start_run` checks the readiness first.
+    /// Starts a run with no readiness check. `start_run` checks the readiness first.
     pub(super) fn begin_run(&mut self, mode: RunMode) {
         let generation = self.run.next_generation();
         self.output_stage.reset();
@@ -102,7 +102,7 @@ impl Worker {
         });
     }
 
-    /// The header of the Frame trace, when the trace is on for this Run.
+    /// The header of the frame trace, when the trace is on for this run.
     fn trace_header(&self, generation: RunGeneration, mode: RunMode) -> Option<TraceHeader> {
         if !self.tuning.frame_trace {
             return None;

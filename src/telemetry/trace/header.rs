@@ -1,4 +1,4 @@
-//! The header line of the Frame trace. It holds what a reader needs to read the file alone.
+//! The header line of the frame trace. It holds what a reader needs to read the file alone.
 
 use serde::Serialize;
 
@@ -9,7 +9,7 @@ pub(crate) struct TraceHeader {
     pub app: AppInfo,
     pub clock: ClockInfo,
     pub run: RunInfo,
-    /// `None` when MAKCU is not connected at the start of the Run.
+    /// `None` when MAKCU is not connected at the start of the run.
     pub makcu: Option<MakcuInfo>,
     pub model: ModelInfo,
     pub settings: SettingsInfo,
@@ -63,7 +63,7 @@ pub(crate) struct SettingsInfo {
 
 #[cfg(test)]
 impl TraceHeader {
-    /// A header for tests. One tick of the clock is one millisecond, and the Run starts at tick 0.
+    /// A header for tests. One tick of the clock is one millisecond, and the run starts at tick 0.
     pub(crate) fn for_test() -> Self {
         Self {
             app: AppInfo {

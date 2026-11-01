@@ -1,8 +1,8 @@
-//! The Frame trace of one Run, written as JSON Lines for offline analysis.
+//! The frame trace of one run, written as JSON Lines for offline analysis.
 //!
-//! The file has a header line, a `frame` line for each Frame record, an `event` line for each Trace
-//! event, and a footer line. Every time in the file is in microseconds from the start of the Run.
-//! The Telemetry thread owns the `FrameTrace`. A write that fails stops the trace for the rest of the Run.
+//! The file has a header line, a `frame` line for each frame record, an `event` line for each trace
+//! event, and a footer line. Every time in the file is in microseconds from the start of the run.
+//! The Telemetry thread owns the `FrameTrace`. A write that fails stops the trace for the rest of the run.
 
 mod event;
 mod frame;
@@ -53,13 +53,13 @@ struct Footer {
     dropped_records: u64,
 }
 
-/// The trace of the Telemetry thread. It is idle until a Run starts with the trace on.
+/// The trace of the Telemetry thread. It is idle until a run starts with the trace on.
 pub(super) struct FrameTrace {
     logs_dir: PathBuf,
     active: Option<Active>,
 }
 
-/// The open file of one Run.
+/// The open file of one run.
 struct Active {
     out: BufWriter<File>,
     path: PathBuf,
@@ -83,7 +83,7 @@ impl FrameTrace {
         }
     }
 
-    /// Opens the file of a Run and writes the header. A failure leaves the trace idle.
+    /// Opens the file of a run and writes the header. A failure leaves the trace idle.
     pub(super) fn start(&mut self, header: &TraceHeader) {
         match Active::create(&self.logs_dir, header) {
             Ok(active) => self.active = Some(active),
@@ -122,7 +122,7 @@ impl FrameTrace {
     }
 
     /// Writes the footer and closes the file. `dropped` is the count of messages that the queue
-    /// did not take during the Run. Safe to call when idle.
+    /// did not take during the run. Safe to call when idle.
     pub(super) fn stop(&mut self, dropped: u64) {
         let Some(mut active) = self.active.take() else {
             return;
@@ -147,7 +147,7 @@ impl FrameTrace {
         }
     }
 
-    /// Runs `write` on the open file. A failure closes the trace for the rest of the Run.
+    /// Runs `write` on the open file. A failure closes the trace for the rest of the run.
     fn with_active(&mut self, write: impl FnOnce(&mut Active) -> Result<()>) {
         let Some(active) = self.active.as_mut() else {
             return;

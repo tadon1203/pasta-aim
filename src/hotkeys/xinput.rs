@@ -248,7 +248,7 @@ fn pressed_controls(sample: Sample, was_pressed: ControlSet) -> ControlSet {
 pub(super) struct Poller {
     tracker: Tracker,
     next_poll: Instant,
-    /// True while an `XInput` Shortcut is bound or a recording is active.
+    /// True while an `XInput` shortcut is bound or a recording is active.
     fast: bool,
 }
 

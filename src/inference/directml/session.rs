@@ -94,7 +94,7 @@ fn allocate_input<T: PrimitiveTensorElementType + std::fmt::Debug>(
 }
 
 /// ONNX Runtime / `DirectML` session state. Device, queue, shared frames, and
-/// preprocessing are owned by the enclosing Pipeline.
+/// preprocessing are owned by the enclosing pipeline.
 ///
 /// Field order is drop order: tensors must disappear before their `DirectML`
 /// allocator and session.

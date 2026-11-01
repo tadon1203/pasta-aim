@@ -1,4 +1,4 @@
-//! Tracking-loop quality metrics derived from the Frame records.
+//! Tracking-loop quality metrics derived from the frame records.
 
 use std::collections::VecDeque;
 

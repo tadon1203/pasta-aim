@@ -1,4 +1,4 @@
-//! The Trace events: what happened in a Run and is not a Frame.
+//! The trace events: what happened in a run and is not a frame.
 
 use serde::Serialize;
 
@@ -15,7 +15,7 @@ pub(crate) enum TraceEvent {
     MakcuInterpolationFailed {
         reason: String,
     },
-    /// The next Frame record is the Cold run.
+    /// The next frame record is the first frame.
     PipelineChanged,
     FrameDropped(GpuDropReason),
     /// Messages that did not fit in the Telemetry queue since the last event of this kind.

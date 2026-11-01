@@ -25,11 +25,11 @@ pub(super) struct OutputOutcome {
     /// The movement actually submitted to MAKCU.
     pub command: Option<Movement>,
     pub track: Option<Track>,
-    /// Movement before rounding (after sensitivity and the max delta cap).
+    /// Move before rounding (after sensitivity and the max delta cap).
     pub planned: Option<(f32, f32)>,
 }
 
-/// Movement wanted for a detection, before rounding.
+/// Move wanted for a detection, before rounding.
 #[derive(Debug, PartialEq)]
 struct Plan {
     target: TargetInfo,
@@ -82,7 +82,7 @@ pub(super) struct OutputStage {
     settings: OutputSettings,
     input_size: (usize, usize),
     tracker: TargetTracker,
-    /// Rounding remainder carried to the next frame of the same target, so
+    /// The remainder carried to the next frame of the same target, so
     /// low gains do not stall inside the dead zone of whole counts.
     carry: (f32, f32),
 }
@@ -173,7 +173,7 @@ mod tests {
         }
     }
 
-    /// Movement without carry-over: `None` when it rounds to zero.
+    /// Move without carry-over: `None` when it rounds to zero.
     fn step_of(plan: &Plan) -> Option<Movement> {
         quantize_with_carry(plan.movement, (0.0, 0.0)).0
     }
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn max_delta_caps_movement_length_and_keeps_direction() {
-        // Movement is (10, 20) at 100% sensitivity; length ~22.4.
+        // Move is (10, 20) at 100% sensitivity; length ~22.4.
         let capped = OutputSettings {
             max_delta: MaxDelta::new(10),
             ..settings(100, 50)

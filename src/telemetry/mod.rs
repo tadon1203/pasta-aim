@@ -1,8 +1,8 @@
-//! The Telemetry thread. It takes the Frame records and the Trace events from the engine.
-//! It makes the statistics and the Loop metrics, writes the Frame trace, and publishes the live values.
+//! The Telemetry thread. It takes the frame records and the trace events from the engine.
+//! It makes the statistics and the loop metrics, writes the frame trace, and publishes the live values.
 //!
 //! The engine never waits for this thread between a capture and its output. The queue is bounded:
-//! a Frame record that does not fit is dropped and counted.
+//! a frame record that does not fit is dropped and counted.
 
 mod aggregator;
 mod loop_metrics;
@@ -39,7 +39,7 @@ const QUEUE_CAPACITY: usize = 8192;
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The engine's counters for one Run. They count from the start of the Run.
+/// The engine's counters for one run. They count from the start of the run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RunCounters {
     pub new_frames: u64,
@@ -49,11 +49,11 @@ pub(crate) struct RunCounters {
 
 pub(crate) struct RunStart {
     pub generation: RunGeneration,
-    /// `Some` when the Frame trace is on for this Run.
+    /// `Some` when the frame trace is on for this run.
     pub trace: Option<TraceHeader>,
 }
 
-// The Frame record is sent on every frame. Boxing it would allocate on the frame path, so it is sent by value.
+// The frame record is sent on every frame. Boxing it would allocate on the frame path, so it is sent by value.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum TelemetryMessage {
     RunStarted(RunStart),
@@ -64,11 +64,11 @@ pub(crate) enum TelemetryMessage {
         qpc: i64,
         reason: GpuDropReason,
     },
-    /// The next Frame record is the Cold run, and the statistics start again.
+    /// The next frame record is the first frame, and the statistics start again.
     PipelineChanged {
         qpc: i64,
     },
-    /// Something that happened in the Run and is not a Frame. `qpc` is the time of it.
+    /// Something that happened in the run and is not a frame. `qpc` is the time of it.
     Event {
         qpc: i64,
         event: TraceEvent,
@@ -81,7 +81,7 @@ pub(crate) enum TelemetryMessage {
 #[derive(Clone)]
 pub(crate) struct TelemetrySink {
     tx: SyncSender<TelemetryMessage>,
-    /// Messages that did not fit in the queue. Shared with the Aggregator, which reports the count of each Run in the Frame trace footer.
+    /// Messages that did not fit in the queue. Shared with the Aggregator, which reports the count of each run in the frame trace footer.
     dropped: Arc<AtomicU64>,
 }
 
@@ -149,7 +149,7 @@ impl TelemetrySink {
     }
 }
 
-/// What the UI shows from the Frame records. All fields are `Copy`.
+/// What the UI shows from the frame records. All fields are `Copy`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LiveTelemetry {
     /// `(dx, dy, confidence, class_id)` of the last detection, relative to the model input center.
@@ -205,7 +205,7 @@ impl Telemetry {
     }
 }
 
-/// The loop of the Telemetry thread. It publishes at most every `PUBLISH_INTERVAL`, and at once when a Run stops.
+/// The loop of the Telemetry thread. It publishes at most every `PUBLISH_INTERVAL`, and at once when a run stops.
 fn run_telemetry(
     rx: &Receiver<TelemetryMessage>,
     aggregator: &mut Aggregator,

@@ -9,7 +9,7 @@ use crate::{
 };
 
 impl Worker {
-    /// Loads `path` on the Pipeline and keeps the previous model when the load fails.
+    /// Loads `path` on the pipeline and keeps the previous model when the load fails.
     pub(super) fn load_model(&mut self, notify: bool, name: String, path: PathBuf) {
         self.auto_reprepare_attempted = false;
         let pipeline_id = self.next_pipeline_id();
