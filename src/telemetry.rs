@@ -30,7 +30,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 
 use self::aggregator::Aggregator;
 use crate::{
-    Repaint, clock::Clock, engine::RunGeneration, graphics::GpuDropReason, makcu::Movement,
+    Repaint, clock::Clock, engine::RunGeneration, makcu::Movement, pipeline::GpuDropReason,
     settings, sync::MutexExt,
 };
 

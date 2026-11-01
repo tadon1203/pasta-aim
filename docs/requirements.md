@@ -87,7 +87,8 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 ## Diagnostics
 
 - **Log level** is the lowest severity that the session log writes: `off`, `error`, `warn`, `info` (default), `debug`, or `trace`. A session log is the text file of one start of the app, and each session writes `logs/session-<unix_ms>-<pid>.log`.
-- **GPU debug** (default off) applies only at the start of the app. It makes inference slower.
+- **GPU debug** (default off) applies only at the start of the app. It makes inference slower. With GPU debug on, a GPU fault writes one log line with the pipeline, the stage, the error, the HRESULT, the D3D11 and D3D12 removed reasons, and the D3D12 debug layer messages.
+- **CPU fallback nodes** is the number of model nodes that ONNX Runtime assigned to the CPU. The diagnostics panel and its copied text show it as `CPU fallback nodes: N`, or `unknown` when ONNX Runtime does not report the assignment.
 - **Frame trace** (default off): each run writes `logs/trace-<unix_ms>.jsonl`. A change of this setting applies to the next run.
   - The file has a `header` line, a `frame` line for each processed frame, an `event` line for each trace event, and a `footer` line. The file has no version: the header names the version of the app.
   - The header has what a reader needs to read the file alone: the app version and build, the clock (the QPC frequency, and the QPC value and the wall clock at the start of the run), the run, MAKCU (port, firmware, baud, and the move interpolation), the model, and the settings of the run.

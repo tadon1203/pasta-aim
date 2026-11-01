@@ -179,7 +179,7 @@ pub struct Settings {
     #[serde(deserialize_with = "deserialize_hotkeys")]
     pub hotkeys: Vec<Hotkey>,
     pub log_level: LogLevel,
-    /// D3D12 debug layer + DRED. Applied at startup only; slows inference.
+    /// D3D12 debug layer. Applied at startup only; slows inference.
     pub gpu_debug: bool,
     /// Writes a per-frame JSON Lines trace to `logs/` for each run.
     pub frame_trace: bool,

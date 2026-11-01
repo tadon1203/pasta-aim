@@ -20,7 +20,6 @@ pub(super) fn makcu_phase_label(phase: MakcuPhase) -> &'static str {
     match phase {
         MakcuPhase::Connecting => "Connecting",
         MakcuPhase::Connected => "Connected",
-        MakcuPhase::Reconnecting => "Reconnecting",
         MakcuPhase::Failed => "Disconnected",
     }
 }
@@ -28,7 +27,7 @@ pub(super) fn makcu_phase_label(phase: MakcuPhase) -> &'static str {
 pub(super) fn makcu_phase_mark(phase: MakcuPhase) -> &'static str {
     match phase {
         MakcuPhase::Connected => "●",
-        MakcuPhase::Connecting | MakcuPhase::Reconnecting => "◌",
+        MakcuPhase::Connecting => "◌",
         MakcuPhase::Failed => "○",
     }
 }

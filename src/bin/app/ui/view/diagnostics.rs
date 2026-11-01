@@ -6,9 +6,8 @@ use super::{
 };
 use crate::ui::App;
 use nice_aimassist::{
-    engine::{Command, EngineState, cpu_fallback_nodes, provider_display_name},
-    graphics::DisplayInfo,
-    inference::{EpAssignmentState, ep_assignment::EpAssignedNode},
+    engine::{Command, EngineState},
+    pipeline::DisplayInfo,
     settings::LogLevel,
     telemetry::{LiveTelemetry, LoopSnapshot, MetricSummary, PerformanceSnapshot},
 };
@@ -70,7 +69,6 @@ impl App {
                 draw_tracking(ui, &live.tracking);
                 ui.add_space(6.0);
                 self.draw_state_grids(ui, status, live);
-                draw_ep_assignment_diagnostics(ui, status);
 
                 if let Some(error) = &status.capture.error {
                     error_label(ui, format!("Capture: {error}"));
@@ -111,10 +109,7 @@ impl App {
 
         let mut gpu_debug = self.config.gpu_debug;
         if ui
-            .checkbox(
-                &mut gpu_debug,
-                "D3D12 debug layer + DRED (restart required)",
-            )
+            .checkbox(&mut gpu_debug, "D3D12 debug layer (restart required)")
             .changed()
         {
             self.config.gpu_debug = gpu_debug;
@@ -190,11 +185,9 @@ impl App {
         ));
         ui.end_row();
 
-        if let Some(assignment) = &status.model.ep_assignment {
-            ui.label("Actual assignment");
-            ui.label(actual_backend_label(assignment));
-            ui.end_row();
-        }
+        ui.label("CPU fallback nodes");
+        ui.label(cpu_fallback_value(status));
+        ui.end_row();
 
         if let Some((width, height)) = status.capture.desktop_size {
             ui.label("Desktop frame");
@@ -235,7 +228,7 @@ impl App {
                 .selected
                 .as_ref()
                 .map_or("Unavailable", |display| display.adapter_name.as_str()),
-            ep_assignment_copy_text(status),
+            cpu_fallback_line(status),
             makcu_phase_label(status.makcu.phase),
             status.makcu.port.as_deref().unwrap_or("unknown"),
             status
@@ -304,151 +297,17 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, status: &EngineState, live: &Li
     }
 }
 
-fn actual_backend_label(state: &EpAssignmentState) -> String {
-    match state {
-        EpAssignmentState::Unavailable(_) => "Unavailable".to_owned(),
-        EpAssignmentState::Available(report) => {
-            let names = report
-                .providers
-                .iter()
-                .filter(|provider| !provider.nodes.is_empty())
-                .map(provider_display_name)
-                .collect::<Vec<_>>();
-            if names.is_empty() {
-                "No assigned nodes".to_owned()
-            } else {
-                names.join(" + ")
-            }
-        }
-    }
+/// The CPU fallback line of the panel and the clipboard text: `N`, or `unknown` when ORT reports none.
+fn cpu_fallback_value(status: &EngineState) -> String {
+    status
+        .model
+        .cpu_nodes
+        .map_or_else(|| "unknown".to_owned(), |count| count.to_string())
 }
 
-fn draw_ep_assignment_diagnostics(ui: &mut egui::Ui, status: &EngineState) {
-    let Some(state) = &status.model.ep_assignment else {
-        return;
-    };
-    ui.add_space(6.0);
-    ui.strong("Execution");
-    match &**state {
-        EpAssignmentState::Unavailable(error) => {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!("Assignment info unavailable: {error}"),
-            );
-        }
-        EpAssignmentState::Available(report) => {
-            ui.label(format!("Backend: {}", actual_backend_label(state)));
-            ui.label(format!("Assigned nodes: {}", report.total_nodes));
-            if let Some(summary) = &status.model.ep_assignment_summary {
-                for (name, nodes, subgraphs) in [
-                    (
-                        "DirectML",
-                        summary.directml_nodes,
-                        summary.directml_subgraphs,
-                    ),
-                    ("CPU", summary.cpu_nodes, summary.cpu_subgraphs),
-                ] {
-                    let percent = if summary.total_nodes == 0 {
-                        0.0
-                    } else {
-                        nodes as f64 / summary.total_nodes as f64 * 100.0
-                    };
-                    ui.label(format!(
-                        "{name}: {nodes} nodes · {subgraphs} subgraphs · {percent:.1}%"
-                    ));
-                }
-            }
-            for provider in report.providers.iter().filter(|provider| {
-                provider.name != "DmlExecutionProvider" && provider.name != "CPUExecutionProvider"
-            }) {
-                let percent = if report.total_nodes == 0 {
-                    0.0
-                } else {
-                    provider.nodes.len() as f64 / report.total_nodes as f64 * 100.0
-                };
-                ui.label(format!(
-                    "{}: {} nodes · {} subgraphs · {:.1}%",
-                    provider_display_name(provider),
-                    provider.nodes.len(),
-                    provider.subgraph_count,
-                    percent
-                ));
-            }
-            ui.small("Node percentages describe assignment counts, not GPU work or performance.");
-
-            let cpu_nodes = cpu_fallback_nodes(state);
-            if cpu_nodes.is_empty() {
-                ui.label("CPU fallback: None");
-            } else {
-                egui::CollapsingHeader::new(format!("CPU fallback nodes ({})", cpu_nodes.len()))
-                    .default_open(false)
-                    .show(ui, |ui| draw_assigned_nodes(ui, cpu_nodes));
-            }
-
-            egui::CollapsingHeader::new("All EP assignments")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for provider in &report.providers {
-                        ui.strong(format!(
-                            "{} ({})",
-                            provider_display_name(provider),
-                            provider.name
-                        ));
-                        draw_assigned_nodes(ui, &provider.nodes);
-                    }
-                });
-        }
-    }
-}
-
-fn draw_assigned_nodes(ui: &mut egui::Ui, nodes: &[EpAssignedNode]) {
-    for node in nodes {
-        ui.horizontal_wrapped(|ui| {
-            ui.monospace(&node.op_type);
-            ui.label(&node.name);
-            if !node.domain.is_empty() {
-                ui.small(format!("domain: {}", node.domain));
-            }
-        });
-    }
-}
-
-fn ep_assignment_copy_text(status: &EngineState) -> String {
-    let Some(state) = &status.model.ep_assignment else {
-        return "Actual assignment: not available (no active model session)".to_owned();
-    };
-    match &**state {
-        EpAssignmentState::Unavailable(error) => format!("Assignment info unavailable: {error}"),
-        EpAssignmentState::Available(report) => {
-            let mut lines = vec![
-                format!("Inference backend: {}", actual_backend_label(state)),
-                format!("Total assigned nodes: {}", report.total_nodes),
-            ];
-            for provider in &report.providers {
-                lines.push(format!(
-                    "{}: {} nodes / {} subgraphs",
-                    provider.name,
-                    provider.nodes.len(),
-                    provider.subgraph_count
-                ));
-            }
-            let cpu_nodes = cpu_fallback_nodes(state);
-            if cpu_nodes.is_empty() {
-                lines.push("CPU fallback: None".to_owned());
-            } else {
-                lines.push("CPU fallback:".to_owned());
-                for node in cpu_nodes {
-                    let domain = if node.domain.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", node.domain)
-                    };
-                    lines.push(format!("- {}: {}{}", node.op_type, node.name, domain));
-                }
-            }
-            lines.join("\n")
-        }
-    }
+/// The line that the clipboard text carries: `CPU fallback nodes: N`.
+fn cpu_fallback_line(status: &EngineState) -> String {
+    format!("CPU fallback nodes: {}", cpu_fallback_value(status))
 }
 
 fn draw_performance(ui: &mut egui::Ui, performance: &PerformanceSnapshot) {

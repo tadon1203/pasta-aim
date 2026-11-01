@@ -26,10 +26,8 @@ use crate::{
     Repaint,
     clock::Clock,
     clock::Wait,
-    graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
-    inference::AdapterLuid,
     makcu::MakcuClient,
-    pipeline::Pipeline,
+    pipeline::{AdapterLuid, DisplayInfo, DxgiCapture, Pipeline, init_thread},
     settings::{self, Confidence, FpsLimit, NewFrameWait, Settings},
     telemetry::{RunCounters, TelemetrySink, TraceEvent},
 };
@@ -102,10 +100,6 @@ impl CaptureState {
             _ => None,
         }
     }
-
-    fn pipeline_id(&self) -> Option<u64> {
-        self.pipeline().map(Pipeline::id)
-    }
 }
 
 struct Worker {
@@ -128,7 +122,6 @@ struct Worker {
     run_counters: RunCounters,
     sent_counters: RunCounters,
     active_model: Option<(String, PathBuf)>,
-    auto_reprepare_attempted: bool,
     next_pipeline_id: u64,
     capture_adapter: u32,
     capture_output: u32,
@@ -136,8 +129,8 @@ struct Worker {
 
     makcu: MakcuClient,
     run: RunControl,
-    // Must be dropped after all DXGI/DirectML objects owned by this worker.
-    graphics: Option<GraphicsThread>,
+    /// The COM apartment of this thread is initialized, so that DXGI can be used.
+    com_ready: bool,
 }
 
 fn log_pipeline_state(
@@ -170,18 +163,18 @@ pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
         telemetry,
     } = links;
     let mut status = StatusHub::new(state, repaint.clone());
-    let graphics = match GraphicsThread::initialize() {
-        Ok(apartment) => Some(apartment),
+    let com_ready = match init_thread() {
+        Ok(()) => true,
         Err(error) => {
-            tracing::error!(error = %format_args!("{error:#}"), "graphics thread COM initialization failed");
-            let message = format!("Graphics thread COM initialization failed: {error:#}");
+            tracing::error!(error = %format_args!("{error:#}"), "engine thread COM initialization failed");
+            let message = format!("Engine thread COM initialization failed: {error:#}");
             status.edit(|status| {
                 status.capture.phase = CapturePhase::Failed;
                 status.capture.error = Some(message.clone());
                 status.graphics.catalog_error = Some(message);
             });
             status.flush();
-            None
+            false
         }
     };
 
@@ -225,14 +218,13 @@ pub(super) fn run_worker(links: WorkerLinks, config: Settings) {
         run_counters: RunCounters::default(),
         sent_counters: RunCounters::default(),
         active_model: None,
-        auto_reprepare_attempted: false,
         next_pipeline_id: 1,
         capture_adapter: 0,
         capture_output: config.display.output,
         selected_adapter_luid: AdapterLuid::from(config.display.adapter),
         makcu,
         run: RunControl::default(),
-        graphics,
+        com_ready,
     };
 
     worker.refresh_capture_catalog();
@@ -369,7 +361,6 @@ impl Worker {
             }
             Command::SetFrameTrace(enabled) => self.tuning.frame_trace = enabled,
             Command::SetCaptureSelection { adapter, output } => {
-                self.auto_reprepare_attempted = false;
                 self.set_capture_selection(adapter, output);
             }
             Command::SetContinuous(active) => self.set_continuous(active),
@@ -382,10 +373,7 @@ impl Worker {
                 self.makcu.set_port(port);
                 self.reconnect_makcu("selecting the port", MakcuClient::rescan);
             }
-            Command::RetryCapture => {
-                self.auto_reprepare_attempted = false;
-                self.retry_suspended_pipeline();
-            }
+            Command::RetryCapture => self.retry_suspended_pipeline(),
             Command::RescanDisplays => self.refresh_capture_catalog(),
             Command::Shutdown => {
                 tracing::info!("engine worker shutdown requested");

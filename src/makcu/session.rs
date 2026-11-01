@@ -1,4 +1,5 @@
-//! The session with MAKCU: it connects, reads the replies on one I/O thread, and reconnects after a drop.
+//! The session with MAKCU: it connects and reads the replies on one I/O thread. A drop ends the
+//! session for good; the caller connects a new one.
 //!
 //! The protocol is in `docs/makcu-protocol.md`. The port is in `port`.
 
@@ -6,16 +7,14 @@ use std::{
     fmt, io,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow, bail};
-use std::sync::mpsc::{
-    Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
-};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 
 use super::{
     port::{Connector, Port},
@@ -28,8 +27,6 @@ use super::{
 const LOW_BAUD: u32 = 115_200;
 const HIGH_BAUD: u32 = 4_000_000;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
-const FIRST_RETRY: Duration = Duration::from_millis(100);
-const MAX_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SessionInfo {
@@ -41,19 +38,12 @@ pub(super) struct SessionInfo {
     pub interpolation_error: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum SessionEvent {
-    Disconnected,
-    Connecting,
-    Connected(Result<SessionInfo, String>),
-}
-
 /// Why a request failed. The caller decides from this, so the variants are the cases it must tell apart.
 #[derive(Debug)]
 pub(super) enum SessionError {
     /// MAKCU sent the `FF` reject for this request. The connection is still up.
     Rejected,
-    /// MAKCU did not answer in time. The connection is ended and reconnected.
+    /// MAKCU did not answer in time. The connection is ended.
     TimedOut,
     /// The link is down before the request or while it waited. Nothing was answered.
     NotConnected,
@@ -94,16 +84,16 @@ struct Writer {
 
 /// The state that the caller and the I/O thread share.
 struct Shared {
-    /// The write side of the port. `None` while the link is down: the port is closed then,
-    /// because the reopen needs it closed.
+    /// The write side of the port. `None` once the link is down: the port is closed then.
     writer: Mutex<Option<Writer>>,
     slot: Mutex<Option<Slot>>,
     connected: AtomicBool,
 }
 
 impl Shared {
-    /// The only place where the link goes down. The caller and the I/O thread both call it, so
-    /// after it returns no request can use the old link.
+    /// The only place where the link goes down, for good: a lost session is replaced, not repaired.
+    /// The caller and the I/O thread both call it, so after it returns no request can use the link.
+    /// The I/O thread sees the flag and returns.
     fn mark_lost(&self) {
         self.connected.store(false, Ordering::Release);
         *lock(&self.writer) = None;
@@ -115,69 +105,41 @@ pub(super) struct Session {
     shared: Arc<Shared>,
     /// Serializes the requests. A request that needs a reply takes this lock.
     requests: Mutex<()>,
-    /// A timeout on a connection sends a fault here. Dropping the sender stops the I/O thread.
-    faults: Sender<()>,
-    events: Receiver<SessionEvent>,
     io: Option<JoinHandle<()>>,
 }
 
 impl Session {
     /// Connects to the first port that answers as MAKCU. The preferred port is tried first.
-    /// `interpolation` is the wire value of the Move interpolation. Each connect, including a reconnect, sends it.
+    /// `interpolation` is the wire value of the Move interpolation, sent on the connect.
     pub(super) fn connect(
-        connector: Arc<dyn Connector>,
+        connector: &dyn Connector,
         preferred: Option<&str>,
-        interpolation: Arc<AtomicU8>,
+        interpolation: u8,
     ) -> Result<(Self, SessionInfo)> {
-        let (port, info) = connect_any(
-            connector.as_ref(),
-            preferred,
-            interpolation.load(Ordering::Acquire),
-        )?;
+        let (port, info) = connect_any(connector, preferred, interpolation)?;
         let reader = port.try_clone()?;
-        let session = Self::start(connector, port, reader, info.port.clone(), interpolation)?;
-        Ok((session, info))
-    }
-
-    fn start(
-        connector: Arc<dyn Connector>,
-        writer: Box<dyn Port>,
-        reader: Box<dyn Port>,
-        preferred: String,
-        interpolation: Arc<AtomicU8>,
-    ) -> Result<Self> {
         let shared = Arc::new(Shared {
             writer: Mutex::new(Some(Writer {
-                port: writer,
+                port,
                 buffer: Vec::new(),
             })),
             slot: Mutex::new(None),
             connected: AtomicBool::new(true),
         });
-        let (faults, fault_receiver) = channel();
-        let (event_sender, events) = channel();
-        let io = IoThread {
-            connector,
-            shared: Arc::clone(&shared),
-            faults: fault_receiver,
-            events: event_sender,
-            preferred,
-            interpolation,
-        };
-        let io = thread::Builder::new()
-            .name("makcu-io".to_owned())
-            .spawn(move || io.run(reader))?;
-        Ok(Self {
+        let io = thread::Builder::new().name("makcu-io".to_owned()).spawn({
+            let shared = Arc::clone(&shared);
+            move || serve(&shared, reader)
+        })?;
+        let session = Self {
             shared,
             requests: Mutex::new(()),
-            faults,
-            events,
             io: Some(io),
-        })
+        };
+        Ok((session, info))
     }
 
     /// Sends a request and waits for its reply. A timeout ends the connection at once, so the
-    /// next request fails with `NotConnected` until the reconnect is done.
+    /// next request fails with `NotConnected`.
     pub(super) fn request(&self, request: Request) -> Result<Packet, SessionError> {
         let _turn = lock(&self.requests);
         if !self.is_connected() {
@@ -196,7 +158,6 @@ impl Session {
                 // A late reply has no tag. It would look like the answer to the next request of
                 // the same command, so the link goes down here, before any other request can run.
                 self.shared.mark_lost();
-                let _ = self.faults.send(());
                 Err(SessionError::TimedOut)
             }
         }
@@ -208,10 +169,6 @@ impl Session {
             return Err(SessionError::NotConnected);
         }
         self.write(requests)
-    }
-
-    pub(super) fn poll_event(&self) -> Option<SessionEvent> {
-        self.events.try_recv().ok()
     }
 
     pub(super) fn is_connected(&self) -> bool {
@@ -230,139 +187,38 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Replacing the sender drops the old one, so the I/O thread sees the end and returns.
-        self.faults = channel().0;
+        self.shared.mark_lost();
         if let Some(io) = self.io.take() {
             let _ = io.join();
         }
     }
 }
 
-#[derive(PartialEq, Eq)]
-enum Ended {
-    /// The link was lost. The I/O thread reconnects.
-    Lost,
-    /// The session was dropped. The I/O thread returns.
-    Stopped,
-}
-
-struct IoThread {
-    connector: Arc<dyn Connector>,
-    shared: Arc<Shared>,
-    faults: Receiver<()>,
-    events: Sender<SessionEvent>,
-    /// The port that was used last. It is tried first.
-    preferred: String,
-    /// The Move interpolation to send on each connect. The client changes it.
-    interpolation: Arc<AtomicU8>,
-}
-
-impl IoThread {
-    fn run(mut self, reader: Box<dyn Port>) {
-        let mut next = Some(reader);
-        while let Some(reader) = next.take() {
-            if self.serve(reader) == Ended::Stopped {
-                return;
-            }
-            self.lost();
-            next = self.reconnect();
+/// The I/O thread: reads the replies until the link is down, which a read error or the session
+/// can cause. The reader is closed on return.
+fn serve(shared: &Shared, mut reader: Box<dyn Port>) {
+    let mut decoder = PacketDecoder::default();
+    let mut buf = [0u8; 256];
+    while shared.connected.load(Ordering::Acquire) {
+        match reader.read(&mut buf) {
+            Ok(count) => decoder.feed(&buf[..count], |packet| route(shared, packet)),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+            Err(_) => shared.mark_lost(),
         }
-    }
-
-    /// Reads the replies until the link is lost or the session is dropped. The reader is closed on return.
-    fn serve(&mut self, mut reader: Box<dyn Port>) -> Ended {
-        let mut decoder = PacketDecoder::default();
-        let mut buf = [0u8; 256];
-        loop {
-            match self.faults.try_recv() {
-                Ok(()) => return Ended::Lost,
-                Err(TryRecvError::Disconnected) => return Ended::Stopped,
-                Err(TryRecvError::Empty) => {}
-            }
-            match reader.read(&mut buf) {
-                Ok(count) => decoder.feed(&buf[..count], |packet| self.route(packet)),
-                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(_) => return Ended::Lost,
-            }
-        }
-    }
-
-    /// A reply goes to the waiting request when its command matches. Any other reply is dropped.
-    fn route(&self, packet: Packet) {
-        let waiting = lock(&self.shared.slot).take_if(|slot| slot.request.command() == packet.cmd);
-        if let Some(slot) = waiting {
-            let answer = if is_reject(slot.request, &packet) {
-                Err(SessionError::Rejected)
-            } else {
-                Ok(packet)
-            };
-            let _ = slot.reply.send(answer);
-        }
-    }
-
-    fn lost(&self) {
-        self.shared.mark_lost();
-        self.emit(SessionEvent::Disconnected);
-    }
-
-    /// Tries the connect sequence until it works. Returns the new reader, or `None` when the session is dropped.
-    fn reconnect(&mut self) -> Option<Box<dyn Port>> {
-        let mut attempt = 0;
-        loop {
-            self.emit(SessionEvent::Connecting);
-            if let Ok(reader) = self.try_connect() {
-                return Some(reader);
-            }
-            if self.pause(backoff(attempt)) {
-                return None;
-            }
-            attempt += 1;
-        }
-    }
-
-    fn try_connect(&mut self) -> Result<Box<dyn Port>> {
-        let interpolation = self.interpolation.load(Ordering::Acquire);
-        let (port, info) = connect_any(
-            self.connector.as_ref(),
-            Some(&self.preferred),
-            interpolation,
-        )?;
-        let reader = port.try_clone()?;
-        self.preferred.clone_from(&info.port);
-        *lock(&self.shared.writer) = Some(Writer {
-            port,
-            buffer: Vec::new(),
-        });
-        self.shared.connected.store(true, Ordering::Release);
-        // A fault that came during the reconnect is about the old connection.
-        while self.faults.try_recv().is_ok() {}
-        self.emit(SessionEvent::Connected(Ok(info)));
-        Ok(reader)
-    }
-
-    /// Waits for `delay`. Returns `true` when the session was dropped.
-    fn pause(&self, delay: Duration) -> bool {
-        let deadline = Instant::now() + delay;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.faults.recv_timeout(left) {
-                Ok(()) => {}
-                Err(RecvTimeoutError::Timeout) => return false,
-                Err(RecvTimeoutError::Disconnected) => return true,
-            }
-        }
-    }
-
-    fn emit(&self, event: SessionEvent) {
-        let _ = self.events.send(event);
     }
 }
 
-/// The wait before try `attempt` of a reconnect, counted from 0: 100 ms, doubled each time, at most 5 s.
-fn backoff(attempt: u32) -> Duration {
-    FIRST_RETRY
-        .saturating_mul(2u32.saturating_pow(attempt))
-        .min(MAX_RETRY)
+/// A reply goes to the waiting request when its command matches. Any other reply is dropped.
+fn route(shared: &Shared, packet: Packet) {
+    let waiting = lock(&shared.slot).take_if(|slot| slot.request.command() == packet.cmd);
+    if let Some(slot) = waiting {
+        let answer = if is_reject(slot.request, &packet) {
+            Err(SessionError::Rejected)
+        } else {
+            Ok(packet)
+        };
+        let _ = slot.reply.send(answer);
+    }
 }
 
 /// Connects to the first port that answers as MAKCU. The error is the one of the last port.
@@ -471,8 +327,7 @@ fn kinds_of(port: &mut dyn Port) -> Result<u8> {
     Ok(kinds)
 }
 
-/// Writes a request and reads until its reply. Used only before the I/O thread starts, or on the
-/// I/O thread's own port while it reconnects.
+/// Writes a request and reads until its reply. Used only before the I/O thread starts.
 fn exchange(port: &mut dyn Port, request: Request) -> Result<Packet> {
     write_requests(port, &mut Vec::new(), std::slice::from_ref(&request))?;
     let mut decoder = PacketDecoder::default();
@@ -525,29 +380,7 @@ mod tests {
     const SET_BAUD_4M: [u8; 9] = [0xDE, 0xAD, 5, 0, 0xA5, 0x00, 0x09, 0x3D, 0x00];
 
     fn connect(fake: &FakeMakcu) -> Result<(Session, SessionInfo)> {
-        Session::connect(Arc::new(fake.clone()), None, Arc::new(AtomicU8::new(255)))
-    }
-
-    fn next_event(session: &Session) -> SessionEvent {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if let Some(event) = session.poll_event() {
-                return event;
-            }
-            assert!(Instant::now() < deadline, "no session event within 2 s");
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    /// Waits for the reconnect to finish, skipping the `Connecting` events of the tries before it.
-    fn wait_for_connected(session: &Session) -> SessionInfo {
-        loop {
-            match next_event(session) {
-                SessionEvent::Connecting => {}
-                SessionEvent::Connected(Ok(info)) => return info,
-                other => panic!("unexpected event {other:?}"),
-            }
-        }
+        Session::connect(fake, None, 255)
     }
 
     #[test]
@@ -577,8 +410,7 @@ mod tests {
         let (session, info) = connect(&fake).unwrap();
         assert_eq!(info.baud, HIGH_BAUD);
         assert!(!fake.frames().iter().any(|frame| frame[4] == 0xA5));
-        // The probe at 115,200 timed out during the connect, and no event says so.
-        assert_eq!(session.poll_event(), None);
+        assert!(session.is_connected());
     }
 
     #[test]
@@ -639,58 +471,32 @@ mod tests {
     }
 
     #[test]
-    fn a_late_reply_after_a_timeout_does_not_answer_the_next_request() {
+    fn a_request_after_a_timeout_does_not_use_the_old_connection() {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
         fake.mute_next(0x1F);
         let error = session.request(Request::Interpolate(40)).unwrap_err();
         assert!(matches!(error, SessionError::TimedOut));
-        // The late reply arrives before the reconnect empties the input buffer.
+        // The late reply has no tag, so the link is down before any other request can run.
         fake.inject(&[0xDE, 0xAD, 1, 0, 0x1F, 17]);
-
-        assert_eq!(next_event(&session), SessionEvent::Disconnected);
-        assert_eq!(next_event(&session), SessionEvent::Connecting);
-        assert!(matches!(
-            next_event(&session),
-            SessionEvent::Connected(Ok(_))
-        ));
-        let reply = session.request(Request::Interpolate(40)).unwrap();
-        assert_eq!(reply.payload(), [40]);
-    }
-
-    #[test]
-    fn a_request_right_after_a_timeout_does_not_use_the_old_connection() {
-        let fake = FakeMakcu::new();
-        let (session, _) = connect(&fake).unwrap();
-        fake.mute_next(0x1F);
-        assert!(session.request(Request::Interpolate(40)).is_err());
-        fake.inject(&[0xDE, 0xAD, 1, 0, 0x1F, 17]);
-        // No event is read first: the next request starts at once, as the caller can do.
-        // The link went down in the timed-out call, so the request fails before it is written.
+        assert!(!session.is_connected());
         let error = session.request(Request::Interpolate(40)).unwrap_err();
         assert!(matches!(error, SessionError::NotConnected));
         assert!(fake.frames().last().is_some_and(|frame| frame[4] == 0x1F));
     }
 
     #[test]
-    fn a_disconnect_emits_the_events_and_the_session_reconnects_after_the_reconnect() {
+    fn a_disconnect_ends_the_session_and_it_stays_down() {
         let fake = FakeMakcu::new();
         let (session, _) = connect(&fake).unwrap();
         fake.disconnect();
-        assert_eq!(next_event(&session), SessionEvent::Disconnected);
-        assert_eq!(next_event(&session), SessionEvent::Connecting);
-        assert!(!session.is_connected());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while session.is_connected() {
+            assert!(Instant::now() < deadline, "the session did not end");
+            thread::sleep(Duration::from_millis(1));
+        }
         fake.reconnect();
-        let info = wait_for_connected(&session);
-        assert_eq!(info.baud, HIGH_BAUD);
-        assert!(session.is_connected());
-    }
-
-    #[test]
-    fn the_reconnect_back_off_starts_at_100_ms_doubles_and_stops_at_5_s() {
-        let delays: Vec<u64> = (0..8)
-            .map(|attempt| backoff(attempt).as_millis() as u64)
-            .collect();
-        assert_eq!(delays, [100, 200, 400, 800, 1600, 3200, 5000, 5000]);
+        thread::sleep(Duration::from_millis(100));
+        assert!(!session.is_connected());
     }
 }

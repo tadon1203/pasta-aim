@@ -2,7 +2,7 @@
 
 mod ui;
 
-use nice_aimassist::{graphics, logging, platform, settings::Settings};
+use nice_aimassist::{logging, pipeline, platform, settings::Settings};
 
 fn main() -> eframe::Result {
     // The logs folder is found first, so a missing install folder is reported before any settings file is read.
@@ -12,10 +12,8 @@ fn main() -> eframe::Result {
     logging::set_level(loaded.settings.log_level);
     tracing::info!("nice-aimassist starting");
     platform::disable_process_power_throttling();
-    if let Err(error) =
-        graphics::bootstrap::initialize_graphics_diagnostics(loaded.settings.gpu_debug)
-    {
-        tracing::error!(error = %format_args!("{error:#}"), "graphics diagnostics initialization failed");
+    if let Err(error) = pipeline::init(loaded.settings.gpu_debug) {
+        tracing::error!(error = %format_args!("{error:#}"), "GPU pipeline initialization failed");
         return Err(eframe::Error::AppCreation(error.into_boxed_dyn_error()));
     }
     if !platform::enable_per_monitor_dpi_awareness() {

@@ -55,6 +55,13 @@ impl Clock {
         counter
     }
 
+    /// A clock of another tick rate, such as the GPU timestamp frequency.
+    pub fn with_frequency(ticks_per_second: u64) -> Self {
+        Self {
+            ticks_per_second: ticks_per_second as f64,
+        }
+    }
+
     pub fn frequency(self) -> i64 {
         self.ticks_per_second as i64
     }

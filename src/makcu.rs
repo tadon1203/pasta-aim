@@ -1,11 +1,4 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -15,7 +8,7 @@ use self::{
         windows::{WindowsConnector, available_ports},
     },
     protocol::{Request, is_interpolate_echo, routes},
-    session::{Session, SessionEvent, SessionInfo},
+    session::{Session, SessionInfo},
 };
 use crate::settings::{Interpolation, InterpolationPercent};
 
@@ -28,8 +21,6 @@ pub use port::PortEntry;
 pub(crate) use port::fake::FakeMakcu;
 pub use protocol::format_firmware;
 
-const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
-const RECONNECT_RETRY_WINDOW: Duration = Duration::from_millis(500);
 /// The wire value of `INTERPOLATE` for Auto.
 const INTERPOLATE_AUTO: u8 = 255;
 
@@ -55,13 +46,6 @@ pub struct MakcuMetadata {
     pub interpolation_error: Option<String>,
 }
 
-#[derive(Debug)]
-pub enum MakcuConnectionEvent {
-    Disconnected,
-    Connecting,
-    Connected(Result<MakcuMetadata, String>),
-}
-
 impl std::fmt::Debug for MakcuClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MakcuClient").finish_non_exhaustive()
@@ -74,8 +58,8 @@ pub struct MakcuClient {
     port: Option<String>,
     /// The port that the user chose. `None` is auto-detect.
     selected_port: Option<String>,
-    /// The wire value of the Move interpolation. Each connect sends it, so it is kept across reconnects.
-    interpolation: Arc<AtomicU8>,
+    /// The wire value of the Move interpolation. Each connect sends it.
+    interpolation: u8,
 }
 
 impl Default for MakcuClient {
@@ -88,16 +72,15 @@ impl MakcuClient {
     #[cfg(test)]
     pub(crate) fn fake() -> (Self, FakeMakcu) {
         let fake = FakeMakcu::new();
-        (Self::fake_with(fake.clone()), fake)
+        (Self::fake_with(&fake), fake)
     }
 
     /// A client connected to `fake`, which the test can change before or after the connect.
     #[cfg(test)]
-    pub(crate) fn fake_with(fake: FakeMakcu) -> Self {
+    pub(crate) fn fake_with(fake: &FakeMakcu) -> Self {
         let mut client = Self::new();
         let (session, info) =
-            Session::connect(Arc::new(fake), None, Arc::clone(&client.interpolation))
-                .expect("the fake MAKCU connects");
+            Session::connect(fake, None, client.interpolation).expect("the fake MAKCU connects");
         client.session = Some(session);
         client.adopt(info);
         client
@@ -109,12 +92,12 @@ impl MakcuClient {
             routes: MakcuRoutes::default(),
             port: None,
             selected_port: None,
-            interpolation: Arc::new(AtomicU8::new(INTERPOLATE_AUTO)),
+            interpolation: INTERPOLATE_AUTO,
         }
     }
 
     /// Chooses the port of the next connect. `None` is auto-detect. A chosen port is the only one
-    /// that is tried, also by the reconnects of the session.
+    /// that is tried.
     pub fn set_port(&mut self, port: Option<String>) {
         self.selected_port = port;
     }
@@ -136,45 +119,34 @@ impl MakcuClient {
 
     pub fn connect_initial(&mut self) -> Result<MakcuMetadata> {
         tracing::info!(selected_port = ?self.selected_port, "connecting to MAKCU device");
-        self.connect(self.connector(), None)
+        self.connect(self.connector().as_ref(), None)
     }
 
+    /// Connects again, trying the port of the last connect first.
     pub fn refresh_routes(&mut self) -> Result<MakcuMetadata> {
         tracing::info!(preferred_port = ?self.port, "refreshing MAKCU routes");
         let preferred = self.port.clone();
-        self.close();
-        self.connect_within_window(&self.connector(), preferred.as_deref())
+        self.connect(self.connector().as_ref(), preferred.as_deref())
     }
 
     pub fn rescan(&mut self) -> Result<MakcuMetadata> {
         tracing::info!(selected_port = ?self.selected_port, "rescanning MAKCU devices");
-        self.connect(self.connector(), None)
+        self.connect(self.connector().as_ref(), None)
     }
 
-    pub fn poll_connection_event(&mut self) -> Option<MakcuConnectionEvent> {
-        let event = self.session.as_ref()?.poll_event()?;
-        Some(match event {
-            SessionEvent::Disconnected => {
-                tracing::warn!("MAKCU disconnected");
-                self.routes = MakcuRoutes::default();
-                MakcuConnectionEvent::Disconnected
-            }
-            SessionEvent::Connecting => {
-                tracing::info!("MAKCU reconnecting");
-                self.routes = MakcuRoutes::default();
-                MakcuConnectionEvent::Connecting
-            }
-            SessionEvent::Connected(Ok(info)) => {
-                tracing::info!("MAKCU connected; refreshing metadata");
-                MakcuConnectionEvent::Connected(Ok(self.adopt(info)))
-            }
-            SessionEvent::Connected(Err(error)) => MakcuConnectionEvent::Connected(Err(error)),
-        })
+    /// Returns `true` once when the link went down. The session is dropped then, and the user connects again.
+    pub fn take_disconnect(&mut self) -> bool {
+        if self.session.as_ref().is_none_or(Session::is_connected) {
+            return false;
+        }
+        tracing::warn!("MAKCU disconnected");
+        self.close();
+        true
     }
 
     /// The Move interpolation that the client sends on each connect.
     pub fn interpolation(&self) -> Interpolation {
-        match self.interpolation.load(Ordering::Acquire) {
+        match self.interpolation {
             INTERPOLATE_AUTO => Interpolation::Auto,
             percent => Interpolation::Percent(InterpolationPercent::new(u16::from(percent))),
         }
@@ -192,7 +164,7 @@ impl MakcuClient {
     /// the value is an error. While disconnected the value is only stored, and the next connect sends it.
     pub fn set_interpolation(&mut self, interpolation: Interpolation) -> Result<()> {
         let value = interpolation.wire_value();
-        self.interpolation.store(value, Ordering::Release);
+        self.interpolation = value;
         let Some(session) = self
             .session
             .as_ref()
@@ -234,37 +206,13 @@ impl MakcuClient {
     /// Ends the session and connects again. The port is closed before the new connect.
     fn connect(
         &mut self,
-        connector: Arc<dyn Connector>,
+        connector: &dyn Connector,
         preferred: Option<&str>,
     ) -> Result<MakcuMetadata> {
         self.close();
-        let (session, info) =
-            Session::connect(connector, preferred, Arc::clone(&self.interpolation))?;
+        let (session, info) = Session::connect(connector, preferred, self.interpolation)?;
         self.session = Some(session);
         Ok(self.adopt(info))
-    }
-
-    /// Tries the preferred port again for the retry window. The session falls back to the other ports on each try.
-    fn connect_within_window(
-        &mut self,
-        connector: &Arc<dyn Connector>,
-        preferred: Option<&str>,
-    ) -> Result<MakcuMetadata> {
-        let started = Instant::now();
-        loop {
-            match Session::connect(
-                Arc::clone(connector),
-                preferred,
-                Arc::clone(&self.interpolation),
-            ) {
-                Ok((session, info)) => {
-                    self.session = Some(session);
-                    return Ok(self.adopt(info));
-                }
-                Err(error) if started.elapsed() >= RECONNECT_RETRY_WINDOW => return Err(error),
-                Err(_) => thread::sleep(RECONNECT_RETRY_INTERVAL),
-            }
-        }
     }
 
     /// Drops the session, which closes the port, and forgets the routes and the Raw ledger.
@@ -297,6 +245,11 @@ impl MakcuClient {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+
     use super::*;
     use crate::settings::InterpolationPercent;
 
@@ -350,7 +303,7 @@ mod tests {
         let fake = FakeMakcu::new();
         fake.set_firmware(4075);
         let mut client = MakcuClient::new();
-        let error = client.connect(Arc::new(fake), None).unwrap_err();
+        let error = client.connect(&fake, None).unwrap_err();
         assert_eq!(
             format!("{error:#}"),
             "MAKCU firmware V4.075 is older than V4.076"
@@ -403,33 +356,12 @@ mod tests {
         client.set_interpolation(Interpolation::Auto).unwrap();
     }
 
-    /// Waits until the I/O thread reports that the link is down.
+    /// Waits until the I/O thread has seen the link go down.
     fn wait_for_disconnect(client: &mut MakcuClient) {
         let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match client.poll_connection_event() {
-                Some(MakcuConnectionEvent::Disconnected) => return,
-                Some(_) => {}
-                None => {
-                    assert!(Instant::now() < deadline, "no disconnect event");
-                    thread::sleep(Duration::from_millis(1));
-                }
-            }
-        }
-    }
-
-    /// Waits until the reconnect is done. The connect has sent the stored values by then.
-    fn wait_for_reconnect(client: &mut MakcuClient) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match client.poll_connection_event() {
-                Some(MakcuConnectionEvent::Connected(Ok(_))) => return,
-                Some(_) => {}
-                None => {
-                    assert!(Instant::now() < deadline, "no reconnect event");
-                    thread::sleep(Duration::from_millis(1));
-                }
-            }
+        while !client.take_disconnect() {
+            assert!(Instant::now() < deadline, "no disconnect");
+            thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -445,7 +377,7 @@ mod tests {
         assert_ne!(last_frame(&fake), [0xDE, 0xAD, 1, 0, 0x1F, 60]);
 
         fake.reconnect();
-        wait_for_reconnect(&mut client);
+        client.connect(&fake, None).unwrap();
         assert_eq!(last_frame(&fake), [0xDE, 0xAD, 1, 0, 0x1F, 60]);
     }
 }

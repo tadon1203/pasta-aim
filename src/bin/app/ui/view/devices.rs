@@ -7,13 +7,13 @@ use super::{
 use crate::ui::App;
 use nice_aimassist::{
     engine::{Command, EngineState, MakcuPhase, RunPhase},
-    graphics::DisplayInfo,
     makcu::format_firmware,
+    pipeline::DisplayInfo,
 };
 
 /// Whether the MAKCU connection attempt is still running.
 fn is_busy(phase: MakcuPhase) -> bool {
-    matches!(phase, MakcuPhase::Connecting | MakcuPhase::Reconnecting)
+    phase == MakcuPhase::Connecting
 }
 
 impl App {
@@ -144,7 +144,7 @@ impl App {
                     self.engine.send(Command::RescanMakcu);
                 }
             }
-            MakcuPhase::Connecting | MakcuPhase::Reconnecting => {
+            MakcuPhase::Connecting => {
                 ui.add_enabled(false, egui::Button::new("Connecting…"));
             }
             MakcuPhase::Failed => {

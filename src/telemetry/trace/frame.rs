@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 use super::header::ClockInfo;
-use crate::{inference::Detection, telemetry::FrameRecord};
+use crate::{pipeline::Detection, telemetry::FrameRecord};
 
 /// The most detections that a frame line holds. `candidate_total` has the full count.
 pub(super) const MAX_TRACED_CANDIDATES: usize = 8;
@@ -52,7 +52,7 @@ pub(super) struct FrameLine {
     pub gpu_preprocess_ms: Option<f64>,
     pub gpu_copy_ms: Option<f64>,
     /// The detections with the highest confidence first, at most `MAX_TRACED_CANDIDATES`.
-    pub candidates: Vec<DetectionFields>,
+    pub detections: Vec<DetectionFields>,
     pub candidate_total: usize,
     pub selected: Option<DetectionFields>,
     pub target_id: Option<u32>,
@@ -67,9 +67,9 @@ pub(super) struct FrameLine {
 impl FrameLine {
     pub(super) fn new(record: &FrameRecord, clock: TraceClock) -> Self {
         let times = record.times;
-        let mut candidates = record.candidates.as_slice().to_vec();
-        candidates.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
-        candidates.truncate(MAX_TRACED_CANDIDATES);
+        let mut detections: Vec<Detection> = record.detections.iter().copied().collect();
+        detections.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
+        detections.truncate(MAX_TRACED_CANDIDATES);
         Self {
             seq: record.frame_seq,
             present_us: clock.micros(times.present),
@@ -85,8 +85,8 @@ impl FrameLine {
             total_us: clock.micros(record.output_complete_qpc) - clock.micros(times.present),
             gpu_preprocess_ms: record.gpu_preprocess_ms,
             gpu_copy_ms: record.gpu_copy_ms,
-            candidates: candidates.iter().map(detection_fields).collect(),
-            candidate_total: record.candidates.total(),
+            detections: detections.iter().map(detection_fields).collect(),
+            candidate_total: record.detections.total(),
             selected: record.selected.as_ref().map(detection_fields),
             target_id: record.track.map(|track| track.id),
             target_switched: record.track.map(|track| track.switched),
@@ -113,8 +113,8 @@ mod tests {
     use super::*;
     use crate::{
         engine::target_track::Track,
-        inference::Candidates,
         makcu::Movement,
+        pipeline::Detections,
         telemetry::{FrameRecord, FrameTimes},
     };
 
@@ -145,7 +145,7 @@ mod tests {
             output_complete_qpc: present + 10,
             gpu_preprocess_ms: Some(0.5),
             gpu_copy_ms: None,
-            candidates: Candidates::EMPTY,
+            detections: Detections::EMPTY,
             selected: None,
             track: Some(Track {
                 id: 3,
@@ -180,24 +180,19 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_line_keeps_the_most_confident_candidates_first() {
-        let mut candidates = Candidates::EMPTY;
+    fn a_frame_line_keeps_the_most_confident_detections_first() {
+        let mut detections = Detections::EMPTY;
         for index in 0..12 {
-            candidates.push_for_test(Detection {
-                center_x: index as f32,
-                center_y: 0.0,
-                box_width: 1.0,
-                box_height: 1.0,
-                confidence: index as f32 / 100.0,
-                class_id: 0,
-            });
+            let mut detection = Detection::for_test(index as f32, 0.0, 0);
+            detection.confidence = index as f32 / 100.0;
+            detections.push(detection);
         }
         let mut frame = record(200);
-        frame.candidates = candidates;
+        frame.detections = detections;
         let line = FrameLine::new(&frame, clock());
         assert_eq!(line.candidate_total, 12);
-        assert_eq!(line.candidates.len(), MAX_TRACED_CANDIDATES);
-        assert_eq!(line.candidates[0].0, 11.0);
-        assert_eq!(line.candidates[MAX_TRACED_CANDIDATES - 1].0, 4.0);
+        assert_eq!(line.detections.len(), MAX_TRACED_CANDIDATES);
+        assert_eq!(line.detections[0].0, 11.0);
+        assert_eq!(line.detections[MAX_TRACED_CANDIDATES - 1].0, 4.0);
     }
 }

@@ -1,43 +1,61 @@
+//! The inference stage: the DirectML-backed ONNX Runtime session, its input tensor on the shared
+//! D3D12 device, and the postprocess that turns the output into detections.
+
 use std::{
+    ffi::CStr,
+    fmt::Debug,
     path::Path,
+    slice,
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
 use ort::{
+    AsPointer,
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
     session::{IoBinding, Session, builder::SessionBuilder},
-    value::{DynValue, Outlet, PrimitiveTensorElementType, Tensor},
+    sys,
+    value::{DynValue, Outlet, PrimitiveTensorElementType, Tensor, TensorElementType},
 };
-use windows::Win32::{
-    AI::MachineLearning::DirectML::{DML_CREATE_DEVICE_FLAG_NONE, DMLCreateDevice, IDMLDevice},
-    Graphics::Direct3D12::{
-        D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, ID3D12Resource,
+use windows::{
+    Win32::{
+        AI::MachineLearning::DirectML::{DML_CREATE_DEVICE_FLAG_NONE, DMLCreateDevice, IDMLDevice},
+        Graphics::Direct3D12::{
+            D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            ID3D12CommandQueue, ID3D12Resource,
+        },
     },
+    core::Interface,
 };
 
-use crate::{
-    clock::Clock,
-    graphics::device::GpuDeviceContext,
-    inference::{
-        EpAssignmentState, ModelInputSpec, TensorPrecision, ep_assignment,
-        postprocess::{Selection, select_nearest},
-    },
-    settings::Confidence,
-};
-
-use super::{append_dml1, d3d12_resource_from_dml_tensor};
+use super::{Detection, Detections, GpuDeviceContext, Precision};
+use crate::{clock::Clock, settings::Confidence};
 
 static NEXT_PREPARE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The input tensor of the model: its width, height, and precision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ModelInputSpec {
+    pub width: usize,
+    pub height: usize,
+    pub precision: Precision,
+}
+
 /// The detections of one ONNX Runtime run, with the QPC ticks of its two stage boundaries.
-pub struct InferenceOutput {
+pub(super) struct InferenceOutput {
     pub selection: Selection,
     /// After the ONNX Runtime run.
     pub inference_done_qpc: i64,
     /// After the postprocess.
     pub postprocess_done_qpc: i64,
+}
+
+/// The nearest detection, and every detection that passed the confidence filter.
+#[derive(Debug)]
+pub(super) struct Selection {
+    pub nearest: Option<Detection>,
+    pub detections: Detections,
 }
 
 /// The DirectML-allocated input tensor, in the model's input precision.
@@ -54,11 +72,11 @@ impl InputTensor {
         prepare_id: &str,
     ) -> Result<(Self, ID3D12Resource)> {
         match spec.precision {
-            TensorPrecision::Fp16 => {
+            Precision::Fp16 => {
                 let (tensor, resource) = allocate_input::<half::f16>(allocator, spec, prepare_id)?;
                 Ok((Self::Fp16(tensor), resource))
             }
-            TensorPrecision::Fp32 => {
+            Precision::Fp32 => {
                 let (tensor, resource) = allocate_input::<f32>(allocator, spec, prepare_id)?;
                 Ok((Self::Fp32(tensor), resource))
             }
@@ -74,7 +92,7 @@ impl InputTensor {
     }
 }
 
-fn allocate_input<T: PrimitiveTensorElementType + std::fmt::Debug>(
+fn allocate_input<T: PrimitiveTensorElementType + Debug>(
     allocator: &Allocator,
     spec: ModelInputSpec,
     prepare_id: &str,
@@ -98,7 +116,7 @@ fn allocate_input<T: PrimitiveTensorElementType + std::fmt::Debug>(
 ///
 /// Field order is drop order: tensors must disappear before their `DirectML`
 /// allocator and session.
-pub struct OrtDirectMlBackend {
+pub(super) struct OrtDirectMlBackend {
     binding: IoBinding,
     _input_tensor: InputTensor,
     input_resource: ID3D12Resource,
@@ -108,15 +126,15 @@ pub struct OrtDirectMlBackend {
     input_spec: ModelInputSpec,
     prepare_id: String,
     output_name: String,
-    output_precision: TensorPrecision,
+    output_precision: Precision,
     /// Rows of the static `[1, rows, 6]` output, validated at load.
     output_rows: usize,
     confidence_threshold: Confidence,
-    ep_assignment: EpAssignmentState,
+    cpu_nodes: Option<usize>,
 }
 
 impl OrtDirectMlBackend {
-    pub fn prepare(path: &Path, gpu: &GpuDeviceContext, low_latency: bool) -> Result<Self> {
+    pub(super) fn prepare(path: &Path, gpu: &GpuDeviceContext, low_latency: bool) -> Result<Self> {
         let prepare_id = format!(
             "{}-{}",
             std::process::id(),
@@ -151,8 +169,8 @@ impl OrtDirectMlBackend {
             .context("failed to create IDMLDevice")?;
         let dml_device: IDMLDevice = dml_device.context("DMLCreateDevice returned no device")?;
 
-        let mut builder =
-            session_builder(low_latency).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let mut builder = session_builder(low_latency)
+            .context("failed to create the ONNX Runtime session builder")?;
         // SAFETY: gpu owns the D3D12 device and its single compute queue for
         // longer than this session and both are passed to DML1 unchanged.
         unsafe { append_dml1(&mut builder, &dml_device, gpu.queue(), prepare_id) }?;
@@ -190,10 +208,12 @@ impl OrtDirectMlBackend {
         validate_metadata(&session, input_spec)?;
         let input_name = session.inputs()[0].name().to_owned();
         let output_name = session.outputs()[0].name().to_owned();
-        let ep_assignment = ep_assignment::read(&session).map_or_else(
-            |error| crate::inference::EpAssignmentState::Unavailable(format!("{error:#}")),
-            crate::inference::EpAssignmentState::Available,
-        );
+        // A failed read leaves the count unknown. The log keeps the reason.
+        let cpu_nodes = read_cpu_nodes(&session)
+            .inspect_err(|error| {
+                tracing::debug!(prepare_id, error = %format_args!("{error:#}"), "cpu_nodes_unavailable");
+            })
+            .ok();
 
         let allocator = Allocator::new(
             &session,
@@ -230,31 +250,32 @@ impl OrtDirectMlBackend {
             output_precision,
             output_rows,
             confidence_threshold: Confidence::default(),
-            ep_assignment,
+            cpu_nodes,
         })
     }
 
-    pub fn prepare_id(&self) -> &str {
+    pub(super) fn prepare_id(&self) -> &str {
         &self.prepare_id
     }
 
-    pub fn input_spec(&self) -> ModelInputSpec {
+    pub(super) fn input_spec(&self) -> ModelInputSpec {
         self.input_spec
     }
 
-    pub fn ep_assignment(&self) -> &EpAssignmentState {
-        &self.ep_assignment
+    /// The nodes that ORT assigned to the CPU. `None` when ORT does not report the assignment.
+    pub(super) fn cpu_nodes(&self) -> Option<usize> {
+        self.cpu_nodes
     }
 
-    pub fn input_resource(&self) -> &ID3D12Resource {
+    pub(super) fn input_resource(&self) -> &ID3D12Resource {
         &self.input_resource
     }
 
-    pub fn set_confidence_threshold(&mut self, value: Confidence) {
+    pub(super) fn set_confidence_threshold(&mut self, value: Confidence) {
         self.confidence_threshold = value;
     }
 
-    pub fn run(&mut self) -> Result<InferenceOutput> {
+    pub(super) fn run(&mut self) -> Result<InferenceOutput> {
         // The tensor was bound once during prepare and is populated by the
         // pipeline's D3D12 preprocess dispatch before this call.
         let outputs = self.session.run_binding(&self.binding)?;
@@ -262,12 +283,10 @@ impl OrtDirectMlBackend {
         let threshold = self.confidence_threshold.ratio();
         let output = &outputs[self.output_name.as_str()];
         let selection = match self.output_precision {
-            TensorPrecision::Fp16 => {
+            Precision::Fp16 => {
                 detect::<half::f16>(output, self.input_spec, self.output_rows, threshold)?
             }
-            TensorPrecision::Fp32 => {
-                detect::<f32>(output, self.input_spec, self.output_rows, threshold)?
-            }
+            Precision::Fp32 => detect::<f32>(output, self.input_spec, self.output_rows, threshold)?,
         };
         Ok(InferenceOutput {
             selection,
@@ -293,6 +312,64 @@ fn detect<T: PrimitiveTensorElementType + Copy + Into<f32>>(
         spec.height,
         confidence_threshold,
     ))
+}
+
+/// `data` holds `rows` YOLO rows of `[x1, y1, x2, y2, confidence, class_id]`
+/// in either FP32 or FP16.
+fn select_nearest<T: Copy + Into<f32>>(
+    data: &[T],
+    rows: usize,
+    input_width: usize,
+    input_height: usize,
+    confidence_threshold: f32,
+) -> Selection {
+    let image_center = (input_width as f32 * 0.5, input_height as f32 * 0.5);
+    let mut best: Option<(f32, Detection)> = None;
+    let mut detections = Detections::EMPTY;
+
+    for row in data.as_chunks::<6>().0.iter().take(rows) {
+        // The confidence decides the row first, so a rejected row converts no box values.
+        let confidence: f32 = row[4].into();
+        if !confidence.is_finite() || confidence < confidence_threshold {
+            continue;
+        }
+        let x1: f32 = row[0].into();
+        let y1: f32 = row[1].into();
+        let x2: f32 = row[2].into();
+        let y2: f32 = row[3].into();
+        let class_id: f32 = row[5].into();
+        if !x1.is_finite()
+            || !y1.is_finite()
+            || !x2.is_finite()
+            || !y2.is_finite()
+            || x2 <= x1
+            || y2 <= y1
+        {
+            continue;
+        }
+
+        let center_x = f32::midpoint(x1, x2);
+        let center_y = f32::midpoint(y1, y2);
+        let dx = center_x - image_center.0;
+        let dy = center_y - image_center.1;
+        let distance_sq = dx * dx + dy * dy;
+        let detection = Detection {
+            center_x,
+            center_y,
+            box_width: x2 - x1,
+            box_height: y2 - y1,
+            confidence,
+            class_id: class_id.round() as i32,
+        };
+        detections.push(detection);
+        if !matches!(best, Some((best_distance, _)) if best_distance <= distance_sq) {
+            best = Some((distance_sq, detection));
+        }
+    }
+    Selection {
+        nearest: best.map(|(_, detection)| detection),
+        detections,
+    }
 }
 
 fn session_builder(low_latency: bool) -> ort::Result<SessionBuilder> {
@@ -373,14 +450,22 @@ fn parse_imgsz(value: &str) -> Option<(usize, usize)> {
     }
 }
 
-fn io_precision(outlet: &Outlet, role: &str) -> Result<TensorPrecision> {
+fn io_precision(outlet: &Outlet, role: &str) -> Result<Precision> {
     let element_type = outlet
         .dtype()
         .tensor_type()
         .with_context(|| format!("model {role} must be a tensor"))?;
-    TensorPrecision::from_element_type(element_type).with_context(|| {
+    precision_of(element_type).with_context(|| {
         format!("unsupported model {role} element type {element_type}; expected FP16 or FP32")
     })
+}
+
+fn precision_of(element_type: TensorElementType) -> Option<Precision> {
+    match element_type {
+        TensorElementType::Float16 => Some(Precision::Fp16),
+        TensorElementType::Float32 => Some(Precision::Fp32),
+        _ => None,
+    }
 }
 
 fn validate_input_resource(resource: &ID3D12Resource, expected_input_bytes: usize) -> Result<()> {
@@ -403,9 +488,218 @@ fn validate_input_resource(resource: &ID3D12Resource, expected_input_bytes: usiz
     Ok(())
 }
 
+// ---- The ORT C API, for the parts that the safe wrapper does not expose ----
+
+/// # Safety
+/// `dml_device` and `queue` must belong to the same D3D12 device and outlive the resulting session.
+unsafe fn append_dml1(
+    builder: &mut SessionBuilder,
+    dml_device: &IDMLDevice,
+    queue: &ID3D12CommandQueue,
+    prepare_id: &str,
+) -> Result<()> {
+    let api = ort::ep::directml::api().context("ONNX Runtime DirectML API is unavailable")?;
+    // SAFETY: caller guarantees that these live COM interfaces are a matching DML device/queue pair.
+    let status = unsafe {
+        (api.SessionOptionsAppendExecutionProvider_DML1)(
+            builder.ptr_mut().cast(),
+            dml_device.as_raw(),
+            queue.as_raw(),
+        )
+    };
+    tracing::debug!(prepare_id, dml_device = ?dml_device.as_raw(), queue = ?queue.as_raw(), "dml1_registration_pointers");
+    // SAFETY: status is returned by ONNX Runtime's DML1 API.
+    unsafe { ort::Error::result_from_status(status) }.context("failed to append DirectML DML1")?;
+    Ok(())
+}
+
+/// # Safety
+/// `tensor` must be a live tensor allocated by this `DirectML` session's allocator.
+unsafe fn d3d12_resource_from_dml_tensor<T: PrimitiveTensorElementType + Debug>(
+    allocator: &Allocator,
+    tensor: &mut Tensor<T>,
+    prepare_id: &str,
+) -> Result<ID3D12Resource> {
+    let api = ort::ep::directml::api().context("ONNX Runtime DirectML API is unavailable")?;
+    let mut raw = std::ptr::null_mut();
+    tracing::debug!(prepare_id, allocator = ?allocator.ptr(), tensor_data = ?tensor.data_ptr_mut(), "dml_tensor_resource_pointers");
+    // SAFETY: caller guarantees the DML tensor allocation and allocator are from the same session.
+    let status = unsafe {
+        (api.GetD3D12ResourceFromAllocation)(
+            allocator.ptr().cast_mut(),
+            tensor.data_ptr_mut().cast(),
+            &mut raw,
+        )
+    };
+    // SAFETY: status is returned by ONNX Runtime's DirectML API.
+    unsafe { ort::Error::result_from_status(status) }
+        .context("failed to get D3D12 resource for DirectML tensor")?;
+    if raw.is_null() {
+        bail!("DirectML returned a null D3D12 tensor resource");
+    }
+    // SAFETY: GetD3D12ResourceFromAllocation returns an AddRef'd ID3D12Resource per ORT contract.
+    Ok(unsafe { ID3D12Resource::from_raw(raw.cast()) })
+}
+
+const CPU_PROVIDER: &str = "CPUExecutionProvider";
+
+/// Counts the nodes that ORT assigned to the CPU provider. Only the count is read.
+fn read_cpu_nodes(session: &Session) -> Result<usize> {
+    let inner = session.inner();
+    let mut subgraphs = std::ptr::null();
+    let mut subgraph_count = 0_usize;
+    let mut cpu_nodes = 0;
+    // ORT owns the assignment records for the lifetime of the session. Nothing is retained here.
+    unsafe {
+        ort_call((ort::api().Session_GetEpGraphAssignmentInfo)(
+            inner.ptr(),
+            &mut subgraphs,
+            &mut subgraph_count,
+        ))?;
+        for &subgraph in raw_slice(subgraphs, subgraph_count, "EP subgraph list")? {
+            if subgraph.is_null() {
+                bail!("ORT returned a null EP subgraph");
+            }
+            if subgraph_provider_name(subgraph)? != CPU_PROVIDER {
+                continue;
+            }
+            let mut nodes = std::ptr::null();
+            let mut node_count = 0_usize;
+            ort_call((ort::api().EpAssignedSubgraph_GetNodes)(
+                subgraph,
+                &mut nodes,
+                &mut node_count,
+            ))?;
+            cpu_nodes += raw_slice(nodes, node_count, "EP node list")?.len();
+        }
+    }
+    Ok(cpu_nodes)
+}
+
+/// # Safety
+/// `subgraph` must be a live subgraph of the session's assignment info.
+unsafe fn subgraph_provider_name(subgraph: *const sys::OrtEpAssignedSubgraph) -> Result<String> {
+    let mut name = std::ptr::null();
+    unsafe {
+        ort_call((ort::api().EpAssignedSubgraph_GetEpName)(
+            subgraph, &mut name,
+        ))?;
+    }
+    if name.is_null() {
+        bail!("ORT returned a null EP name");
+    }
+    Ok(unsafe { CStr::from_ptr(name) }
+        .to_str()
+        .context("ORT returned a non-UTF-8 EP name")?
+        .to_owned())
+}
+
+/// # Safety
+/// `status` must be returned by an ORT API call.
+unsafe fn ort_call(status: sys::OrtStatusPtr) -> Result<()> {
+    unsafe { ort::Error::result_from_status(status) }.map_err(anyhow::Error::from)
+}
+
+/// # Safety
+/// `ptr` must point to `len` live elements, or `len` must be zero.
+unsafe fn raw_slice<'a, T>(ptr: *const T, len: usize, description: &str) -> Result<&'a [T]> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if ptr.is_null() {
+        bail!("ORT returned a null {description} with length {len}");
+    }
+    Ok(unsafe { slice::from_raw_parts(ptr, len) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearest_valid_detection_wins() {
+        let data: [f32; 12] = [
+            0.0, 0.0, 20.0, 20.0, 0.95, 1.0, 45.0, 45.0, 55.0, 55.0, 0.80, 2.0,
+        ];
+        let detection = select_nearest(&data, 2, 100, 100, 0.25)
+            .nearest
+            .expect("detection");
+        assert_eq!(detection.class_id, 2);
+        assert_eq!((detection.center_x, detection.center_y), (50.0, 50.0));
+        assert_eq!((detection.box_width, detection.box_height), (10.0, 10.0));
+    }
+
+    #[test]
+    fn both_precisions_select_the_same_nearest_detection() {
+        let data: [f32; 12] = [
+            0.0, 0.0, 20.0, 20.0, 0.95, 1.0, 45.0, 45.0, 55.0, 55.0, 0.80, 2.0,
+        ];
+        let fp32 = select_nearest(&data, 2, 100, 100, 0.25)
+            .nearest
+            .expect("fp32 detection");
+        let half_data = data.map(half::f16::from_f32);
+        let fp16 = select_nearest(&half_data, 2, 100, 100, 0.25)
+            .nearest
+            .expect("fp16 detection");
+        for detection in [fp32, fp16] {
+            assert_eq!(detection.class_id, 2);
+            assert_eq!((detection.center_x, detection.center_y), (50.0, 50.0));
+        }
+    }
+
+    #[test]
+    fn rows_below_the_threshold_or_with_a_non_finite_confidence_are_skipped() {
+        let data: [f32; 12] = [
+            0.0,
+            0.0,
+            20.0,
+            20.0,
+            0.10,
+            1.0,
+            45.0,
+            45.0,
+            55.0,
+            55.0,
+            f32::NAN,
+            2.0,
+        ];
+        let selection = select_nearest(&data, 2, 100, 100, 0.25);
+        assert!(selection.nearest.is_none());
+        assert_eq!(selection.detections.total(), 0);
+    }
+
+    #[test]
+    fn a_row_with_non_finite_box_values_is_skipped_even_when_confident() {
+        let data: [f32; 12] = [
+            f32::INFINITY,
+            0.0,
+            20.0,
+            20.0,
+            0.95,
+            1.0,
+            45.0,
+            45.0,
+            55.0,
+            55.0,
+            0.80,
+            2.0,
+        ];
+        let selection = select_nearest(&data, 2, 100, 100, 0.25);
+        assert_eq!(selection.detections.total(), 1);
+        assert_eq!(selection.nearest.unwrap().class_id, 2);
+    }
+
+    #[test]
+    fn all_detections_above_the_threshold_are_kept_in_order() {
+        let data: [f32; 18] = [
+            0.0, 0.0, 20.0, 20.0, 0.95, 1.0, 45.0, 45.0, 55.0, 55.0, 0.80, 2.0, 0.0, 0.0, 5.0, 5.0,
+            0.10, 3.0,
+        ];
+        let selection = select_nearest(&data, 3, 100, 100, 0.25);
+        assert_eq!(selection.detections.total(), 2);
+        assert_eq!(selection.detections.iter().count(), 2);
+        assert_eq!(selection.detections.iter().next().unwrap().class_id, 1);
+    }
 
     #[test]
     fn imgsz_metadata_is_height_then_width() {

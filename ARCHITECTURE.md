@@ -68,10 +68,8 @@ Data flow:
 | `src/bin/app`       | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
 | `src/engine`        | The engine thread: commands, the engine state, output, and the track.                       |
 | `src/engine/worker` | The frame transaction, the run, model loading, pipeline replacement, and the MAKCU lifecycle. |
-| `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. |
+| `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. It holds the GPU layer, the capture, the GPU preprocess, and the inference with its postprocess. |
 | `src/telemetry`     | The Telemetry thread: the frame records, the statistics, the loop metrics, the frame trace, and the live values. |
-| `src/graphics`      | The capture, the shared frame texture and its fences, the GPU preprocess, and GPU faults.   |
-| `src/inference`     | The inference session, the postprocess, and the selection of the target.                    |
 | `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
 | `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
 | `src`               | The library crate root. Also holds the small modules that serve many parts (settings, logging, and the clock with its deadline wait). |

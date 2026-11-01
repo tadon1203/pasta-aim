@@ -2,20 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     Repaint,
-    graphics::DisplayInfo,
-    inference::{EpAssignedNode, EpAssignmentState, EpProviderAssignment, TensorPrecision},
     makcu::{MakcuRoutes, PortEntry},
+    pipeline::{DisplayInfo, Precision},
     sync::MutexExt,
 };
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EpAssignmentSummary {
-    pub total_nodes: usize,
-    pub directml_nodes: usize,
-    pub directml_subgraphs: usize,
-    pub cpu_nodes: usize,
-    pub cpu_subgraphs: usize,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelPhase {
@@ -30,10 +20,10 @@ pub struct ModelStatus {
     pub active_name: Option<String>,
     pub loading_name: Option<String>,
     pub input_size: Option<(usize, usize)>,
-    pub precision: Option<TensorPrecision>,
+    pub precision: Option<Precision>,
     pub error: Option<String>,
-    pub ep_assignment: Option<Arc<EpAssignmentState>>,
-    pub ep_assignment_summary: Option<EpAssignmentSummary>,
+    /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report them.
+    pub cpu_nodes: Option<usize>,
 }
 
 impl Default for ModelStatus {
@@ -45,52 +35,8 @@ impl Default for ModelStatus {
             input_size: None,
             precision: None,
             error: None,
-            ep_assignment: None,
-            ep_assignment_summary: None,
+            cpu_nodes: None,
         }
-    }
-}
-
-pub fn ep_assignment_summary(state: &EpAssignmentState) -> Option<EpAssignmentSummary> {
-    let EpAssignmentState::Available(report) = state else {
-        return None;
-    };
-    let mut summary = EpAssignmentSummary {
-        total_nodes: report.total_nodes,
-        ..Default::default()
-    };
-    for provider in &report.providers {
-        match provider.name.as_str() {
-            "DmlExecutionProvider" => {
-                summary.directml_nodes = provider.nodes.len();
-                summary.directml_subgraphs = provider.subgraph_count;
-            }
-            "CPUExecutionProvider" => {
-                summary.cpu_nodes = provider.nodes.len();
-                summary.cpu_subgraphs = provider.subgraph_count;
-            }
-            _ => {}
-        }
-    }
-    Some(summary)
-}
-
-pub fn cpu_fallback_nodes(state: &EpAssignmentState) -> &[EpAssignedNode] {
-    match state {
-        EpAssignmentState::Available(report) => report
-            .providers
-            .iter()
-            .find(|provider| provider.name == "CPUExecutionProvider")
-            .map_or(&[], |provider| provider.nodes.as_slice()),
-        EpAssignmentState::Unavailable(_) => &[],
-    }
-}
-
-pub fn provider_display_name(provider: &EpProviderAssignment) -> &str {
-    match provider.name.as_str() {
-        "DmlExecutionProvider" => "DirectML",
-        "CPUExecutionProvider" => "CPU",
-        _ => &provider.name,
     }
 }
 
@@ -130,7 +76,6 @@ impl Default for CaptureStatus {
 pub enum MakcuPhase {
     Connecting,
     Connected,
-    Reconnecting,
     Failed,
 }
 
@@ -265,9 +210,6 @@ impl StatusHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::ep_assignment::{
-        EpAssignedNode, EpAssignmentReport, EpAssignmentState, EpProviderAssignment,
-    };
 
     fn ready_state() -> EngineState {
         let mut state = EngineState::default();
@@ -293,50 +235,8 @@ mod tests {
     #[test]
     fn disconnected_makcu_blocks_output() {
         let mut state = ready_state();
-        state.makcu.phase = MakcuPhase::Reconnecting;
+        state.makcu.phase = MakcuPhase::Failed;
         assert_eq!(state.block_reason(), Some("MAKCU is not connected"));
-    }
-
-    #[test]
-    fn assignment_summary_and_cpu_nodes_use_actual_provider_names() {
-        let state = EpAssignmentState::Available(EpAssignmentReport {
-            total_nodes: 3,
-            providers: vec![
-                EpProviderAssignment {
-                    name: "DmlExecutionProvider".into(),
-                    subgraph_count: 1,
-                    nodes: vec![
-                        EpAssignedNode {
-                            name: "conv".into(),
-                            domain: String::new(),
-                            op_type: "Conv".into()
-                        };
-                        2
-                    ],
-                },
-                EpProviderAssignment {
-                    name: "CPUExecutionProvider".into(),
-                    subgraph_count: 1,
-                    nodes: vec![EpAssignedNode {
-                        name: "shape".into(),
-                        domain: String::new(),
-                        op_type: "Shape".into(),
-                    }],
-                },
-            ],
-        });
-
-        assert_eq!(
-            ep_assignment_summary(&state),
-            Some(EpAssignmentSummary {
-                total_nodes: 3,
-                directml_nodes: 2,
-                directml_subgraphs: 1,
-                cpu_nodes: 1,
-                cpu_subgraphs: 1,
-            })
-        );
-        assert_eq!(cpu_fallback_nodes(&state)[0].op_type, "Shape");
     }
 
     #[test]

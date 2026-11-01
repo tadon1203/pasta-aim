@@ -3,8 +3,7 @@
 use super::{CaptureState, Worker};
 use crate::{
     engine::{CapturePhase, EngineEvent, ModelPhase, RunMode},
-    graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
-    pipeline::{Pipeline, PipelineConfig},
+    pipeline::{DisplayInfo, DxgiCapture, Pipeline, PipelineConfig, displays},
 };
 use anyhow::Result;
 
@@ -35,10 +34,10 @@ impl CaptureState {
 
 impl Worker {
     pub(super) fn refresh_capture_catalog(&mut self) {
-        if self.graphics.is_none() {
+        if !self.com_ready {
             return;
         }
-        match GraphicsThread::enumerate_displays() {
+        match displays() {
             Ok(displays) => {
                 self.displays.clone_from(&displays);
                 self.status.edit(|status| {
@@ -195,11 +194,8 @@ impl Worker {
     }
 
     fn create_capture(&self, adapter: u32, output: u32) -> Result<DxgiCapture> {
-        anyhow::ensure!(
-            self.graphics.is_some(),
-            "graphics COM initialization unavailable"
-        );
-        GraphicsThread::create_capture(adapter, output)
+        anyhow::ensure!(self.com_ready, "graphics COM initialization unavailable");
+        DxgiCapture::new(adapter, output)
     }
 
     /// The state for a new display: a pipeline when a model is active, otherwise a bare capture.
@@ -236,15 +232,13 @@ impl Worker {
         );
         let input_size = pipeline.input_size();
         let precision = pipeline.precision();
-        let ep_assignment = std::sync::Arc::clone(pipeline.ep_assignment());
-        let summary = crate::engine::ep_assignment_summary(&ep_assignment);
+        let cpu_nodes = pipeline.cpu_nodes();
         self.status.edit(|status| {
             status.model.phase = ModelPhase::Ready;
             status.model.input_size = Some(input_size);
             status.model.precision = Some(precision);
             status.model.error = None;
-            status.model.ep_assignment = Some(ep_assignment);
-            status.model.ep_assignment_summary = summary;
+            status.model.cpu_nodes = cpu_nodes;
         });
     }
 }

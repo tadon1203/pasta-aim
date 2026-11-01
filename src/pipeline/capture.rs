@@ -18,10 +18,11 @@ use windows::Win32::Graphics::{
 };
 use windows::core::Interface;
 
-use super::gpu_diagnostics::GpuFaultStage;
-use super::shared_frame::CaptureFrame;
-use super::{DisplayInfo, select_output};
-use crate::clock::Clock;
+use super::gpu::{CaptureFrame, select_output};
+use crate::{
+    clock::Clock,
+    pipeline::{DisplayInfo, GpuFaultStage},
+};
 
 const GPU_QUERY_RING_SIZE: usize = 16;
 
@@ -200,7 +201,8 @@ impl D3d11GpuProfiler {
                 continue;
             }
             return Some(GpuCopySample {
-                gpu_copy_ms: (after - before) as f64 * 1000.0 / disjoint.Frequency as f64,
+                gpu_copy_ms: Clock::with_frequency(disjoint.Frequency)
+                    .ms(before.cast_signed(), after.cast_signed()),
             });
         }
         None
@@ -289,12 +291,8 @@ impl DxgiCapture {
         self.device.clone()
     }
 
-    pub(crate) fn device_lost(&self) -> bool {
-        super::gpu_diagnostics::d3d11_device_lost(&self.device)
-    }
-
     pub(crate) fn device_removed_reason(&self) -> Option<i32> {
-        super::gpu_diagnostics::d3d11_device_removed_reason(&self.device)
+        super::gpu::d3d11_removed_reason(&self.device)
     }
 
     pub(crate) fn last_fault_stage(&self) -> GpuFaultStage {
@@ -413,7 +411,7 @@ impl DxgiCapture {
                 desktop_size.1
             );
         }
-        let (left, top) = super::center_crop_origin(desktop_size, (width, height));
+        let (left, top) = crate::pipeline::center_crop_origin(desktop_size, (width, height));
         let (left, top) = (left as u32, top as u32);
         let source_box = D3D11_BOX {
             left,

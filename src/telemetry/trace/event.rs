@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::graphics::GpuDropReason;
+use crate::pipeline::GpuDropReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TraceEvent {

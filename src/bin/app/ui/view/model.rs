@@ -7,7 +7,7 @@ use std::{fs, process::Command};
 use anyhow::Context;
 use nice_aimassist::{
     engine::{EngineState, ModelPhase, RunPhase},
-    inference::TensorPrecision,
+    pipeline::Precision,
     settings,
 };
 
@@ -64,7 +64,7 @@ impl App {
                 ui.small("No .onnx models found in the models folder.");
             }
             if let Some((width, height)) = status.model.input_size {
-                let precision = status.model.precision.map_or("", TensorPrecision::label);
+                let precision = status.model.precision.map_or("", Precision::label);
                 ui.small(format!("Active input: {width}×{height} {precision}"));
             }
             if let Some(error) = &status.model.error {

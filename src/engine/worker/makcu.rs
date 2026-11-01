@@ -5,7 +5,7 @@ use anyhow::Result;
 use super::Worker;
 use crate::{
     engine::MakcuPhase,
-    makcu::{MakcuClient, MakcuConnectionEvent, MakcuMetadata, MakcuRoutes, format_firmware},
+    makcu::{MakcuClient, MakcuMetadata, MakcuRoutes, format_firmware},
     telemetry::TraceEvent,
 };
 
@@ -32,7 +32,7 @@ impl Worker {
         self.status.edit(|status| status.makcu.ports = ports);
     }
 
-    /// Drops the current connection state and reconnects with `connect`.
+    /// Drops the current connection state and connects again with `connect`.
     pub(super) fn reconnect_makcu(
         &mut self,
         action: &str,
@@ -58,28 +58,11 @@ impl Worker {
         }
     }
 
+    /// A lost link stops the run and shows a failure. The user connects again.
     pub(super) fn poll_makcu_events(&mut self) {
-        loop {
-            let event = self.makcu.poll_connection_event();
-            let Some(event) = event else { break };
-            match event {
-                MakcuConnectionEvent::Disconnected | MakcuConnectionEvent::Connecting => {
-                    tracing::warn!(?event, "MAKCU connection state changed");
-                    if matches!(event, MakcuConnectionEvent::Disconnected) {
-                        self.telemetry.event(TraceEvent::MakcuDisconnected);
-                    }
-                    self.stop_run();
-                    self.status.edit(|status| {
-                        status.makcu.phase = MakcuPhase::Reconnecting;
-                        status.makcu.routes = MakcuRoutes::default();
-                        status.makcu.error = None;
-                    });
-                }
-                MakcuConnectionEvent::Connected(Ok(metadata)) => {
-                    self.apply_makcu_metadata(metadata);
-                }
-                MakcuConnectionEvent::Connected(Err(error)) => self.set_makcu_failure(error),
-            }
+        if self.makcu.take_disconnect() {
+            self.telemetry.event(TraceEvent::MakcuDisconnected);
+            self.set_makcu_failure("MAKCU disconnected".to_owned());
         }
     }
 

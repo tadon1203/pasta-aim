@@ -187,8 +187,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        engine::target_track::Track, graphics::GpuDropReason, inference::Candidates,
-        makcu::Movement, telemetry::FrameTimes,
+        engine::target_track::Track, makcu::Movement, pipeline::Detections,
+        pipeline::GpuDropReason, telemetry::FrameTimes,
     };
 
     fn scratch_dir(name: &str) -> PathBuf {
@@ -216,7 +216,7 @@ mod tests {
             output_complete_qpc: present + 5,
             gpu_preprocess_ms: None,
             gpu_copy_ms: None,
-            candidates: Candidates::EMPTY,
+            detections: Detections::EMPTY,
             selected: None,
             track: Some(Track {
                 id: 3,

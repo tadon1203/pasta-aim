@@ -13,10 +13,7 @@ pub(crate) enum RunMode {
     OneShot,
 }
 
-pub use status::{
-    CapturePhase, EngineState, MakcuPhase, ModelPhase, RunPhase, cpu_fallback_nodes,
-    ep_assignment_summary, provider_display_name,
-};
+pub use status::{CapturePhase, EngineState, MakcuPhase, ModelPhase, RunPhase};
 
 use worker::{WorkerLinks, run_worker};
 
@@ -50,7 +47,7 @@ pub enum EngineEvent {
     Capture {
         adapter: u32,
         output: u32,
-        adapter_luid: crate::inference::AdapterLuid,
+        adapter_luid: crate::pipeline::AdapterLuid,
         result: std::result::Result<(), String>,
     },
 }

@@ -7,9 +7,9 @@ use std::sync::mpsc::Receiver;
 use super::{Worker, run::ActiveRun};
 use crate::{
     clock::Clock,
-    engine::{Command, RunGeneration, RunMode},
-    graphics::{GpuDropReason, GpuFaultReport, NoDesktopUpdateReason},
-    pipeline::{FaultKind, FrameOutcome, PipelineFault, ProcessedFrame},
+    engine::{Command, RunMode},
+    pipeline::{FrameOutcome, PipelineFault, ProcessedFrame},
+    pipeline::{GpuDropReason, NoDesktopUpdateReason},
     settings::FpsLimit,
     telemetry::FrameRecord,
 };
@@ -95,7 +95,7 @@ impl Worker {
                 }
             }
             Err(fault) => {
-                self.handle_fault(fault, run.generation);
+                self.handle_fault(&fault);
                 StepOutcome::NoDesktopUpdate
             }
         }
@@ -133,7 +133,7 @@ impl Worker {
             output_complete_qpc,
             gpu_preprocess_ms: frame.gpu_preprocess_ms,
             gpu_copy_ms: frame.gpu_copy_ms,
-            candidates: frame.candidates,
+            detections: frame.detections,
             selected: frame.selected,
             track: outcome.track,
             aim_error: outcome.target.map(|(dx, dy, _, _)| (dx, dy)),
@@ -147,23 +147,11 @@ impl Worker {
         true
     }
 
-    /// Recovers from a pipeline fault. The engine adds the run generation to the report.
-    fn handle_fault(&mut self, fault: PipelineFault, generation: RunGeneration) {
-        let PipelineFault {
-            kind,
-            message,
-            report,
-        } = fault;
-        let report = report.map(|report| GpuFaultReport {
-            generation: Some(generation),
-            ..*report
-        });
-        match kind {
-            FaultKind::Poisoned { device_lost } => {
-                self.recover_poisoned_pipeline(&message, device_lost, report);
-            }
-            FaultKind::Invalid => self.suspend_invalid_pipeline(&message),
-        }
+    /// Suspends the pipeline after a fault. The user retries with `RetryCapture`.
+    fn handle_fault(&mut self, fault: &PipelineFault) {
+        self.telemetry
+            .frame_dropped(GpuDropReason::PipelinePoisoned);
+        self.suspend_invalid_pipeline(&fault.message);
     }
 
     /// Edits the state for a frame that reached the output. Each edit is made only when its value changes.
@@ -189,8 +177,8 @@ mod tests {
             output::{OutputSettings, OutputStage},
             status::StatusHub,
         },
-        inference::{AdapterLuid, Candidates, Detection},
         makcu::{FakeMakcu, MakcuClient},
+        pipeline::{AdapterLuid, Detection, Detections},
         settings::Settings,
         telemetry::{FrameTimes, RunCounters, TelemetryMessage, TelemetrySink},
     };
@@ -263,18 +251,17 @@ mod tests {
             run_counters: RunCounters::default(),
             sent_counters: RunCounters::default(),
             active_model: Some(("previous.onnx".into(), "previous.onnx".into())),
-            auto_reprepare_attempted: false,
             next_pipeline_id: 2,
             capture_adapter: 0,
             capture_output: 0,
             selected_adapter_luid: AdapterLuid { low: 0, high: 0 },
             makcu,
             run: RunControl::default(),
-            graphics: None,
+            com_ready: false,
         };
         worker.status.edit(|status| {
             status.capture.phase = CapturePhase::Ready;
-            status.capture.selected = Some(crate::graphics::DisplayInfo {
+            status.capture.selected = Some(crate::pipeline::DisplayInfo {
                 adapter_index: 0,
                 output_index: 0,
                 adapter_luid: AdapterLuid { low: 0, high: 0 },
@@ -308,15 +295,8 @@ mod tests {
             },
             gpu_preprocess_ms: None,
             gpu_copy_ms: None,
-            selected: Some(Detection {
-                center_x: 70.0,
-                center_y: 50.0,
-                box_width: 10.0,
-                box_height: 10.0,
-                confidence: 0.9,
-                class_id: 0,
-            }),
-            candidates: Candidates::EMPTY,
+            selected: Some(Detection::for_test(70.0, 50.0, 0)),
+            detections: Detections::EMPTY,
         }
     }
 

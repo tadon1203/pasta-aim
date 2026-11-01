@@ -1,6 +1,6 @@
 //! Associates the selected target across consecutive frames by box overlap.
 
-use crate::inference::Detection;
+use crate::pipeline::Detection;
 
 /// Boxes overlapping less than this are treated as different targets.
 const MATCH_IOU: f32 = 0.3;
@@ -65,12 +65,9 @@ mod tests {
 
     fn detection(center_x: f32) -> Detection {
         Detection {
-            center_x,
-            center_y: 50.0,
             box_width: 20.0,
             box_height: 40.0,
-            confidence: 0.9,
-            class_id: 0,
+            ..Detection::for_test(center_x, 50.0, 0)
         }
     }
 

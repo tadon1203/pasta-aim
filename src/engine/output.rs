@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use super::target_track::{TargetTracker, Track};
 use crate::{
-    inference::Detection,
     makcu::{MakcuClient, Movement},
+    pipeline::Detection,
     settings::{MaxDelta, Sensitivity, TargetYOffset},
 };
 
@@ -156,12 +156,10 @@ mod tests {
 
     fn detection(center_y: f32, box_height: f32) -> Detection {
         Detection {
-            center_x: 60.0,
-            center_y,
             box_width: 30.0,
             box_height,
-            confidence: 0.9,
-            class_id: 0,
+            center_y,
+            ..Detection::for_test(60.0, center_y, 0)
         }
     }
 

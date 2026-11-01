@@ -11,7 +11,6 @@ use crate::{
 impl Worker {
     /// Loads `path` on the pipeline and keeps the previous model when the load fails.
     pub(super) fn load_model(&mut self, notify: bool, name: String, path: PathBuf) {
-        self.auto_reprepare_attempted = false;
         let pipeline_id = self.next_pipeline_id();
         log_pipeline_state("Preparing", Some(pipeline_id), None, None, None);
         tracing::info!(model = %name, path = %path.display(), luid_low = self.selected_adapter_luid.low, luid_high = self.selected_adapter_luid.high, "loading model in engine");

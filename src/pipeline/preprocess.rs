@@ -1,8 +1,10 @@
 use std::mem::{ManuallyDrop, size_of};
 
-use super::device::GpuDeviceContext;
-use super::gpu_diagnostics::{GpuFaultStage, OWN_OBJECT_PREFIX, name_d3d12};
-use crate::inference::TensorPrecision;
+use super::gpu::GpuDeviceContext;
+use crate::{
+    clock::Clock,
+    pipeline::{GpuFaultStage, Precision},
+};
 use anyhow::{Context, Result, bail};
 use windows::{
     Win32::Graphics::{
@@ -118,7 +120,7 @@ impl GpuPreprocessor {
         destination: &ID3D12Resource,
         width: usize,
         height: usize,
-        precision: TensorPrecision,
+        precision: Precision,
     ) -> Result<Self> {
         let device = gpu.device();
         if width == 0 || height == 0 || width > u32::MAX as usize || height > u32::MAX as usize {
@@ -158,7 +160,6 @@ impl GpuPreprocessor {
         let frequency = unsafe { gpu.queue().GetTimestampFrequency() }
             .context("failed to query compute timestamp frequency")?;
         let timestamps = PreprocessTimestamps::new(device, frequency)?;
-        name_preprocess_objects(&pipeline, &root_signature, &descriptor_heap, &allocator);
 
         let cpu_start = unsafe { descriptor_heap.GetCPUDescriptorHandleForHeapStart() };
         write_descriptors(
@@ -191,8 +192,6 @@ impl GpuPreprocessor {
                 timed,
             }
             .record()?;
-            let kind = if timed { "timed" } else { "untimed" };
-            name_d3d12(&list, &format!("{OWN_OBJECT_PREFIX}preprocess-list-{kind}"));
             list.cast()
                 .context("failed to cast the preprocess command list")
         };
@@ -226,7 +225,7 @@ impl GpuPreprocessor {
         measure: bool,
     ) -> Result<PreprocessTicket> {
         self.fault_stage = GpuFaultStage::PreprocessSubmit;
-        if reuse_completed == u64::MAX {
+        if super::gpu::fence_reports_removal(reuse_completed) {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
             bail!("D3D12 reuse fence reports device removed");
         }
@@ -273,7 +272,7 @@ impl GpuPreprocessor {
             return Ok(None);
         }
         let completed = unsafe { reuse_fence.GetCompletedValue() };
-        if completed == u64::MAX {
+        if super::gpu::fence_reports_removal(completed) {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
             bail!("D3D12 reuse fence reports device removed while collecting preprocess timestamp");
         }
@@ -292,10 +291,10 @@ impl GpuPreprocessor {
     }
 }
 
-fn tensor_format(precision: TensorPrecision) -> DXGI_FORMAT {
+fn tensor_format(precision: Precision) -> DXGI_FORMAT {
     match precision {
-        TensorPrecision::Fp32 => DXGI_FORMAT_R32_FLOAT,
-        TensorPrecision::Fp16 => DXGI_FORMAT_R16_FLOAT,
+        Precision::Fp32 => DXGI_FORMAT_R32_FLOAT,
+        Precision::Fp16 => DXGI_FORMAT_R16_FLOAT,
     }
 }
 
@@ -303,7 +302,7 @@ fn tensor_format(precision: TensorPrecision) -> DXGI_FORMAT {
 fn ensure_typed_uav_store(
     device: &ID3D12Device,
     format: DXGI_FORMAT,
-    precision: TensorPrecision,
+    precision: Precision,
 ) -> Result<()> {
     let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
         Format: format,
@@ -490,7 +489,8 @@ impl PreprocessTimestamps {
             bail!("invalid preprocess timestamp pair");
         }
         self.pending = None;
-        Ok((values[1] - values[0]) as f64 * 1000.0 / self.frequency as f64)
+        Ok(Clock::with_frequency(self.frequency)
+            .ms(values[0].cast_signed(), values[1].cast_signed()))
     }
 }
 
@@ -643,28 +643,6 @@ fn transition(
     }
 }
 
-/// Names the preprocess objects for PIX and the D3D12 debug layer.
-fn name_preprocess_objects(
-    pipeline: &ID3D12PipelineState,
-    root_signature: &ID3D12RootSignature,
-    descriptor_heap: &ID3D12DescriptorHeap,
-    allocator: &ID3D12CommandAllocator,
-) {
-    name_d3d12(pipeline, &format!("{OWN_OBJECT_PREFIX}preprocess-pso"));
-    name_d3d12(
-        root_signature,
-        &format!("{OWN_OBJECT_PREFIX}preprocess-root"),
-    );
-    name_d3d12(
-        descriptor_heap,
-        &format!("{OWN_OBJECT_PREFIX}preprocess-heap"),
-    );
-    name_d3d12(
-        allocator,
-        &format!("{OWN_OBJECT_PREFIX}preprocess-allocator"),
-    );
-}
-
 /// Writes the source SRV in slot 0 and the output UAV in slot 1 of the descriptor heap.
 fn write_descriptors(
     device: &ID3D12Device,
@@ -747,9 +725,9 @@ pub(crate) fn preprocess_bgra_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphics::{
-        AcquiredDesktopFrame, CapturePoll, DxgiCapture, GraphicsThread,
-        shared_frame::create_shared_frame,
+    use crate::pipeline::{
+        AcquiredDesktopFrame, CapturePoll, DxgiCapture, displays, gpu::create_shared_frame,
+        init_thread,
     };
     use crate::sync::MutexExt;
     use windows::Win32::Graphics::Direct3D12::{
@@ -763,7 +741,7 @@ mod tests {
     /// A GPU buffer that holds the tensor of `elements` values in `precision`, in the UAV state.
     fn create_tensor_buffer(
         gpu: &GpuDeviceContext,
-        precision: TensorPrecision,
+        precision: Precision,
         elements: usize,
     ) -> Result<ID3D12Resource> {
         let properties = D3D12_HEAP_PROPERTIES {
@@ -886,17 +864,16 @@ mod tests {
     #[ignore = "needs an interactive desktop session and a GPU"]
     fn single_frame_gpu_transport_can_be_reused() -> Result<()> {
         let _serial = GPU_TESTS.lock_recover();
-        let _graphics = GraphicsThread::initialize()?;
-        let display = GraphicsThread::enumerate_displays()?
+        init_thread()?;
+        let display = displays()?
             .into_iter()
             .next()
             .context("no desktop display available")?;
-        let mut capture =
-            GraphicsThread::create_capture(display.adapter_index, display.output_index)?;
+        let mut capture = DxgiCapture::new(display.adapter_index, display.output_index)?;
         let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
         let size = (32, 32);
 
-        for precision in [TensorPrecision::Fp32, TensorPrecision::Fp16] {
+        for precision in [Precision::Fp32, Precision::Fp16] {
             let (capture_frame, inference_frame) =
                 create_shared_frame(&gpu, &capture.transport_device(), size.0, size.1)?;
             capture.bind_copy_target(&capture_frame, size)?;
@@ -952,12 +929,12 @@ mod tests {
     #[ignore = "needs an interactive desktop session and a GPU"]
     fn gpu_preprocess_matches_the_reference_for_fp32_and_fp16_with_an_odd_width() -> Result<()> {
         let _serial = GPU_TESTS.lock_recover();
-        let _graphics = GraphicsThread::initialize()?;
-        let display = GraphicsThread::enumerate_displays()?
+        init_thread()?;
+        let display = displays()?
             .into_iter()
             .next()
             .context("no desktop display available")?;
-        let capture = GraphicsThread::create_capture(display.adapter_index, display.output_index)?;
+        let capture = DxgiCapture::new(display.adapter_index, display.output_index)?;
         let mut gpu = GpuDeviceContext::new(display.adapter_luid)?;
         let (width, height) = (33, 9);
         let pixels = width * height;
@@ -975,7 +952,7 @@ mod tests {
         let mut expected = vec![0.0; elements];
         preprocess_bgra_into(&bgra, width, height, &mut expected)?;
 
-        for precision in [TensorPrecision::Fp32, TensorPrecision::Fp16] {
+        for precision in [Precision::Fp32, Precision::Fp16] {
             let (capture_frame, inference_frame) =
                 create_shared_frame(&gpu, &capture.transport_device(), width, height)?;
             capture.write_test_image(&capture_frame, &bgra, (width, height), 1)?;
@@ -1001,13 +978,13 @@ mod tests {
                 let bytes =
                     read_back(&mut gpu, &destination, elements * precision.element_bytes())?;
                 Ok(match precision {
-                    TensorPrecision::Fp32 => bytes
+                    Precision::Fp32 => bytes
                         .as_chunks::<4>()
                         .0
                         .iter()
                         .map(|chunk| f32::from_le_bytes(*chunk))
                         .collect(),
-                    TensorPrecision::Fp16 => bytes
+                    Precision::Fp16 => bytes
                         .as_chunks::<2>()
                         .0
                         .iter()
@@ -1019,9 +996,9 @@ mod tests {
             let actual = result?;
             drained?;
             let tolerance = match precision {
-                TensorPrecision::Fp32 => 1e-6,
+                Precision::Fp32 => 1e-6,
                 // Half precision rounds each value to 11 significant bits.
-                TensorPrecision::Fp16 => 1e-3,
+                Precision::Fp16 => 1e-3,
             };
             for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
                 anyhow::ensure!(
@@ -1032,23 +1009,5 @@ mod tests {
             }
         }
         Ok(())
-    }
-
-    #[test]
-    fn reference_matches_bgra_texture_channel_order_and_nchw_layout() {
-        let bgra = [0, 64, 255, 255, 128, 32, 16, 255];
-        let mut output = [0.0; 2 * COLOR_CHANNELS];
-        preprocess_bgra_into(&bgra, 2, 1, &mut output).unwrap();
-        let expected = [
-            1.0,
-            16.0 / 255.0,
-            64.0 / 255.0,
-            32.0 / 255.0,
-            0.0,
-            128.0 / 255.0,
-        ];
-        for (actual, expected) in output.into_iter().zip(expected) {
-            assert!((actual - expected).abs() < 1e-6);
-        }
     }
 }

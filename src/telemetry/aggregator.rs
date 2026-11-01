@@ -226,8 +226,8 @@ mod tests {
     use super::*;
     use crate::{
         engine::target_track::Track,
-        graphics::GpuDropReason,
-        inference::Candidates,
+        pipeline::Detections,
+        pipeline::GpuDropReason,
         telemetry::{FrameTimes, TraceHeader},
     };
 
@@ -265,7 +265,7 @@ mod tests {
             output_complete_qpc: present + total,
             gpu_preprocess_ms: None,
             gpu_copy_ms: None,
-            candidates: Candidates::EMPTY,
+            detections: Detections::EMPTY,
             selected: None,
             track: Some(Track {
                 id: 1,
