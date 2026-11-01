@@ -219,6 +219,12 @@ fn create_query(device: &ID3D11Device4, query: D3D11_QUERY) -> Result<ID3D11Quer
     result.context("D3D11 returned no query")
 }
 
+impl std::fmt::Debug for DxgiCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DxgiCapture").finish_non_exhaustive()
+    }
+}
+
 pub struct DxgiCapture {
     output: IDXGIOutput1,
     duplication: IDXGIOutputDuplication,

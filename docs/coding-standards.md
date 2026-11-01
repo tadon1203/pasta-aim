@@ -10,7 +10,7 @@ These are the rules for code and documentation that lint cannot check. Do not wr
 
 ## Rust
 
-- Use `unsafe` only to call a Windows, Direct3D, DirectML, or ONNX Runtime API. Do not write `unsafe` in `src/app` or `src/engine`.
+- Use `unsafe` only to call a Windows, Direct3D, DirectML, or ONNX Runtime API. Do not write `unsafe` in `src/bin/app` or `src/engine`.
 - A setting that has a range is its own type. The type clamps the value when it is made, and the settings file is validated against the same range when it is loaded.
 - Judge performance only on a release build.
 

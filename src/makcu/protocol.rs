@@ -151,7 +151,7 @@ pub(super) fn routes(kinds: u8) -> MakcuRoutes {
 }
 
 /// See "Firmware version" in `docs/makcu-protocol.md`.
-pub(crate) fn format_firmware(version: u32) -> String {
+pub fn format_firmware(version: u32) -> String {
     format!("V{}.{:03}", version / 1000, version % 1000)
 }
 

@@ -26,7 +26,7 @@ mod session;
 pub use port::PortEntry;
 #[cfg(test)]
 pub(crate) use port::fake::FakeMakcu;
-pub(crate) use protocol::format_firmware;
+pub use protocol::format_firmware;
 
 const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const RECONNECT_RETRY_WINDOW: Duration = Duration::from_millis(500);
@@ -60,6 +60,12 @@ pub enum MakcuConnectionEvent {
     Disconnected,
     Connecting,
     Connected(Result<MakcuMetadata, String>),
+}
+
+impl std::fmt::Debug for MakcuClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MakcuClient").finish_non_exhaustive()
+    }
 }
 
 pub struct MakcuClient {

@@ -20,6 +20,12 @@ use windows::{
 use super::gpu_diagnostics::{OWN_OBJECT_PREFIX, name_d3d12};
 use crate::inference::AdapterLuid;
 
+impl std::fmt::Debug for GpuDeviceContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuDeviceContext").finish_non_exhaustive()
+    }
+}
+
 pub struct GpuDeviceContext {
     adapter_luid: AdapterLuid,
     device: ID3D12Device,

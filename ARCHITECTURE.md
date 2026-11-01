@@ -46,7 +46,7 @@ The template of this document. Text in `<>` is a placeholder: replace it, and ke
 
 One Windows process, written in Rust. Each thread owns its resources, and the threads talk through channels. The domain terms are defined in [docs/requirements.md](./docs/requirements.md).
 
-- **UI thread** (`src/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
+- **UI thread** (`src/bin/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
 - **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`) and the MAKCU client. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
 - **Input thread** (`src/hotkeys`): global keyboard hotkeys and XInput polling. It turns a shortcut into an engine command. It holds no run state of the engine.
 - **Telemetry thread** (`src/telemetry`): it takes the frame records. It makes the statistics and the loop metrics, writes the frame trace, and publishes the live values for the UI.
@@ -64,7 +64,7 @@ Data flow:
 
 | Directory           | What it holds                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------- |
-| `src/app`           | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
+| `src/bin/app`       | The UI: the settings panels, the device panel, and the diagnostics panel.                   |
 | `src/engine`        | The engine thread: commands, the engine state, output, and the track.                       |
 | `src/engine/worker` | The frame transaction, the run, model loading, pipeline replacement, and the MAKCU lifecycle. |
 | `src/pipeline`      | The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit. |
@@ -73,7 +73,7 @@ Data flow:
 | `src/inference`     | The inference session, the postprocess, and the selection of the target.                    |
 | `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new shortcut, and XInput.                  |
 | `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
-| `src`               | Also holds the small modules that serve many parts (settings, paths, logging, timing, and the deadline wait). |
+| `src`               | The library crate root. Also holds the small modules that serve many parts (settings, paths, logging, timing, and the deadline wait). |
 
 ## Invariants
 

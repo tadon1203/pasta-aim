@@ -6,7 +6,7 @@ use crate::inference::Detection;
 const MATCH_IOU: f32 = 0.3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Track {
+pub struct Track {
     pub id: u32,
     /// First frame of a new target: after a loss or a jump to another box.
     pub switched: bool,

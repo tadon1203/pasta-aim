@@ -1,11 +1,11 @@
 pub(crate) mod directml;
-pub(crate) mod ep_assignment;
+pub mod ep_assignment;
 pub mod postprocess;
 
 use ort::value::TensorElementType;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use ep_assignment::{EpAssignedNode, EpAssignmentState, EpProviderAssignment};
+pub use ep_assignment::{EpAssignedNode, EpAssignmentState, EpProviderAssignment};
 pub use postprocess::{Candidates, Detection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

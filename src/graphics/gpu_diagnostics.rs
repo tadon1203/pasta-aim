@@ -143,6 +143,12 @@ pub struct FenceProgress {
     pub reuse_completed: Option<u64>,
 }
 
+impl std::fmt::Debug for FaultSite<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FaultSite").finish_non_exhaustive()
+    }
+}
+
 /// The pipeline and the frame in which a fault happened. The engine adds the run generation.
 pub struct FaultSite<'a> {
     pub pipeline_id: u64,

@@ -4,8 +4,8 @@ use super::{
     labels::{capture_phase_label, makcu_phase_label, model_phase_label},
     widgets::{error_label, warn_label},
 };
-use crate::{
-    app::App,
+use crate::ui::App;
+use nice_aimassist::{
     config::LogLevel,
     engine::{Command, EngineState, cpu_fallback_nodes, provider_display_name},
     graphics::DisplayInfo,
@@ -121,7 +121,7 @@ impl App {
                 });
             if level != self.config.diagnostics.level {
                 self.config.diagnostics.level = level;
-                crate::logging::set_level(level);
+                nice_aimassist::logging::set_level(level);
                 self.persist();
             }
         });

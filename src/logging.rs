@@ -36,6 +36,7 @@ pub fn set_level(level: LogLevel) {
 }
 
 /// Keeps the asynchronous file writer alive until application shutdown.
+#[derive(Debug)]
 pub struct Logging {
     _guard: WorkerGuard,
     error_counter: ErrorCounter,

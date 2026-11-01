@@ -21,7 +21,7 @@ use windows::Win32::{
 use windows::core::w;
 
 /// Opts the whole process out of execution-speed throttling (`EcoQoS`).
-pub(crate) fn disable_process_power_throttling() {
+pub fn disable_process_power_throttling() {
     let state = PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
@@ -40,6 +40,16 @@ pub(crate) fn disable_process_power_throttling() {
     if let Err(error) = result {
         tracing::warn!(%error, "could not disable process power throttling");
     }
+}
+
+/// Sets per-monitor-v2 DPI awareness for the process. Call it before any window is created.
+/// Returns `false` when Windows refuses it.
+pub fn enable_per_monitor_dpi_awareness() -> bool {
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+    // SAFETY: this sets process-wide DPI behavior before creating any windows.
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.is_ok()
 }
 
 /// Keeps a thread's scheduling boost for as long as it is alive.

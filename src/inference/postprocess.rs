@@ -50,6 +50,7 @@ impl Candidates {
     }
 }
 
+#[derive(Debug)]
 pub struct Selection {
     pub nearest: Option<Detection>,
     pub candidates: Candidates,

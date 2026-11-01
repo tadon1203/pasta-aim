@@ -25,9 +25,21 @@ use super::{
 
 const GENERIC_ALL: u32 = 0x1000_0000;
 
+impl std::fmt::Debug for CaptureFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureFrame").finish_non_exhaustive()
+    }
+}
+
 pub struct CaptureFrame {
     pub texture: ID3D11Texture2D,
     pub capture_ready_fence: ID3D11Fence,
+}
+
+impl std::fmt::Debug for InferenceFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InferenceFrame").finish_non_exhaustive()
+    }
 }
 
 pub struct InferenceFrame {

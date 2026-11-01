@@ -4,10 +4,13 @@ use super::{
     bindings_summary,
     widgets::{drag_value, error_label, percent_row, warn_label},
 };
-use crate::{
-    app::{App, EditField},
+use crate::ui::{
+    App, EditField,
+    shortcut_capture::{CaptureResult, capture_from_events},
+};
+use nice_aimassist::{
     engine::{CapturePhase, Command, EngineState, ModelPhase, RunPhase},
-    hotkeys::{CaptureResult, capture_from_events, display_shortcut},
+    hotkeys::display_shortcut,
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, Interpolation,
         InterpolationPercent, MaxDelta, Sensitivity, TargetYOffset,

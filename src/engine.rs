@@ -91,6 +91,12 @@ pub enum Command {
     Shutdown,
 }
 
+impl std::fmt::Debug for EngineControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineControl").finish_non_exhaustive()
+    }
+}
+
 /// Cheap, cloneable handle for sending commands to the engine thread.
 #[derive(Clone)]
 pub struct EngineControl {
@@ -116,6 +122,12 @@ impl EngineControl {
     }
 }
 
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine").finish_non_exhaustive()
+    }
+}
+
 pub struct Engine {
     control: EngineControl,
     events: Receiver<EngineEvent>,
@@ -125,6 +137,11 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Starts the engine worker thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the wait handle, the QPC clock, or the worker thread cannot be created.
     pub fn new(config: &Config, repaint: Repaint) -> Self {
         tracing::info!("spawning engine worker");
         let (tx, rx) = mpsc::channel();

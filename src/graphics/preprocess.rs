@@ -68,6 +68,12 @@ const PREPROCESS_PARAMETER_COUNT: u32 = 3;
 const THREADS_PER_GROUP: usize = 8;
 const MAX_DISPATCH_GROUPS: usize = 65_535;
 
+impl std::fmt::Debug for GpuPreprocessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuPreprocessor").finish_non_exhaustive()
+    }
+}
+
 /// Field order is drop order: the recorded lists go before everything they refer to.
 pub struct GpuPreprocessor {
     /// Recorded once: shapes and descriptors are static,

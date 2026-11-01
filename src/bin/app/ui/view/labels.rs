@@ -1,4 +1,4 @@
-use crate::engine::{CapturePhase, MakcuPhase, ModelPhase};
+use nice_aimassist::engine::{CapturePhase, MakcuPhase, ModelPhase};
 
 pub(super) fn model_phase_label(phase: ModelPhase) -> &'static str {
     match phase {

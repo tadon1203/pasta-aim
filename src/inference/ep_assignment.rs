@@ -6,14 +6,14 @@ use anyhow::{Context, Result, bail};
 use ort::{AsPointer, session::Session, sys};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EpAssignedNode {
+pub struct EpAssignedNode {
     pub name: String,
     pub domain: String,
     pub op_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EpProviderAssignment {
+pub struct EpProviderAssignment {
     /// The unmodified execution-provider name returned by ONNX Runtime.
     pub name: String,
     pub subgraph_count: usize,
@@ -21,13 +21,13 @@ pub(crate) struct EpProviderAssignment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct EpAssignmentReport {
+pub struct EpAssignmentReport {
     pub providers: Vec<EpProviderAssignment>,
     pub total_nodes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EpAssignmentState {
+pub enum EpAssignmentState {
     Available(EpAssignmentReport),
     Unavailable(String),
 }

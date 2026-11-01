@@ -4,8 +4,8 @@ use super::{
     labels::{makcu_phase_label, makcu_phase_mark, route_label},
     widgets::error_label,
 };
-use crate::{
-    app::App,
+use crate::ui::App;
+use nice_aimassist::{
     engine::{Command, EngineState, MakcuPhase, RunPhase},
     graphics::DisplayInfo,
     makcu::format_firmware,

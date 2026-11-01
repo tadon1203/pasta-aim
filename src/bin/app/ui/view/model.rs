@@ -1,8 +1,8 @@
 use eframe::egui;
 
 use super::widgets::error_label;
-use crate::{
-    app::App,
+use crate::ui::App;
+use nice_aimassist::{
     engine::{EngineState, ModelPhase, RunPhase},
     inference::TensorPrecision,
     models,

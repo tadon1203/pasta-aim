@@ -9,7 +9,8 @@ use eframe::egui;
 
 use self::widgets::{Edit, error_label, warn_label};
 use super::App;
-use crate::{app::EditField, config::Config, hotkeys::display_shortcut, settings::HotkeyAction};
+use crate::ui::EditField;
+use nice_aimassist::{config::Config, hotkeys::display_shortcut, settings::HotkeyAction};
 
 impl App {
     fn apply_edit<T>(&mut self, field: EditField, edit: Edit<T>, set: impl FnOnce(&mut Self, T)) {

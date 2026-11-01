@@ -1,6 +1,5 @@
 use crate::sync::MutexExt;
 mod binding;
-mod capture;
 mod listener;
 mod xinput;
 
@@ -24,7 +23,6 @@ use crate::{
 
 pub use binding::{canonical_shortcut, display_shortcut};
 use binding::{display_hotkey, parse_bindings};
-pub use capture::{CaptureResult, capture_from_events};
 use listener::Listener;
 use xinput::XInputControl;
 
@@ -65,6 +63,12 @@ struct InputView {
     captured: VecDeque<XInputControl>,
 }
 
+impl std::fmt::Debug for HotkeyRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HotkeyRegistry").finish_non_exhaustive()
+    }
+}
+
 pub struct HotkeyRegistry {
     manager: Option<GlobalHotKeyManager>,
     registered: HashMap<u32, HotKey>,
@@ -76,6 +80,11 @@ pub struct HotkeyRegistry {
 }
 
 impl HotkeyRegistry {
+    /// Starts the input thread and registers the event handler.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the hotkey wait handle cannot be created.
     pub fn new(control: EngineControl, repaint: Repaint) -> Self {
         let manager = GlobalHotKeyManager::new().ok();
         if manager.is_some() {
