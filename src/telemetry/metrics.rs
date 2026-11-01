@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::{stats::percentile, timing::QpcClock};
+use crate::{clock::Clock, stats::percentile};
 
 const MAX_SAMPLES: usize = 256;
 
@@ -92,7 +92,7 @@ impl Metrics {
         self.previous_started_qpc = None;
     }
 
-    pub fn record_qpc(&mut self, qpc: QpcClock, started_qpc: i64, timings: StageTimings) {
+    pub fn record_qpc(&mut self, qpc: Clock, started_qpc: i64, timings: StageTimings) {
         if self.cold_next {
             self.cold_run = Some(timings);
             self.cold_next = false;
@@ -102,7 +102,7 @@ impl Metrics {
 
         let cadence_ms = self
             .previous_started_qpc
-            .map(|previous| qpc.elapsed_ms(previous, started_qpc));
+            .map(|previous| qpc.ms(previous, started_qpc));
         self.previous_started_qpc = Some(started_qpc);
         if self.samples.len() == MAX_SAMPLES {
             self.samples.pop_front();
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn first_sample_is_kept_as_cold_run() {
         let mut metrics = Metrics::new();
-        let qpc = QpcClock::test(1_000.0);
+        let qpc = Clock::test(1_000.0);
         metrics.record_qpc(
             qpc,
             0,
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn percentile_summary_uses_rolling_samples() {
         let mut metrics = Metrics::new();
-        let qpc = QpcClock::test(1_000.0);
+        let qpc = Clock::test(1_000.0);
         metrics.record_qpc(qpc, 0, StageTimings::default());
         for i in 1..=20 {
             metrics.record_qpc(

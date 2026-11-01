@@ -11,6 +11,7 @@ use anyhow::Result;
 
 use self::model::ModelHalf;
 use crate::{
+    clock::Clock,
     graphics::{
         CapturePoll, DisplayInfo, DxgiCapture, GpuFaultReport, NoDesktopUpdateReason,
         gpu_diagnostics::{FaultSite, FenceProgress, GpuFaultStage, collect_gpu_fault_report},
@@ -20,7 +21,6 @@ use crate::{
     inference::{Candidates, Detection, EpAssignmentState, TensorPrecision},
     settings::ConfidenceThreshold,
     telemetry::FrameTimes,
-    timing::QpcClock,
 };
 
 /// What the engine asks of a pipeline when it is built or its model is replaced.
@@ -29,7 +29,7 @@ pub(crate) struct PipelineConfig<'a> {
     pub pipeline_id: u64,
     pub confidence_threshold: ConfidenceThreshold,
     pub low_latency: bool,
-    pub qpc: QpcClock,
+    pub qpc: Clock,
 }
 
 /// A new frame after the inference and the postprocess.
@@ -71,7 +71,7 @@ pub(crate) struct Pipeline {
     model: ModelHalf,
     capture_frame: CaptureFrame,
     capture: DxgiCapture,
-    qpc: QpcClock,
+    qpc: Clock,
     id: u64,
     /// The New frames of this pipeline. Each frame uses its count as the fence value.
     frame_seq: u64,
@@ -129,7 +129,7 @@ impl Pipeline {
     pub(crate) fn process_next(&mut self, wait_ms: u32) -> Result<FrameOutcome, PipelineFault> {
         let reuse_completed = self.check_reuse_fence()?;
 
-        let attempt_start = QpcClock::now();
+        let attempt_start = Clock::now();
         let frame = match self.capture.acquire(wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => frame,
             Ok(CapturePoll::NoDesktopUpdate(reason)) => {
@@ -137,7 +137,7 @@ impl Pipeline {
             }
             Err(error) => return Err(self.capture_fault(&error)),
         };
-        let acquired_qpc = QpcClock::now();
+        let acquired_qpc = Clock::now();
         let frame_seq = self
             .frame_seq
             .checked_add(1)
@@ -155,7 +155,7 @@ impl Pipeline {
             .try_take_gpu_copy_sample()
             .map(|sample| sample.gpu_copy_ms);
 
-        let inference_start = QpcClock::now();
+        let inference_start = Clock::now();
         let ticket = match self.model.preprocess.submit(
             frame_seq,
             &self.model.frame.capture_ready_fence,

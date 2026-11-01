@@ -21,7 +21,7 @@ use windows::core::Interface;
 use super::gpu_diagnostics::GpuFaultStage;
 use super::shared_frame::CaptureFrame;
 use super::{DisplayInfo, select_output};
-use crate::timing::QpcClock;
+use crate::clock::Clock;
 
 const GPU_QUERY_RING_SIZE: usize = 16;
 
@@ -460,7 +460,7 @@ impl DxgiCapture {
                 Some(std::ptr::from_ref::<D3D11_BOX>(&frame.source_box)),
             );
         }
-        let copy_submitted_qpc = QpcClock::now();
+        let copy_submitted_qpc = Clock::now();
         tracing::debug!(
             width = target.input_size.0,
             height = target.input_size.1,
@@ -488,7 +488,7 @@ impl DxgiCapture {
         }
         Ok(CopyTimes {
             copy_submitted_qpc,
-            ready_qpc: QpcClock::now(),
+            ready_qpc: Clock::now(),
         })
     }
 

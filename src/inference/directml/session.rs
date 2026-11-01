@@ -18,13 +18,13 @@ use windows::Win32::{
 };
 
 use crate::{
+    clock::Clock,
     graphics::device::GpuDeviceContext,
     inference::{
         EpAssignmentState, ModelInputSpec, TensorPrecision, ep_assignment,
         postprocess::{Selection, select_nearest},
     },
     settings::ConfidenceThreshold,
-    timing::QpcClock,
 };
 
 use super::{append_dml1, d3d12_resource_from_dml_tensor};
@@ -258,7 +258,7 @@ impl OrtDirectMlBackend {
         // The tensor was bound once during prepare and is populated by the
         // pipeline's D3D12 preprocess dispatch before this call.
         let outputs = self.session.run_binding(&self.binding)?;
-        let inference_done_qpc = QpcClock::now();
+        let inference_done_qpc = Clock::now();
         let threshold = self.confidence_threshold.ratio();
         let output = &outputs[self.output_name.as_str()];
         let selection = match self.output_precision {
@@ -272,7 +272,7 @@ impl OrtDirectMlBackend {
         Ok(InferenceOutput {
             selection,
             inference_done_qpc,
-            postprocess_done_qpc: QpcClock::now(),
+            postprocess_done_qpc: Clock::now(),
         })
     }
 }

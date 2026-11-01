@@ -10,7 +10,7 @@ use eframe::egui;
 use self::widgets::{Edit, error_label, warn_label};
 use super::App;
 use crate::ui::EditField;
-use nice_aimassist::{config::Config, hotkeys::display_shortcut, settings::HotkeyAction};
+use nice_aimassist::{config::Config, hotkeys::Action};
 
 impl App {
     fn apply_edit<T>(&mut self, field: EditField, edit: Edit<T>, set: impl FnOnce(&mut Self, T)) {
@@ -42,6 +42,7 @@ impl eframe::App for App {
         }
 
         self.process_engine_events();
+        self.process_hotkey_messages();
         let status = self.engine.state();
         let live = self.engine.live();
 
@@ -96,10 +97,10 @@ impl eframe::App for App {
     }
 }
 
-fn bindings_summary(config: &Config, action: HotkeyAction) -> String {
+fn bindings_summary(config: &Config, action: Action) -> String {
     config
         .bindings_for(action)
-        .map(|binding| display_shortcut(&binding.shortcut))
+        .map(|binding| binding.shortcut.label())
         .collect::<Vec<_>>()
         .join(", ")
 }

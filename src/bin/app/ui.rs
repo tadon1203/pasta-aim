@@ -1,17 +1,18 @@
-mod shortcut_capture;
 mod view;
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, mpsc},
+};
 
 use nice_aimassist::{
-    Repaint,
+    Message, Repaint, UiSender,
     config::{Config, ConfigLoad},
     engine::{Command, Engine, EngineEvent},
-    hotkeys::{HotkeyRegistry, canonical_shortcut},
+    hotkeys::{Action, Event, Hotkey, Hotkeys, Shortcut},
     models::ModelCatalog,
     settings::{
-        ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation, MaxDelta,
-        Sensitivity, TargetYOffset,
+        ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity, TargetYOffset,
     },
 };
 
@@ -21,8 +22,14 @@ pub struct App {
     gpu_debug_at_startup: bool,
     engine: Engine,
     models: ModelCatalog,
-    hotkeys: HotkeyRegistry,
-    hotkey_capture: Option<HotkeyCapture>,
+    /// `None` when the input thread could not start; `hotkey_error` says why.
+    hotkeys: Option<Hotkeys>,
+    /// What the input thread reports to the UI.
+    messages: mpsc::Receiver<Message>,
+    /// The `XInput` controller in use, as the input thread last reported it.
+    controller_slot: Option<u32>,
+    /// The action of the binding that the user is adding. Some while the dialog is open.
+    hotkey_capture: Option<Action>,
     hotkey_capture_error: Option<String>,
     hotkey_error: Option<String>,
     model_catalog_error: Option<String>,
@@ -33,14 +40,6 @@ pub struct App {
     /// Value fields edited since they were last saved (see `view::widgets::drag_value`).
     dirty: HashSet<EditField>,
     model_load_requested: bool,
-}
-
-/// A hotkey binding that the user is adding. `armed` is false during the first frame,
-/// so the Enter or Space key that activated `+ Add` is not captured as the shortcut.
-#[derive(Clone, Copy)]
-struct HotkeyCapture {
-    action: HotkeyAction,
-    armed: bool,
 }
 
 /// A numeric setting edited through a widget that saves once the edit ends.
@@ -78,11 +77,25 @@ impl App {
             })
         };
         let engine = Engine::new(&config, Arc::clone(&repaint));
-        let mut hotkeys = HotkeyRegistry::new(engine.control(), repaint);
-        let hotkey_error = hotkeys.replace_bindings(&config.hotkeys).err();
-        if let Some(error) = &hotkey_error {
-            tracing::warn!(%error, "initial hotkey registration failed");
-        }
+
+        let (tx, messages) = mpsc::channel();
+        let ui = UiSender::new(tx, Arc::clone(&repaint));
+        let control = engine.control();
+        let on_action = move |action: Action, down: bool| {
+            match action {
+                Action::Hold => control.send(Command::SetContinuous(down)),
+                Action::RunOnce if down => control.send(Command::RunOnce),
+                Action::RunOnce => {}
+            }
+            repaint();
+        };
+        let (hotkeys, hotkey_error) = match Hotkeys::spawn(&config.hotkeys, ui, on_action) {
+            Ok(hotkeys) => (Some(hotkeys), None),
+            Err(error) => {
+                tracing::error!(error = %nice_aimassist::logging::chain(&error), "hotkey input thread did not start");
+                (None, Some(format!("{error:#}")))
+            }
+        };
 
         let app = Self {
             config,
@@ -90,6 +103,8 @@ impl App {
             engine,
             models,
             hotkeys,
+            messages,
+            controller_slot: None,
             hotkey_capture: None,
             hotkey_capture_error: None,
             hotkey_error,
@@ -254,37 +269,55 @@ impl App {
         self.engine.send(Command::SetFpsLimit(fps_limit));
     }
 
-    fn begin_hotkey_capture(&mut self, action: HotkeyAction) {
+    /// Applies what the input thread reported since the last frame.
+    fn process_hotkey_messages(&mut self) {
+        while let Ok(Message::Hotkeys(event)) = self.messages.try_recv() {
+            match event {
+                Event::Controller(slot) => self.controller_slot = slot,
+                Event::Recorded(shortcut) => {
+                    if let Some(action) = self.hotkey_capture {
+                        self.add_hotkey(action, shortcut);
+                    }
+                }
+                Event::RecordCancelled => {
+                    self.hotkey_capture = None;
+                    self.hotkey_capture_error = None;
+                }
+            }
+        }
+    }
+
+    /// Replaces the bindings in the input thread. The error is text for the UI.
+    fn apply_hotkeys(&self, hotkeys: &[Hotkey]) -> Result<(), String> {
+        match &self.hotkeys {
+            Some(running) => running.set(hotkeys).map_err(|error| format!("{error:#}")),
+            None => Err("Hotkeys are not running".to_owned()),
+        }
+    }
+
+    fn begin_hotkey_capture(&mut self, action: Action) {
         tracing::debug!(?action, "hotkey capture started");
-        self.hotkey_capture = Some(HotkeyCapture {
-            action,
-            armed: false,
-        });
+        self.hotkey_capture = Some(action);
         self.hotkey_capture_error = None;
-        self.hotkeys.begin_capture();
+        if let Some(hotkeys) = &self.hotkeys {
+            hotkeys.record();
+        }
     }
 
     fn cancel_hotkey_capture(&mut self) {
         tracing::debug!("hotkey capture cancelled or completed");
         self.hotkey_capture = None;
         self.hotkey_capture_error = None;
-        self.hotkeys.end_capture();
+        if let Some(hotkeys) = &self.hotkeys {
+            hotkeys.cancel_record();
+        }
     }
 
-    fn add_hotkey(&mut self, action: HotkeyAction, shortcut: &str) {
-        tracing::debug!(?action, shortcut = %shortcut, "adding hotkey binding");
-        let shortcut = match canonical_shortcut(shortcut) {
-            Ok(shortcut) => shortcut,
-            Err(error) => {
-                tracing::warn!(%error, "hotkey shortcut was rejected");
-                self.hotkey_capture_error = Some(error);
-                return;
-            }
-        };
-
+    fn add_hotkey(&mut self, action: Action, shortcut: Shortcut) {
+        tracing::debug!(?action, %shortcut, "adding hotkey binding");
         let mut candidate = self.config.clone();
-        candidate.add_binding(HotkeyBinding { action, shortcut });
-        match self.hotkeys.replace_bindings(&candidate.hotkeys) {
+        candidate.add_binding(Hotkey { action, shortcut });
+        match self.apply_hotkeys(&candidate.hotkeys) {
             Ok(()) => {
                 self.config = candidate;
                 self.hotkey_error = None;
@@ -292,20 +325,21 @@ impl App {
                 self.cancel_hotkey_capture();
             }
             Err(error) => {
-                tracing::warn!(%error, "hotkey registration failed");
+                // The recording has ended. Record again, so that the user can choose another shortcut.
+                tracing::warn!(%error, "hotkey binding was rejected");
                 self.hotkey_capture_error = Some(error);
+                if let Some(hotkeys) = &self.hotkeys {
+                    hotkeys.record();
+                }
             }
         }
     }
 
-    fn remove_hotkey(&mut self, action: HotkeyAction, shortcut: &str) {
-        tracing::debug!(?action, shortcut, "removing hotkey binding");
+    fn remove_hotkey(&mut self, action: Action, shortcut: Shortcut) {
+        tracing::debug!(?action, %shortcut, "removing hotkey binding");
         let mut candidate = self.config.clone();
         candidate.remove_binding(action, shortcut);
-        self.hotkeys.suspend();
-        let result = self.hotkeys.replace_bindings(&candidate.hotkeys);
-        self.hotkeys.resume();
-        match result {
+        match self.apply_hotkeys(&candidate.hotkeys) {
             Ok(()) => {
                 self.config = candidate;
                 self.hotkey_error = None;

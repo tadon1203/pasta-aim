@@ -91,7 +91,7 @@ impl App {
                 ui.end_row();
 
                 ui.label("XInput hotkey pad");
-                ui.label(self.hotkeys.xinput_slot().map_or_else(
+                ui.label(self.controller_slot.map_or_else(
                     || "○ Not connected".to_owned(),
                     |slot| format!("● Connected · slot {slot}"),
                 ));

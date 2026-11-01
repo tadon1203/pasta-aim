@@ -16,13 +16,13 @@ use super::{
     metrics::{CaptureSourceMetrics, Metrics, StageTimings},
     trace::FrameTrace,
 };
-use crate::{engine::RunGeneration, makcu::Movement, timing::QpcClock};
+use crate::{clock::Clock, engine::RunGeneration, makcu::Movement};
 
 /// The capture source rates are made over this window, from the Counters messages.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 
 pub(super) struct Aggregator {
-    qpc: QpcClock,
+    qpc: Clock,
     /// Messages that the sink could not queue. Shared with the sink.
     dropped: Arc<AtomicU64>,
     metrics: Metrics,
@@ -56,7 +56,7 @@ impl RateWindow {
 }
 
 impl Aggregator {
-    pub(super) fn new(qpc: QpcClock, logs_dir: PathBuf, dropped: Arc<AtomicU64>) -> Self {
+    pub(super) fn new(qpc: Clock, logs_dir: PathBuf, dropped: Arc<AtomicU64>) -> Self {
         Self {
             qpc,
             dropped,
@@ -116,7 +116,7 @@ impl Aggregator {
             let count = dropped - self.reported_drops;
             self.reported_drops = dropped;
             self.trace
-                .event(QpcClock::now(), &TraceEvent::TelemetryDropped { count });
+                .event(Clock::now(), &TraceEvent::TelemetryDropped { count });
         }
     }
 
@@ -156,16 +156,16 @@ impl Aggregator {
         let qpc = self.qpc;
         let times = record.times;
         let timings = StageTimings {
-            present_to_gpu_submit: qpc.elapsed_ms(times.present, times.ready),
-            present_to_inference_start: qpc.elapsed_ms(times.present, times.inference_start),
-            acquire_wait: qpc.elapsed_ms(times.attempt_start, times.acquired),
-            capture: qpc.elapsed_ms(times.acquired, times.ready),
-            copy_submit: qpc.elapsed_ms(times.acquired, times.copy_submitted),
+            present_to_gpu_submit: qpc.ms(times.present, times.ready),
+            present_to_inference_start: qpc.ms(times.present, times.inference_start),
+            acquire_wait: qpc.ms(times.attempt_start, times.acquired),
+            capture: qpc.ms(times.acquired, times.ready),
+            copy_submit: qpc.ms(times.acquired, times.copy_submitted),
             gpu_preprocess: record.gpu_preprocess_ms,
-            inference: qpc.elapsed_ms(times.inference_start, times.inference_done),
-            postprocess: qpc.elapsed_ms(times.inference_done, times.postprocess_done),
-            makcu_write: qpc.elapsed_ms(record.output_start_qpc, record.output_complete_qpc),
-            total: qpc.elapsed_ms(times.present, record.output_complete_qpc),
+            inference: qpc.ms(times.inference_start, times.inference_done),
+            postprocess: qpc.ms(times.inference_done, times.postprocess_done),
+            makcu_write: qpc.ms(record.output_start_qpc, record.output_complete_qpc),
+            total: qpc.ms(times.present, record.output_complete_qpc),
         };
         self.metrics.record_qpc(qpc, times.inference_start, timings);
         if let Some(gpu_copy_ms) = record.gpu_copy_ms {
@@ -232,7 +232,7 @@ mod tests {
     };
 
     /// One tick is one millisecond.
-    const QPC: QpcClock = QpcClock::test(1_000.0);
+    const QPC: Clock = Clock::test(1_000.0);
 
     fn aggregator(logs_dir: PathBuf) -> (Aggregator, Arc<AtomicU64>) {
         let dropped = Arc::new(AtomicU64::new(0));

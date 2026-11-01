@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::Worker;
 use crate::{
+    clock::Clock,
     engine::{
         MakcuPhase, RunGeneration, RunMode, RunPhase,
         status::{BLOCK_CAPTURE, BLOCK_MAKCU, BLOCK_MODEL, BLOCK_MOUSE_ROUTE, run_block_reason},
@@ -13,7 +14,6 @@ use crate::{
         AppInfo, ClockInfo, MakcuInfo, ModelInfo, RunCounters, RunInfo, RunStart, SettingsInfo,
         TraceHeader,
     },
-    timing::QpcClock,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -128,8 +128,8 @@ impl Worker {
                 },
             },
             clock: ClockInfo {
-                qpc_hz: self.qpc.frequency_hz(),
-                run_start_qpc: QpcClock::now(),
+                qpc_hz: self.qpc.frequency(),
+                run_start_qpc: Clock::now(),
                 run_start_unix_ms: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_or(0, |elapsed| elapsed.as_millis() as u64),

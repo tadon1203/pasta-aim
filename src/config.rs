@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
+    hotkeys::{Action, Hotkey, Shortcut},
     models, paths,
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, HotkeyBinding, Interpolation,
-        InterpolationPercent, MaxDelta, Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, InterpolationPercent,
+        MaxDelta, Sensitivity, TargetYOffset,
     },
 };
 
@@ -26,7 +27,7 @@ pub struct Config {
     pub max_delta: MaxDelta,
     pub fps_limit: FpsLimit,
     pub capture: CaptureSettings,
-    pub hotkeys: Vec<HotkeyBinding>,
+    pub hotkeys: Vec<Hotkey>,
     pub selected_adapter: crate::inference::AdapterLuid,
     pub capture_output: u32,
     /// Busy-waits on `DirectML` completion for lower tail latency at the cost of one CPU core.
@@ -157,17 +158,17 @@ impl Config {
         Ok(())
     }
 
-    pub fn bindings_for(&self, action: HotkeyAction) -> impl Iterator<Item = &HotkeyBinding> {
+    pub fn bindings_for(&self, action: Action) -> impl Iterator<Item = &Hotkey> {
         self.hotkeys
             .iter()
             .filter(move |binding| binding.action == action)
     }
 
-    pub fn add_binding(&mut self, binding: HotkeyBinding) {
+    pub fn add_binding(&mut self, binding: Hotkey) {
         self.hotkeys.push(binding);
     }
 
-    pub fn remove_binding(&mut self, action: HotkeyAction, shortcut: &str) {
+    pub fn remove_binding(&mut self, action: Action, shortcut: Shortcut) {
         self.hotkeys
             .retain(|binding| !(binding.action == action && binding.shortcut == shortcut));
     }
@@ -222,13 +223,6 @@ impl Config {
 
         if let Some(model) = &self.model {
             models::validate_model_name(model)?;
-        }
-        if self
-            .hotkeys
-            .iter()
-            .any(|binding| binding.shortcut.trim().is_empty())
-        {
-            bail!("hotkey shortcut cannot be empty");
         }
         Ok(())
     }
@@ -365,15 +359,15 @@ fn back_up(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn default_hotkeys() -> Vec<HotkeyBinding> {
+fn default_hotkeys() -> Vec<Hotkey> {
     vec![
-        HotkeyBinding {
-            action: HotkeyAction::ContinuousHold,
-            shortcut: "F8".to_owned(),
+        Hotkey {
+            action: Action::Hold,
+            shortcut: "F8".parse().expect("F8 is a valid shortcut"),
         },
-        HotkeyBinding {
-            action: HotkeyAction::RunOnce,
-            shortcut: "F9".to_owned(),
+        Hotkey {
+            action: Action::RunOnce,
+            shortcut: "F9".parse().expect("F9 is a valid shortcut"),
         },
     ]
 }
@@ -416,8 +410,8 @@ mod tests {
 
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.hotkeys.len(), 2);
-        assert_eq!(config.hotkeys[0].shortcut, "F8");
-        assert_eq!(config.hotkeys[1].shortcut, "xinput:a");
+        assert_eq!(config.hotkeys[0].shortcut.to_string(), "F8");
+        assert_eq!(config.hotkeys[1].shortcut.to_string(), "xinput:a");
     }
 
     #[test]
@@ -485,8 +479,8 @@ mod tests {
             ]}"#,
         );
         assert_eq!(loaded.config.hotkeys.len(), 2);
-        assert_eq!(loaded.config.hotkeys[0].shortcut, "F9");
-        assert_eq!(loaded.config.hotkeys[1].shortcut, "F8");
+        assert_eq!(loaded.config.hotkeys[0].shortcut.to_string(), "F9");
+        assert_eq!(loaded.config.hotkeys[1].shortcut.to_string(), "F8");
         let warning = loaded.warning.unwrap();
         assert!(warning.contains("hotkeys[1]"));
         assert!(warning.contains("hotkeys[2].extra"));

@@ -80,7 +80,9 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 - A keyboard shortcut can use Ctrl, Shift, and Alt. The Windows key is not supported.
 - An XInput shortcut can be a button, LT, or RT. Sticks are not supported.
 - Shortcuts work when the app does not have the focus.
-- While the user records a new shortcut, no shortcut starts an action. Esc cancels the recording.
+- Shortcuts are read by polling. They do not take the key from other apps, so a shortcut key also reaches the focused app and the game.
+- Recording a new shortcut reads both the keyboard and the controller. Esc cancels the recording.
+- While the user records a new shortcut, no shortcut starts an action.
 
 ## Diagnostics
 

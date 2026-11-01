@@ -24,6 +24,8 @@ use super::{
 };
 use crate::{
     Repaint,
+    clock::Clock,
+    clock::Wait,
     config::Config,
     graphics::{DisplayInfo, DxgiCapture, GraphicsThread},
     inference::AdapterLuid,
@@ -32,8 +34,6 @@ use crate::{
     pipeline::Pipeline,
     settings::{CaptureSettings, ConfidenceThreshold, FpsLimit},
     telemetry::{RunCounters, TelemetrySink, TraceEvent},
-    timing::QpcClock,
-    wait::DeadlineWait,
 };
 
 /// How often the engine polls MAKCU connection state and sends the counters, when no other event wakes it.
@@ -58,8 +58,8 @@ pub(super) struct WorkerLinks {
     pub events: Sender<EngineEvent>,
     pub state: Arc<Mutex<Arc<EngineState>>>,
     pub repaint: Repaint,
-    pub wait: DeadlineWait,
-    pub qpc: QpcClock,
+    pub wait: Wait,
+    pub qpc: Clock,
     pub telemetry: TelemetrySink,
 }
 
@@ -114,7 +114,7 @@ struct Worker {
     event_tx: Sender<EngineEvent>,
     repaint: Repaint,
     status: StatusHub,
-    qpc: QpcClock,
+    qpc: Clock,
     telemetry: TelemetrySink,
     tuning: Tuning,
     /// The display catalog that the engine uses to find the remembered display.
@@ -124,7 +124,7 @@ struct Worker {
     capture: CaptureState,
     output_stage: OutputStage,
     /// Wakes the engine for a command, the housekeeping, or the capture deadline.
-    wait: DeadlineWait,
+    wait: Wait,
     capture_deadline: frame::CaptureDeadline,
     /// The counters of the current run, and the last values sent to the Telemetry thread.
     run_counters: RunCounters,
@@ -297,7 +297,7 @@ impl Worker {
                 deadline = capture;
                 spin = CAPTURE_SPIN;
             }
-            self.wait.wait_until(Some(deadline), spin);
+            self.wait.until(Some(deadline), spin);
         }
     }
 

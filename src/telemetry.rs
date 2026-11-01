@@ -30,8 +30,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 
 use self::aggregator::Aggregator;
 use crate::{
-    Repaint, engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths,
-    sync::MutexExt, timing::QpcClock,
+    Repaint, clock::Clock, engine::RunGeneration, graphics::GpuDropReason, makcu::Movement, paths,
+    sync::MutexExt,
 };
 
 const QUEUE_CAPACITY: usize = 8192;
@@ -99,7 +99,7 @@ impl TelemetrySink {
     /// Never blocks. A message that does not fit is dropped and counted.
     pub(crate) fn frame_dropped(&self, reason: GpuDropReason) {
         self.try_send(TelemetryMessage::FrameDropped {
-            qpc: QpcClock::now(),
+            qpc: Clock::now(),
             reason,
         });
     }
@@ -107,7 +107,7 @@ impl TelemetrySink {
     /// Never blocks. A message that does not fit is dropped and counted.
     pub(crate) fn event(&self, event: TraceEvent) {
         self.try_send(TelemetryMessage::Event {
-            qpc: QpcClock::now(),
+            qpc: Clock::now(),
             event,
         });
     }
@@ -125,9 +125,9 @@ impl TelemetrySink {
 
     /// Blocks while the queue is full. See the ticket's Comments: the frame path can reach this through a command.
     pub(crate) fn pipeline_changed(&self) {
-        let _ = self.tx.send(TelemetryMessage::PipelineChanged {
-            qpc: QpcClock::now(),
-        });
+        let _ = self
+            .tx
+            .send(TelemetryMessage::PipelineChanged { qpc: Clock::now() });
     }
 
     /// Blocks while the queue is full. See the ticket's Comments: the frame path can reach this through a command.
@@ -168,7 +168,7 @@ pub(crate) struct Telemetry {
 }
 
 impl Telemetry {
-    pub(crate) fn spawn(qpc: QpcClock, repaint: Repaint) -> (Self, TelemetrySink) {
+    pub(crate) fn spawn(qpc: Clock, repaint: Repaint) -> (Self, TelemetrySink) {
         let (tx, rx) = sync_channel(QUEUE_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
         let live = Arc::new(Mutex::new(LiveTelemetry::default()));

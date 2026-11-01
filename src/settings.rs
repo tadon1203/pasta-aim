@@ -21,30 +21,6 @@ impl Default for CaptureSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HotkeyAction {
-    ContinuousHold,
-    RunOnce,
-}
-
-impl HotkeyAction {
-    pub const ALL: [Self; 2] = [Self::ContinuousHold, Self::RunOnce];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ContinuousHold => "Hold continuous",
-            Self::RunOnce => "Run once",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HotkeyBinding {
-    pub action: HotkeyAction,
-    pub shortcut: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Sensitivity(u16);

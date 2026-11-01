@@ -48,12 +48,13 @@ One Windows process, written in Rust. Each thread owns its resources, and the th
 
 - **UI thread** (`src/bin/app`): egui (eframe). It shows the settings and the engine status, and it writes the settings file. It holds no capture, inference, or device resource.
 - **Engine thread** (`src/engine`): it owns the pipeline (`src/pipeline`) and the MAKCU client. The pipeline is the DXGI Desktop Duplication capture (Direct3D 11), the GPU preprocess (Direct3D 12), and the ONNX Runtime session with DirectML. The engine thread processes one frame at a time.
-- **Input thread** (`src/hotkeys`): global keyboard hotkeys and XInput polling. It turns a shortcut into an engine command. It holds no run state of the engine.
+- **Input thread** (`src/hotkeys`): keyboard and XInput polling, read every millisecond. It turns a shortcut into an engine command, and it reports the recorded shortcut and the controller slot to the UI. It holds no run state of the engine.
 - **Telemetry thread** (`src/telemetry`): it takes the frame records. It makes the statistics and the loop metrics, writes the frame trace, and publishes the live values for the UI.
 
 Data flow:
 
 - **UI thread and Input thread → Engine thread:** commands, on one channel.
+- **Input thread → UI thread:** `Message::Hotkeys` (a recorded shortcut, a cancelled recording, or the controller slot), through `UiSender`.
 - **Engine thread → UI thread:** events (the result of a model load or of a capture selection) on a channel, and the engine state, published when it changes.
 - **Engine thread → Telemetry thread:** one frame record for each processed frame, and the counters of a run.
 - **Telemetry thread → UI thread:** the live values, at a limited rate (see [docs/requirements.md](./docs/requirements.md)).
@@ -71,9 +72,9 @@ Data flow:
 | `src/telemetry`     | The Telemetry thread: the frame records, the statistics, the loop metrics, the frame trace, and the live values. |
 | `src/graphics`      | The capture, the shared frame texture and its fences, the GPU preprocess, and GPU faults.   |
 | `src/inference`     | The inference session, the postprocess, and the selection of the target.                    |
-| `src/hotkeys`       | Shortcuts: parsing, global dispatch, recording a new shortcut, and XInput.                  |
+| `src/hotkeys`       | Shortcuts: the key and controller tables, polled dispatch, recording a new shortcut, and XInput. |
 | `src/makcu`         | The MAKCU client: the wire protocol, the serial port, and the connection.                   |
-| `src`               | The library crate root. Also holds the small modules that serve many parts (settings, paths, logging, timing, and the deadline wait). |
+| `src`               | The library crate root. Also holds the small modules that serve many parts (settings, paths, logging, and the clock with its deadline wait). |
 
 ## Invariants
 

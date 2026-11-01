@@ -72,17 +72,6 @@ impl App {
                 self.draw_state_grids(ui, status, live);
                 draw_ep_assignment_diagnostics(ui, status);
 
-                let release_latency = self.hotkeys.keyboard_release_latency();
-                if release_latency.samples >= 8 && release_latency.p95_ms > 25.0 {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!(
-                            "Keyboard Hold release lag is high: {:.1} ms p95",
-                            release_latency.p95_ms
-                        ),
-                    );
-                }
-
                 if let Some(error) = &status.capture.error {
                     error_label(ui, format!("Capture: {error}"));
                     if ui.button("Retry capture").clicked() {
@@ -241,14 +230,12 @@ impl App {
         );
         let makcu_routes = format!("mouse={}", status.makcu.routes.mouse);
         let xinput = self
-            .hotkeys
-            .xinput_slot()
+            .controller_slot
             .map_or_else(|| "not connected".to_owned(), |slot| format!("slot {slot}"));
         let warning = self.config_load_warning.as_deref().unwrap_or("none");
         let save_error = self.config_save_error.as_deref().unwrap_or("none");
-        let keyboard_release = self.hotkeys.keyboard_release_latency();
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {} · port={} · firmware={}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nkeyboard release lag p50/p95: {:.1}/{:.1} ms ({} samples, assist={})\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {} · port={} · firmware={}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {xinput}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95/p99: {:.2}/{:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nconfig warning: {warning}\nconfig save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             status
                 .capture
@@ -262,10 +249,6 @@ impl App {
                 .makcu
                 .firmware
                 .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
-            keyboard_release.p50_ms,
-            keyboard_release.p95_ms,
-            keyboard_release.samples,
-            keyboard_release.assist_active,
             self.config.fps_limit.value(),
             live.performance.capture_source.fresh_fps,
             live.performance.capture_source.processed_fps,
@@ -289,7 +272,7 @@ impl App {
     }
 }
 
-/// The input rows: MAKCU, `XInput`, keyboard release lag, and the value settings in use.
+/// The input rows: MAKCU, `XInput`, and the value settings in use.
 fn draw_input_rows(ui: &mut egui::Ui, app: &App, status: &EngineState, live: &LiveTelemetry) {
     ui.label("MAKCU state");
     ui.label(makcu_phase_label(status.makcu.phase));
@@ -308,27 +291,9 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, status: &EngineState, live: &Li
 
     ui.label("XInput hotkey pad");
     ui.label(
-        app.hotkeys
-            .xinput_slot()
+        app.controller_slot
             .map_or_else(|| "Not connected".to_owned(), |slot| format!("Slot {slot}")),
     );
-    ui.end_row();
-
-    let release_latency = app.hotkeys.keyboard_release_latency();
-    ui.label("Keyboard release lag");
-    if release_latency.samples == 0 {
-        ui.label("No measured hold releases");
-    } else {
-        let assist = if release_latency.assist_active {
-            " · release assist active"
-        } else {
-            ""
-        };
-        ui.label(format!(
-            "{:.1}/{:.1} ms p50/p95 · {} samples{assist}",
-            release_latency.p50_ms, release_latency.p95_ms, release_latency.samples,
-        ));
-    }
     ui.end_row();
 
     ui.label("FPS limit");

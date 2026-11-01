@@ -6,12 +6,12 @@ use std::sync::mpsc::Receiver;
 
 use super::{Worker, run::ActiveRun};
 use crate::{
+    clock::Clock,
     engine::{Command, RunGeneration, RunMode},
     graphics::{GpuDropReason, GpuFaultReport, NoDesktopUpdateReason},
     pipeline::{FaultKind, FrameOutcome, PipelineFault, ProcessedFrame},
     settings::FpsLimit,
     telemetry::FrameRecord,
-    timing::QpcClock,
 };
 
 /// The earliest time of the next capture in a Continuous run.
@@ -116,7 +116,7 @@ impl Worker {
             self.telemetry.frame_dropped(GpuDropReason::StaleGeneration);
             return true;
         }
-        let output_start_qpc = QpcClock::now();
+        let output_start_qpc = Clock::now();
         let outcome = match self.output_stage.emit(&mut self.makcu, frame.selected) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -124,7 +124,7 @@ impl Worker {
                 return true;
             }
         };
-        let output_complete_qpc = QpcClock::now();
+        let output_complete_qpc = Clock::now();
         self.telemetry.frame(&FrameRecord {
             generation: run.generation,
             frame_seq: frame.frame_seq,
@@ -183,6 +183,7 @@ mod tests {
     use super::super::{CaptureState, Tuning, run::RunControl};
     use super::*;
     use crate::{
+        clock::{self, Clock, Wake},
         config::Config,
         engine::{
             CapturePhase, EngineState, RunPhase,
@@ -192,8 +193,6 @@ mod tests {
         inference::{AdapterLuid, Candidates, Detection},
         makcu::{FakeMakcu, MakcuClient},
         telemetry::{FrameTimes, RunCounters, TelemetryMessage, TelemetrySink},
-        timing::QpcClock,
-        wait::{DeadlineWait, Waker},
     };
     use std::sync::{Arc, Mutex, mpsc, mpsc::Receiver as TestReceiver};
 
@@ -226,7 +225,7 @@ mod tests {
 
     /// The fixture, with the waker of its wait, which the test raises to wake the loop, and the telemetry queue.
     /// It has no GPU, so it begins the run without the readiness check.
-    fn worker_with_waker() -> (Worker, FakeMakcu, Waker, TestReceiver<TelemetryMessage>) {
+    fn worker_with_waker() -> (Worker, FakeMakcu, Wake, TestReceiver<TelemetryMessage>) {
         let config = Config::default();
         let tuning = Tuning {
             output: OutputSettings {
@@ -243,7 +242,7 @@ mod tests {
         let (makcu, fake) = MakcuClient::fake();
         let repaint: crate::Repaint = Arc::new(|| {});
         let (event_tx, _) = mpsc::channel();
-        let (wait, waker) = DeadlineWait::new().unwrap();
+        let (wait, waker) = clock::wait().unwrap();
         let (telemetry, telemetry_rx) = TelemetrySink::for_test();
         let mut worker = Worker {
             event_tx,
@@ -252,7 +251,7 @@ mod tests {
                 repaint.clone(),
             ),
             repaint,
-            qpc: QpcClock::new().unwrap(),
+            qpc: Clock::new().unwrap(),
             telemetry,
             tuning,
             displays: Vec::new(),
@@ -344,7 +343,7 @@ mod tests {
         ] {
             let shutdown = matches!(command, Command::Shutdown);
             let (mut worker, fake, telemetry) = worker();
-            let frame = processed(QpcClock::now());
+            let frame = processed(Clock::now());
             let (tx, rx) = mpsc::channel();
             tx.send(command).unwrap();
             assert_eq!(finish(&mut worker, &rx, &frame), !shutdown);
@@ -360,7 +359,7 @@ mod tests {
     fn valid_result_outputs() {
         let (mut worker, fake, telemetry) = worker();
         let (_tx, rx) = mpsc::channel();
-        let frame = processed(QpcClock::now());
+        let frame = processed(Clock::now());
         assert!(finish(&mut worker, &rx, &frame));
         assert_ne!(moves(&fake).len(), 0);
         let (records, dropped) = output_messages(&telemetry);
@@ -399,7 +398,7 @@ mod tests {
             Some(now + Duration::from_secs(1))
         );
         let (_tx, rx) = mpsc::channel();
-        let frame = processed(QpcClock::now());
+        let frame = processed(Clock::now());
         assert!(finish(&mut worker, &rx, &frame));
         assert_ne!(moves(&fake).len(), 0);
         assert!(worker.run.active.is_none());

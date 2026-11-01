@@ -4,16 +4,13 @@ use super::{
     bindings_summary,
     widgets::{drag_value, error_label, percent_row, warn_label},
 };
-use crate::ui::{
-    App, EditField,
-    shortcut_capture::{CaptureResult, capture_from_events},
-};
+use crate::ui::{App, EditField};
 use nice_aimassist::{
     engine::{CapturePhase, Command, EngineState, ModelPhase, RunPhase},
-    hotkeys::display_shortcut,
+    hotkeys::{Action, Shortcut},
     settings::{
-        CaptureSettings, ConfidenceThreshold, FpsLimit, HotkeyAction, Interpolation,
-        InterpolationPercent, MaxDelta, Sensitivity, TargetYOffset,
+        CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, InterpolationPercent,
+        MaxDelta, Sensitivity, TargetYOffset,
     },
     telemetry::LiveTelemetry,
 };
@@ -123,7 +120,7 @@ impl App {
                 self.engine.send(Command::RunOnce);
             }
 
-            let once_shortcuts = bindings_summary(&self.config, HotkeyAction::RunOnce);
+            let once_shortcuts = bindings_summary(&self.config, Action::RunOnce);
             if !once_shortcuts.is_empty() {
                 ui.small(format!("Shortcuts: {once_shortcuts}"));
             }
@@ -223,7 +220,7 @@ impl App {
                 }
             });
 
-            let hold_shortcuts = bindings_summary(&self.config, HotkeyAction::ContinuousHold);
+            let hold_shortcuts = bindings_summary(&self.config, Action::Hold);
             if hold_shortcuts.is_empty() {
                 ui.small("No hold shortcut assigned.");
             } else {
@@ -252,16 +249,16 @@ impl App {
     pub(super) fn draw_hotkeys(&mut self, ui: &mut egui::Ui, status: &EngineState) {
         ui.group(|ui| {
             ui.strong("Hotkeys");
-            for action in HotkeyAction::ALL {
+            for action in Action::ALL {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_sized([120.0, 20.0], egui::Label::new(action.label()));
-                    let shortcuts: Vec<String> = self
+                    let shortcuts: Vec<Shortcut> = self
                         .config
                         .bindings_for(action)
-                        .map(|binding| binding.shortcut.clone())
+                        .map(|binding| binding.shortcut)
                         .collect();
                     for shortcut in shortcuts {
-                        let label = format!("{}  ×", display_shortcut(&shortcut));
+                        let label = format!("{}  ×", shortcut.label());
                         if ui
                             .add_enabled(
                                 status.run.phase == RunPhase::Idle,
@@ -270,7 +267,7 @@ impl App {
                             .on_hover_text("Remove shortcut")
                             .clicked()
                         {
-                            self.remove_hotkey(action, &shortcut);
+                            self.remove_hotkey(action, shortcut);
                         }
                     }
                     let can_add =
@@ -292,43 +289,11 @@ impl App {
 }
 
 impl App {
+    /// The dialog. The input thread records the shortcut; this only shows the wait and the result.
     pub(super) fn draw_hotkey_capture(&mut self, ctx: &egui::Context) {
-        let Some(capture) = self.hotkey_capture.as_mut() else {
+        let Some(action) = self.hotkey_capture else {
             return;
         };
-        let action = capture.action;
-
-        if !capture.armed {
-            // Do not capture the Enter/Space key that may have activated `+ Add`
-            // with keyboard navigation. Capture begins on the next egui pass.
-            capture.armed = true;
-            ctx.request_repaint();
-        } else if let Some(shortcut) = self.hotkeys.poll_captured_xinput() {
-            self.add_hotkey(action, &shortcut);
-        } else {
-            let super_down = ctx.input(|input| {
-                input.key_down(egui::Key::SuperLeft) || input.key_down(egui::Key::SuperRight)
-            });
-            if super_down {
-                self.hotkey_capture_error =
-                    Some("Windows/Super shortcuts are not supported by the capture UI".to_owned());
-            } else {
-                let events = ctx.input(|input| input.events.clone());
-                if let Some(result) = capture_from_events(&events) {
-                    match result {
-                        Ok(CaptureResult::Cancelled) => self.cancel_hotkey_capture(),
-                        Ok(CaptureResult::Captured(hotkey)) => {
-                            self.add_hotkey(action, &hotkey.to_string());
-                        }
-                        Err(error) => self.hotkey_capture_error = Some(error),
-                    }
-                }
-            }
-        }
-
-        if self.hotkey_capture.is_none() {
-            return;
-        }
 
         let mut open = true;
         egui::Window::new("Add shortcut")
@@ -340,8 +305,8 @@ impl App {
                 ui.strong(action.label());
                 ui.add_space(8.0);
                 ui.heading("Waiting for input…");
-                ui.label("Press a key, controller button, or trigger.");
-                ui.small("Esc cancels. Keyboard shortcuts may use Ctrl, Shift, and Alt. XInput buttons and LT/RT are also supported.");
+                ui.label("Press a key or a controller button. Esc cancels.");
+                ui.small("Keyboard shortcuts may use Ctrl, Shift, and Alt. XInput buttons and LT/RT are also supported.");
                 if let Some(error) = &self.hotkey_capture_error {
                     ui.add_space(6.0);
                     error_label(ui, error);

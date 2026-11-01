@@ -31,16 +31,16 @@ use std::{
 
 use crate::{
     Repaint,
+    clock::Clock,
     config::Config,
     settings::{
         CaptureSettings, ConfidenceThreshold, FpsLimit, Interpolation, MaxDelta, Sensitivity,
         TargetYOffset,
     },
     telemetry::{LiveTelemetry, Telemetry},
-    timing::QpcClock,
 };
 
-use crate::wait::{DeadlineWait, Waker};
+use crate::clock::{self, Wake};
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -101,7 +101,7 @@ impl std::fmt::Debug for EngineControl {
 #[derive(Clone)]
 pub struct EngineControl {
     tx: mpsc::Sender<Command>,
-    waker: Waker,
+    waker: Wake,
 }
 
 impl EngineControl {
@@ -109,16 +109,6 @@ impl EngineControl {
     pub fn send(&self, command: Command) {
         let _ = self.tx.send(command);
         self.waker.wake();
-    }
-}
-
-#[cfg(test)]
-impl EngineControl {
-    /// A control for tests. The commands that it sends are read from the returned receiver.
-    pub(crate) fn detached() -> (Self, mpsc::Receiver<Command>) {
-        let (tx, rx) = mpsc::channel();
-        let (_wait, waker) = DeadlineWait::new().expect("failed to create the test wait");
-        (Self { tx, waker }, rx)
     }
 }
 
@@ -145,9 +135,9 @@ impl Engine {
     pub fn new(config: &Config, repaint: Repaint) -> Self {
         tracing::info!("spawning engine worker");
         let (tx, rx) = mpsc::channel();
-        let (wait, waker) = DeadlineWait::new().expect("failed to create the engine wait");
+        let (wait, waker) = clock::wait().expect("failed to create the engine wait");
         let (event_tx, events) = mpsc::channel();
-        let qpc = QpcClock::new().expect("failed to read the QPC frequency");
+        let qpc = Clock::new().expect("failed to read the QPC frequency");
         let (telemetry, sink) = Telemetry::spawn(qpc, repaint.clone());
         let state = Arc::new(Mutex::new(Arc::new(EngineState::default())));
         let links = WorkerLinks {

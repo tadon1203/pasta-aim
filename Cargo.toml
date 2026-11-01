@@ -11,7 +11,6 @@ path = "src/bin/app/main.rs"
 [dependencies]
 anyhow = "1.0"
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu"] }
-global-hotkey = "0.8.0"
 half = "2.7"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "half", "api-27", "download-binaries", "tls-native", "copy-dylibs", "directml"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -36,6 +35,9 @@ windows = { version = "0.57.0", features = [
     "Win32_Security",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_XboxController",
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows-sys = { version = "0.61.2", features = [
@@ -47,8 +49,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_IO",
     "Win32_System_Registry",
     "Win32_System_Threading",
-    "Win32_UI_Input_XboxController",
-    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [lints.rust]

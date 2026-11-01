@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use crate::engine::target_track::Track;
-use crate::{stats::percentile, timing::QpcClock};
+use crate::{clock::Clock, stats::percentile};
 
 const WINDOW: usize = 256;
 const CONVERGENCE_WINDOW: usize = 64;
@@ -65,12 +65,12 @@ impl LoopMetrics {
         *self = Self::new();
     }
 
-    pub(super) fn record(&mut self, qpc: QpcClock, frame: LoopFrame) {
+    pub(super) fn record(&mut self, qpc: Clock, frame: LoopFrame) {
         if frame.sent {
             if let Some(previous) = self.last_send_qpc {
                 push(
                     &mut self.periods_ms,
-                    qpc.elapsed_ms(previous, frame.output_complete_qpc),
+                    qpc.ms(previous, frame.output_complete_qpc),
                     WINDOW,
                 );
             }
@@ -102,7 +102,7 @@ impl LoopMetrics {
             self.converged = true;
             push(
                 &mut self.convergence_ms,
-                qpc.elapsed_ms(self.acquired_qpc, frame.present_qpc),
+                qpc.ms(self.acquired_qpc, frame.present_qpc),
                 CONVERGENCE_WINDOW,
             );
         }
@@ -149,7 +149,7 @@ fn push<T>(queue: &mut VecDeque<T>, value: T, capacity: usize) {
 mod tests {
     use super::*;
 
-    const QPC: QpcClock = QpcClock::test(1_000.0);
+    const QPC: Clock = Clock::test(1_000.0);
 
     fn frame(t: i64, id: u32, switched: bool, error: (f32, f32)) -> LoopFrame {
         LoopFrame {
