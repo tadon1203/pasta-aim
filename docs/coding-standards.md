@@ -9,7 +9,7 @@ These are the rules for code and documentation that lint cannot check. Do not wr
 
 ## Rust
 
-- Modules are split by feature. A module is `foo.rs`, with `foo/` only when a child file has clear value: it hides a large part behind a small interface, or it is test-only. No split by line count. No `utils` files. No `mod.rs`.
+- Modules are split by feature. A module is `foo.rs`, with `foo/` only when a child file has clear value: it hides a large part behind a small interface, or it is test-only. No split by line count. No `mod.rs`.
 - Names are plain English words, the shortest that is not ambiguous. The module path gives the context: `engine::Command`, not `engine::EngineCommand`. No `Hub`, `Manager`, `Context`, `Registry`, `Info`, or `Metadata` suffixes. A name that equals its module (`settings::Settings`) is allowed.
 - Errors: use `thiserror` only when a caller branches on the kind of error. Use `anyhow` with `.context` everywhere else. Store a `String` only when an error is kept for display, and format it with `{error:#}`. A startup failure returns to `main`.
 - The library never uses `eframe` or `egui`. The bin makes the repaint closure that it gives to `channel::channel`.
