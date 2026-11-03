@@ -43,14 +43,21 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 | ------------------ | -------------------- | -------------- |
 | Confidence         | 0 to 100 %           | 50 %           |
 | Target Y offset    | 0 to 100 %           | 50 %           |
-| Sensitivity        | 1 to 10000 %         | 100 %          |
+| Sensitivity X, Y   | 1 to 10000 %         | 100 %          |
 | Max delta          | 0 to 32767           | 512            |
+| Lead mode          | Auto, Manual         | Auto           |
+| Lead               | 0 to 200 ms          | 30 ms          |
+| Lead extra         | 0 to 100 ms          | 10 ms          |
+| Velocity smoothing | 0 to 95 %            | 50 %           |
 | Move interpolation | Auto, 0 to 100 %     | Auto           |
 
 - **Confidence** is the confidence threshold: the lowest confidence at which a detection is accepted.
 - **Target Y offset** sets the aim point, which is the point inside the box of the target that the output moves toward: 0 % is the top edge of the box, 50 % is its center, and 100 % is its bottom edge. It applies before the sensitivity.
-- **Sensitivity** is a whole percent. The gain is the sensitivity divided by 100.
+- **Sensitivity X** and **Sensitivity Y** are whole percents, one for each axis. The gain of an axis is its sensitivity divided by 100.
 - **Max delta** limits the length of the move of one frame, after the sensitivity. A move is the mouse movement that the engine sends for one frame, in whole counts. The direction stays the same. 0 means no limit.
+- **Lead** moves the aim point ahead of a moving target by the target's velocity times the lead, so that the move meets the target where it will be when the move takes effect. The velocity is the change of the box center between two frames of the same track, per second of capture time. It leaves out the shift of the view that the last move sent caused (that move divided by the gain of the axis), so that a target that stands still has no velocity. The lead of an axis is at most the box size on that axis. A target switch, a lost target, a gap of more than 0.1 s between two frames, and the start of a run clear the velocity. 0 turns the lead off.
+- **Lead mode** chooses the lead time. In Manual mode it is the **Lead** setting. In Auto mode it is the measured delay plus **Lead extra**, and at most 200 ms. The measured delay is the time from the capture of a frame (its Present time) to the start of its move, smoothed over frames (20 % of each new measurement enters the estimate). Lead extra stands for the delay after the write, which the app cannot measure: MAKCU, the mouse input, and the game. The start of a run clears the measured delay, and the lead before the first measurement is the extra alone.
+- **Velocity smoothing** is the share of the previous velocity that stays in the estimate when a frame adds a new sample. 0 % takes each new sample as it is.
 - **Move interpolation** is Auto or a fixed percent. A change is sent to MAKCU at once and again after each connect. If MAKCU does not confirm it, the error line shows the reason, and the run still starts.
 - A track is the target followed across consecutive frames: two boxes that overlap enough are the same target. A target switch is the first frame of a track.
 - The remainder is the part of a move that is lost when the move is rounded to whole counts. The remainder goes to the next frame of the same track. A target switch, a lost target, and the start of a run clear it.

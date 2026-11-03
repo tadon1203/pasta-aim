@@ -9,8 +9,8 @@ use nice_aimassist::{
     engine::{CapturePhase, Command, ModelPhase, RunPhase, State, Stats},
     hotkeys::Action,
     settings::{
-        Confidence, FpsLimit, Interpolation, InterpolationPercent, MaxDelta, NewFrameWait,
-        Sensitivity, Settings, TargetYOffset,
+        Confidence, FpsLimit, Interpolation, InterpolationPercent, Lead, LeadExtra, LeadMode,
+        MaxDelta, NewFrameWait, Sensitivity, Settings, TargetYOffset, VelocitySmoothing,
     },
 };
 
@@ -128,15 +128,25 @@ impl App {
     fn draw_calibration_values(&mut self, ui: &mut egui::Ui) {
         let edit = percent_row(
             ui,
-            "Sensitivity",
-            self.settings.sensitivity.get(),
+            "Sensitivity X",
+            self.settings.sensitivity_x.get(),
             Sensitivity::MIN..=Sensitivity::MAX,
-            self.dirty.contains(&EditField::Sensitivity),
+            self.dirty.contains(&EditField::SensitivityX),
         );
-        self.apply_edit(EditField::Sensitivity, edit, |app, value| {
-            app.edit(|settings| settings.sensitivity = Sensitivity::new(value));
+        self.apply_edit(EditField::SensitivityX, edit, |app, value| {
+            app.edit(|settings| settings.sensitivity_x = Sensitivity::new(value));
         });
-        ui.small("100% = 1× command scale");
+        let edit = percent_row(
+            ui,
+            "Sensitivity Y",
+            self.settings.sensitivity_y.get(),
+            Sensitivity::MIN..=Sensitivity::MAX,
+            self.dirty.contains(&EditField::SensitivityY),
+        );
+        self.apply_edit(EditField::SensitivityY, edit, |app, value| {
+            app.edit(|settings| settings.sensitivity_y = Sensitivity::new(value));
+        });
+        ui.small("100% = 1× command scale, per axis");
 
         let edit = percent_row(
             ui,
@@ -173,6 +183,64 @@ impl App {
             );
         });
         ui.small("Per-frame cap on movement length after sensitivity; 0 = unlimited.");
+
+        self.draw_lead_values(ui);
+    }
+
+    /// The lead mode, its time, and the smoothing of the target velocity.
+    fn draw_lead_values(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Lead");
+            let mut auto = self.settings.lead_mode == LeadMode::Auto;
+            if ui.checkbox(&mut auto, "Auto").changed() {
+                self.edit(|settings| {
+                    settings.lead_mode = if auto {
+                        LeadMode::Auto
+                    } else {
+                        LeadMode::Manual
+                    };
+                });
+                self.persist();
+            }
+        });
+        ui.horizontal(|ui| match self.settings.lead_mode {
+            LeadMode::Auto => self.drag_row(
+                ui,
+                "Extra (ms)",
+                EditField::LeadExtra,
+                self.settings.lead_extra.get(),
+                LeadExtra::MIN..=LeadExtra::MAX,
+                |settings, value| settings.lead_extra = LeadExtra::new(value),
+            ),
+            LeadMode::Manual => self.drag_row(
+                ui,
+                "Lead (ms)",
+                EditField::Lead,
+                self.settings.lead.get(),
+                Lead::MIN..=Lead::MAX,
+                |settings, value| settings.lead = Lead::new(value),
+            ),
+        });
+        ui.small(match self.settings.lead_mode {
+            LeadMode::Auto => {
+                "Aims ahead of a moving target by its speed times (measured delay + extra)."
+            }
+            LeadMode::Manual => {
+                "Aims ahead of a moving target by its speed times this time; 0 = off."
+            }
+        });
+
+        let edit = percent_row(
+            ui,
+            "Velocity smoothing",
+            self.settings.velocity_smoothing.get(),
+            VelocitySmoothing::MIN..=VelocitySmoothing::MAX,
+            self.dirty.contains(&EditField::VelocitySmoothing),
+        );
+        self.apply_edit(EditField::VelocitySmoothing, edit, |app, value| {
+            app.edit(|settings| settings.velocity_smoothing = VelocitySmoothing::new(value));
+        });
+        ui.small("Higher = steadier target speed, slower to react.");
     }
 
     /// The Run once button, its shortcuts, and why it is off while the engine is blocked.

@@ -60,6 +60,12 @@ pub type Confidence = Ranged<0, 50, 100>;
 pub type TargetYOffset = Ranged<0, 50, 100>;
 /// Per-frame cap on the output movement length, in command units. 0 is no cap.
 pub type MaxDelta = Ranged<0, 512, 32_767>;
+/// How far ahead the aim point leads a moving target, in milliseconds. 0 is no lead.
+pub type Lead = Ranged<0, 30, 200>;
+/// The time added to the measured delay in the Auto lead mode, in milliseconds.
+pub type LeadExtra = Ranged<0, 10, 100>;
+/// How strongly the target velocity estimate is smoothed over frames, in percent. 0 is no smoothing.
+pub type VelocitySmoothing = Ranged<0, 50, 95>;
 /// Frame rate cap.
 pub type FpsLimit = Ranged<1, 240, 1_000>;
 /// Milliseconds to wait for a new frame.
@@ -70,6 +76,36 @@ pub type InterpolationPercent = Ranged<0, 0, 100>;
 impl Sensitivity {
     pub fn gain(self) -> f32 {
         f32::from(self.get()) / f32::from(Self::DEFAULT)
+    }
+}
+
+impl Lead {
+    pub fn seconds(self) -> f32 {
+        f32::from(self.get()) / 1000.0
+    }
+}
+
+impl LeadExtra {
+    pub fn seconds(self) -> f32 {
+        f32::from(self.get()) / 1000.0
+    }
+}
+
+/// Where the lead time comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LeadMode {
+    /// The delay from the capture of a frame to its move, measured, plus the extra.
+    #[default]
+    Auto,
+    /// The fixed lead.
+    Manual,
+}
+
+impl VelocitySmoothing {
+    /// The share of a new velocity sample that enters the estimate. 1.0 is no smoothing.
+    pub fn blend(self) -> f32 {
+        1.0 - f32::from(self.get()) / 100.0
     }
 }
 
@@ -165,10 +201,15 @@ pub struct Settings {
     /// The loaded model file name in `models/`.
     pub model: Option<String>,
     pub display: Display,
-    pub sensitivity: Sensitivity,
+    pub sensitivity_x: Sensitivity,
+    pub sensitivity_y: Sensitivity,
     pub confidence: Confidence,
     pub target_y_offset: TargetYOffset,
     pub max_delta: MaxDelta,
+    pub lead_mode: LeadMode,
+    pub lead: Lead,
+    pub lead_extra: LeadExtra,
+    pub velocity_smoothing: VelocitySmoothing,
     pub fps_limit: FpsLimit,
     pub new_frame_wait: NewFrameWait,
     pub interpolation: Interpolation,
@@ -188,10 +229,15 @@ impl Default for Settings {
         Self {
             model: None,
             display: Display::default(),
-            sensitivity: Sensitivity::default(),
+            sensitivity_x: Sensitivity::default(),
+            sensitivity_y: Sensitivity::default(),
             confidence: Confidence::default(),
             target_y_offset: TargetYOffset::default(),
             max_delta: MaxDelta::default(),
+            lead_mode: LeadMode::default(),
+            lead: Lead::default(),
+            lead_extra: LeadExtra::default(),
+            velocity_smoothing: VelocitySmoothing::default(),
             fps_limit: FpsLimit::default(),
             new_frame_wait: NewFrameWait::default(),
             interpolation: Interpolation::default(),
@@ -429,10 +475,11 @@ mod tests {
 
     #[test]
     fn a_missing_field_gets_its_default_and_the_others_keep_their_values() {
-        let loaded = Settings::from_json(br#"{"sensitivity": 250, "low_latency": true}"#);
+        let loaded = Settings::from_json(br#"{"sensitivity_x": 250, "low_latency": true}"#);
         assert!(!loaded.unusable);
         assert!(loaded.warning.is_none());
-        assert_eq!(loaded.settings.sensitivity.get(), 250);
+        assert_eq!(loaded.settings.sensitivity_x.get(), 250);
+        assert_eq!(loaded.settings.sensitivity_y, Sensitivity::default());
         assert!(loaded.settings.low_latency);
         assert_eq!(loaded.settings.confidence, Confidence::default());
         assert_eq!(loaded.settings.hotkeys, default_hotkeys());
@@ -453,10 +500,10 @@ mod tests {
     #[test]
     fn a_value_out_of_range_is_clamped() {
         let loaded = Settings::from_json(
-            br#"{"sensitivity": 20000, "new_frame_wait": 0, "target_y_offset": 101}"#,
+            br#"{"sensitivity_x": 20000, "new_frame_wait": 0, "target_y_offset": 101}"#,
         );
         assert!(!loaded.unusable);
-        assert_eq!(loaded.settings.sensitivity.get(), Sensitivity::MAX);
+        assert_eq!(loaded.settings.sensitivity_x.get(), Sensitivity::MAX);
         assert_eq!(loaded.settings.new_frame_wait.get(), NewFrameWait::MIN);
         assert_eq!(loaded.settings.target_y_offset.get(), TargetYOffset::MAX);
     }

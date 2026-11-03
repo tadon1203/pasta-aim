@@ -51,10 +51,14 @@ pub struct App {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EditField {
     Interpolation,
-    Sensitivity,
+    SensitivityX,
+    SensitivityY,
     Confidence,
     TargetYOffset,
     MaxDelta,
+    Lead,
+    LeadExtra,
+    VelocitySmoothing,
     FpsLimit,
 }
 
@@ -64,7 +68,7 @@ impl App {
         let gpu_debug_at_startup = settings.gpu_debug;
         let settings_warning = loaded.warning;
         let settings_unusable = loaded.unusable;
-        tracing::info!(model = ?settings.model, sensitivity = settings.sensitivity.get(), fps_limit = settings.fps_limit.get(), "application initialized with settings");
+        tracing::info!(model = ?settings.model, sensitivity_x = settings.sensitivity_x.get(), sensitivity_y = settings.sensitivity_y.get(), fps_limit = settings.fps_limit.get(), "application initialized with settings");
         let (models, model_catalog_error) = match settings::models() {
             Ok(names) => (names, None),
             Err(error) => {

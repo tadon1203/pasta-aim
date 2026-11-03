@@ -135,6 +135,8 @@ struct Worker {
     state: State,
     state_changed: bool,
     recorder: Recorder,
+    /// Turns the capture times of the frames into seconds for the aim.
+    clock: Clock,
     /// When the statistics were last sent to the UI.
     stats_sent: Instant,
     /// The pipeline of the selected display and the model. `None` until a model is loaded, and after a fault.
@@ -167,6 +169,7 @@ impl Worker {
             state: State::default(),
             state_changed: false,
             recorder: Recorder::new(clock),
+            clock,
             stats_sent: Instant::now(),
             pipeline: None,
             aim: Aim::new(aim_settings(&settings)),
@@ -758,9 +761,14 @@ fn chosen_port(port: Option<&str>) -> Option<String> {
 
 fn aim_settings(settings: &Settings) -> AimSettings {
     AimSettings {
-        sensitivity: settings.sensitivity,
+        sensitivity_x: settings.sensitivity_x,
+        sensitivity_y: settings.sensitivity_y,
         target_y_offset: settings.target_y_offset,
         max_delta: settings.max_delta,
+        lead_mode: settings.lead_mode,
+        lead: settings.lead,
+        lead_extra: settings.lead_extra,
+        velocity_smoothing: settings.velocity_smoothing,
     }
 }
 
@@ -788,6 +796,7 @@ mod fixture {
             state,
             state_changed: false,
             recorder: Recorder::new(clock),
+            clock,
             stats_sent: Instant::now(),
             pipeline: None,
             aim: Aim::new(aim_settings(&settings)),
@@ -827,15 +836,15 @@ mod tests {
         let (mut worker, _fake, messages, _waker) = worker();
         worker.state.model.active_name = Some("model.onnx".into());
         let detection = crate::pipeline::Detection::for_test(70.0, 50.0, 0);
-        let before = worker.aim.update(Some(detection), (100, 100)).exact;
+        let before = worker.aim.update(Some(detection), (100, 100), 0.0).exact;
         worker.aim.reset();
 
         let mut settings = worker.settings.clone();
-        settings.sensitivity = Sensitivity::new(Sensitivity::MAX);
+        settings.sensitivity_x = Sensitivity::new(Sensitivity::MAX);
         worker.handle(Command::Settings(settings));
 
         worker.aim.reset();
-        let after = worker.aim.update(Some(detection), (100, 100)).exact;
+        let after = worker.aim.update(Some(detection), (100, 100), 0.0).exact;
         assert_ne!(before, after);
         assert!(worker.state.model.loading_name.is_none());
         assert!(

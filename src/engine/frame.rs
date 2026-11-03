@@ -71,7 +71,10 @@ impl Worker {
             return Flow::Continue;
         }
         let output_start = Clock::now();
-        let outcome = self.aim.update(frame.selected, self.input_size());
+        let captured = self.clock.ms(0, frame.times.present) / 1000.0;
+        self.aim
+            .observe_delay(self.clock.ms(frame.times.present, output_start) / 1000.0);
+        let outcome = self.aim.update(frame.selected, self.input_size(), captured);
         if let Some(rounded) = outcome.rounded
             && let Err(error) = self.output.write(rounded)
         {
