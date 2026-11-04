@@ -8,7 +8,6 @@ use nice_aimassist::{
     pipeline::DisplayInfo,
 };
 
-/// Whether the MAKCU connection attempt is still running.
 fn is_busy(phase: OutputPhase) -> bool {
     phase == OutputPhase::Connecting
 }

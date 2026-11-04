@@ -27,7 +27,6 @@ use windows::{
 /// The timer index in `WaitForMultipleObjects`, after the event.
 const TIMER_INDEX: u32 = WAIT_OBJECT_0.0 + 1;
 
-/// Performance-counter timestamps, and their frequency.
 #[derive(Debug, Clone, Copy)]
 pub struct Clock {
     ticks_per_second: f64,
@@ -120,7 +119,6 @@ pub struct Wait {
     timer: Handle,
 }
 
-/// A wait, and the handle that wakes it.
 pub fn wait() -> Result<(Wait, Wake)> {
     // SAFETY: the event has no name and no security attributes; the result is checked below.
     let event = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }

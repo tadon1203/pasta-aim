@@ -50,7 +50,6 @@ pub struct Track {
     pub switched: bool,
 }
 
-/// What one frame gave, for the frame record.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
     /// `(dx, dy)` from the capture region center to the aim point, in model input pixels.
@@ -147,7 +146,6 @@ impl Aim {
         }
     }
 
-    /// Clears the track and the remainder.
     pub fn reset(&mut self) {
         self.tracker.reset();
         self.carry = (0.0, 0.0);
@@ -156,7 +154,6 @@ impl Aim {
     }
 }
 
-/// The box center of a frame and its capture time.
 #[derive(Debug, Clone, Copy)]
 struct Seen {
     center: (f32, f32),
@@ -176,7 +173,6 @@ struct Motion {
 }
 
 impl Motion {
-    /// Takes the box of a frame into the estimate and returns the velocity.
     fn observe(&mut self, detection: &Detection, at: f64, blend: f32) -> (f32, f32) {
         let center = (detection.center_x, detection.center_y);
         if let Some(previous) = self.previous {

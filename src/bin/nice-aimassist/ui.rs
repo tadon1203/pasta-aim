@@ -21,7 +21,6 @@ pub struct App {
     gpu_debug_at_startup: bool,
     /// Stops the engine thread when the app drops it.
     _engine: Engine,
-    /// Sends to the engine thread.
     commands: Sender<Command>,
     /// The `.onnx` file names in `models/`.
     models: Vec<String>,
@@ -185,7 +184,6 @@ impl App {
         self.commands.send(Command::Settings(self.settings.clone()));
     }
 
-    /// Applies what the other threads sent since the last frame.
     fn process_messages(&mut self) {
         while let Ok(message) = self.messages.try_recv() {
             match message {

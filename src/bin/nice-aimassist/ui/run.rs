@@ -19,7 +19,6 @@ const FIXED_INTERPOLATION_START: u16 = 50;
 
 const STEPS: [(&str, i32); 4] = [("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)];
 
-/// What the user asked for through a value widget this frame.
 #[derive(Debug)]
 struct Edit<T> {
     /// A new value to apply immediately.
@@ -31,7 +30,6 @@ struct Edit<T> {
 }
 
 impl App {
-    /// Applies what a value widget asked for, and tracks whether its edit is still unsaved.
     fn apply_edit<T>(&mut self, field: EditField, edit: Edit<T>, set: impl FnOnce(&mut Self, T)) {
         if let Some(value) = edit.value {
             set(self, value);

@@ -21,7 +21,6 @@ use self::{
 };
 use crate::{aim::Move, settings::Interpolation};
 
-/// The MAKCU that the output is connected to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     pub port: String,
@@ -136,7 +135,6 @@ impl Output {
         self.link.is_some()
     }
 
-    /// Whether the connected MAKCU has the mouse route.
     pub fn mouse_route(&self) -> bool {
         self.link
             .as_ref()

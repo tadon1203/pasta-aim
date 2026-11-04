@@ -8,7 +8,6 @@ use crate::{engine, hotkeys, settings::Display};
 
 pub use mpsc::Receiver;
 
-/// What the other threads send to the UI.
 #[derive(Debug)]
 // `Stats` is sent at most ten times each second, so its size does not matter here.
 #[allow(clippy::large_enum_variant)]
@@ -55,7 +54,6 @@ impl<T> Sender<T> {
     }
 }
 
-/// A channel whose sender calls `notify` after each value it sends.
 pub fn channel<T>(notify: impl Fn() + Send + Sync + 'static) -> (Sender<T>, Receiver<T>) {
     let (tx, rx) = mpsc::channel();
     (

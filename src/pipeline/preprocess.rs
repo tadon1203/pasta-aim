@@ -99,7 +99,6 @@ pub struct GpuPreprocessor {
 pub struct PreprocessTicket {
     pub completion_value: u64,
     pub frame_seq: u64,
-    /// Whether this submission recorded timestamps.
     pub timed: bool,
 }
 
@@ -323,7 +322,6 @@ fn ensure_typed_uav_store(
     Ok(())
 }
 
-/// Everything needed to record the preprocess dispatch.
 struct PreprocessRecording<'a> {
     device: &'a ID3D12Device,
     allocator: &'a ID3D12CommandAllocator,

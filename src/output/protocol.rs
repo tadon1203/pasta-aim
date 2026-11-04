@@ -44,7 +44,6 @@ impl Query {
         }
     }
 
-    /// Appends the packet of the query to `out`.
     pub(super) fn encode(self, out: &mut Vec<u8>) {
         let len = match self {
             Self::Device | Self::FirmwareVersion => 0,
@@ -107,7 +106,6 @@ pub(super) fn is_interpolate_echo(value: u8, packet: &Packet) -> bool {
     value == INTERPOLATE_AUTO || packet.payload() == [value]
 }
 
-/// Whether a reply to `INTERPOLATE value` confirms the value: the echo, and not a reject.
 pub(super) fn confirms_interpolate(value: u8, packet: &Packet) -> bool {
     !is_reject(Query::Interpolate(value), packet) && is_interpolate_echo(value, packet)
 }
@@ -119,7 +117,6 @@ pub(super) struct PacketDecoder {
 }
 
 impl PacketDecoder {
-    /// Calls `on_packet` for each packet that is complete.
     pub(super) fn feed(&mut self, bytes: &[u8], mut on_packet: impl FnMut(Packet)) {
         self.buffer.extend_from_slice(bytes);
         let mut start = 0;
@@ -166,7 +163,6 @@ pub(super) fn format_firmware(version: u32) -> String {
 pub(super) mod tests {
     use super::*;
 
-    /// The bytes that `query` puts on the wire.
     pub(in crate::output) fn frame(query: Query) -> Vec<u8> {
         let mut out = Vec::new();
         query.encode(&mut out);
@@ -179,7 +175,6 @@ pub(super) mod tests {
         bytes
     }
 
-    /// The packets of `bytes`, fed in one call.
     fn decode(bytes: &[u8]) -> Vec<Packet> {
         let mut packets = Vec::new();
         PacketDecoder::default().feed(bytes, |packet| packets.push(packet));

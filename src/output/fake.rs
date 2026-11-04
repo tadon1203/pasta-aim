@@ -29,7 +29,6 @@ struct State {
     connected: bool,
     /// Every query that the device received, in order. One port write can hold several.
     frames: Vec<Vec<u8>>,
-    /// The bytes that wait for the host.
     replies: VecDeque<u8>,
     /// The command whose next query gets no reply.
     mute: Option<u8>,
@@ -87,7 +86,6 @@ impl FakeMakcu {
         self.state.lock_recover().kinds = kinds;
     }
 
-    /// The rate that the device listens at now.
     pub(crate) fn set_baud(&self, baud: u32) {
         self.state.lock_recover().baud = baud;
     }
@@ -96,17 +94,14 @@ impl FakeMakcu {
         self.state.lock_recover().accepted = bauds.to_vec();
     }
 
-    /// The next query of `cmd` gets no reply.
     pub(crate) fn mute_next(&self, cmd: u8) {
         self.state.lock_recover().mute = Some(cmd);
     }
 
-    /// The next query of `cmd` gets a reject.
     pub(crate) fn reject_next(&self, cmd: u8) {
         self.state.lock_recover().reject = Some(cmd);
     }
 
-    /// `INTERPOLATE` echoes `value` instead of the value it was sent.
     pub(crate) fn set_interpolate_echo(&self, value: u8) {
         self.state.lock_recover().interpolate_echo = Some(value);
     }
@@ -188,7 +183,6 @@ impl Serial for FakePort {
 }
 
 impl State {
-    /// Answers one query. `payload` is the payload of the query, `cmd` its command.
     fn answer(&mut self, cmd: u8, payload: &[u8]) {
         if self.mute == Some(cmd) {
             self.mute = None;
@@ -207,7 +201,6 @@ impl State {
                 let firmware = self.firmware.to_le_bytes();
                 self.reply(cmd, &firmware);
             }
-            // `INTERPOLATE` echoes its value.
             CMD_INTERPOLATE => {
                 let echo = self
                     .interpolate_echo

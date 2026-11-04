@@ -44,7 +44,6 @@ pub(super) fn connect(
     bail!("{}", failures.join("; "))
 }
 
-/// The names of the ports with a MAKCU chip, in the order of the list.
 fn makcu_ports(entries: Vec<Entry>) -> Vec<String> {
     entries
         .into_iter()
@@ -53,8 +52,6 @@ fn makcu_ports(entries: Vec<Entry>) -> Vec<String> {
         .collect()
 }
 
-/// The connect sequence on one port: probe both rates, switch to 4,000,000 baud when the port is at
-/// 115,200, then read the mouse route.
 fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Serial>, Device)> {
     // The rate that MAKCU keeps is not known after the app closes, so both rates are probed.
     let (mut port, mut baud) = probe_first(connector, name, [LOW_BAUD, HIGH_BAUD])?;
@@ -115,7 +112,6 @@ fn kinds_of(port: &mut dyn Serial) -> Result<u8> {
     Ok(kinds)
 }
 
-/// `exchange`, where a reject is an error.
 fn exchange_accepted(port: &mut dyn Serial, query: Query) -> Result<Packet> {
     let packet = exchange(port, query)?;
     ensure!(!is_reject(query, &packet), "MAKCU rejected {query:?}");

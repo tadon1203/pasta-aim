@@ -99,7 +99,6 @@ pub(super) const CONTROL: u16 = 0x11;
 pub(super) const SHIFT: u16 = 0x10;
 pub(super) const ALT: u16 = 0x12;
 
-/// The name of a key in shortcut text, from its virtual-key code.
 pub(super) fn key_name(code: u16) -> Option<&'static str> {
     KEYS.iter()
         .find(|(_, known)| *known == code)

@@ -91,14 +91,12 @@ impl LeadExtra {
     }
 }
 
-/// Where the lead time comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LeadMode {
     /// The delay from the capture of a frame to its move, measured, plus the extra.
     #[default]
     Auto,
-    /// The fixed lead.
     Manual,
 }
 
@@ -130,7 +128,6 @@ impl MaxDelta {
     }
 }
 
-/// The Move interpolation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Interpolation {
@@ -250,7 +247,6 @@ impl Default for Settings {
     }
 }
 
-/// The result of reading the settings file.
 #[derive(Debug)]
 pub struct Loaded {
     pub settings: Settings,
@@ -399,7 +395,6 @@ fn back_up(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The folder that holds the program.
 fn exe_dir() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("failed to find the program's path")?;
     exe.parent()

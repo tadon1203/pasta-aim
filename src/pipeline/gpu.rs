@@ -138,8 +138,6 @@ pub(crate) fn hex(value: Option<i32>) -> String {
     )
 }
 
-// ---- Enumeration ----
-
 fn factory() -> Result<IDXGIFactory1> {
     // SAFETY: CreateDXGIFactory1 initializes and returns the requested COM interface.
     unsafe { CreateDXGIFactory1() }.context("failed to create DXGI factory")
@@ -163,7 +161,6 @@ fn outputs(adapter: &IDXGIAdapter1) -> impl Iterator<Item = Result<(u32, IDXGIOu
     })
 }
 
-/// Lists every output of the system as a `DisplayInfo`.
 pub(super) fn enumerate_displays() -> Result<Vec<DisplayInfo>> {
     let factory = factory()?;
     let mut result = Vec::new();
@@ -182,7 +179,6 @@ pub(super) fn enumerate_displays() -> Result<Vec<DisplayInfo>> {
     Ok(result)
 }
 
-/// The adapter and output that a capture uses, with the info of the display.
 pub(super) struct SelectedOutput {
     pub adapter: IDXGIAdapter1,
     pub output: IDXGIOutput1,
@@ -266,8 +262,6 @@ fn wide_string(value: &[u16]) -> String {
     String::from_utf16_lossy(&value[..end])
 }
 
-// ---- Device removal ----
-
 /// The removed reason of a D3D11 device, or `None` while it is alive.
 pub(super) fn d3d11_removed_reason(device: &ID3D11Device4) -> Option<i32> {
     unsafe { device.GetDeviceRemovedReason() }
@@ -286,8 +280,6 @@ pub(super) fn d3d12_removed_reason(device: &ID3D12Device) -> Option<i32> {
 pub(super) fn fence_reports_removal(completed: u64) -> bool {
     completed == u64::MAX
 }
-
-// ---- Debug layer and fault log ----
 
 /// Enables the D3D12 debug layer. Call once, before any D3D12 device is created.
 pub(super) fn enable_debug_layer() -> Result<()> {
@@ -362,8 +354,6 @@ pub(super) fn log_fault(
         "gpu_fault"
     );
 }
-
-// ---- Devices ----
 
 /// Creates the compute queue that the preprocess, the model, and the readback share. It has the high
 /// priority, so that the GPU scheduler serves it before the normal work of other programs, such as the
@@ -469,8 +459,6 @@ impl GpuDeviceContext {
         self.idle.signal_and_wait(&self.queue, false)
     }
 }
-
-// ---- The shared frame ----
 
 impl std::fmt::Debug for CaptureFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

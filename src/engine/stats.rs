@@ -12,7 +12,6 @@ use crate::{
     pipeline::Frame,
 };
 
-/// The most often the UI gets new statistics.
 pub(super) const PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
 /// The rates are made over windows of at least this length.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -156,7 +155,6 @@ impl Recorder {
         self.changed = true;
     }
 
-    /// A frame that the capture produced did not reach the output.
     pub(super) fn frame_dropped(&mut self) {
         self.dropped += 1;
     }
@@ -167,7 +165,6 @@ impl Recorder {
         (self.frames, self.dropped)
     }
 
-    /// Whether anything was recorded since the last call.
     pub(super) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }

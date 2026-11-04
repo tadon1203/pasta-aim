@@ -26,14 +26,10 @@ use crate::{
 };
 use keys::{ALT, CONTROL, ESCAPE, KeySet, Pad, PadSample, PadSet, SHIFT};
 
-/// How often the hotkeys thread reads the inputs.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
-/// How often a disconnected controller is looked for.
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
-/// The number of `XInput` user slots.
 const SLOT_COUNT: u32 = 4;
 
-/// What a shortcut does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -55,14 +51,12 @@ impl Action {
     }
 }
 
-/// A physical input that a shortcut is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Input {
     Key(u16),
     Pad(Pad),
 }
 
-/// The modifier keys held with a keyboard key.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct Mods {
     ctrl: bool,
@@ -174,14 +168,12 @@ impl<'de> Deserialize<'de> for Shortcut {
     }
 }
 
-/// One binding: an action and the shortcut that runs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkey {
     pub action: Action,
     pub shortcut: Shortcut,
 }
 
-/// What the hotkeys thread reports to the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// A shortcut was recorded. Recording has ended.
@@ -192,14 +184,12 @@ pub enum Event {
     Controller(Option<u32>),
 }
 
-/// Requests accepted by the hotkeys thread.
 #[derive(Debug)]
 pub enum Command {
     /// Replaces the bindings. `bindings` checks them first.
     SetBindings(HashMap<Shortcut, Action>),
     /// Starts recording a shortcut. Dispatch stops until it ends.
     Record,
-    /// Ends a recording without a shortcut.
     CancelRecord,
     Shutdown,
 }
@@ -209,11 +199,9 @@ pub enum Command {
 pub(crate) enum Signal {
     /// A command for the engine: `Hold` while any Hold shortcut is down, `RunOnce` on each press.
     Action(Action, bool),
-    /// A message for the UI.
     Event(Event),
 }
 
-/// The inputs read in one pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Reading {
     keys: KeySet,
@@ -320,7 +308,6 @@ impl Core {
         true
     }
 
-    /// Turns one reading into the outputs of this pass.
     pub(crate) fn step(&mut self, reading: Reading, out: &mut Vec<Signal>) {
         let before = self.holding();
         let pads_now = reading
@@ -623,7 +610,6 @@ mod tests {
 
     const PAD_A_HELD: u16 = 0x1000;
 
-    /// A reading with the keys down, and no controller.
     fn key_reading(keys: &[u16], mods: Mods) -> Reading {
         let mut set = KeySet::default();
         for code in keys {
@@ -636,7 +622,6 @@ mod tests {
         }
     }
 
-    /// A reading with the controller in slot 0, with these buttons and triggers.
     fn pad_reading(buttons: u16, left_trigger: u8, right_trigger: u8) -> Reading {
         Reading {
             slot: Some(0),
@@ -649,7 +634,6 @@ mod tests {
         }
     }
 
-    /// A reading with the keys down, and the controller in slot 0 with these buttons.
     fn reading(keys: &[u16], buttons: u16) -> Reading {
         Reading {
             keys: key_reading(keys, Mods::default()).keys,

@@ -190,7 +190,6 @@ mod tests {
         }
     }
 
-    /// Finishes a frame whose capture was attempted now.
     fn finish(worker: &mut Worker, commands: &Receiver<Command>, frame: &Frame) -> Flow {
         worker.finish_frame(commands, Instant::now(), frame)
     }

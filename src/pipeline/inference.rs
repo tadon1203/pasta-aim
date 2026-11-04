@@ -41,7 +41,6 @@ const WARM_UP_RUNS: usize = 3;
 /// The values of a detection row: `[x1, y1, x2, y2, confidence, class_id]`.
 const OUTPUT_COLUMNS: usize = 6;
 
-/// The input tensor of the model: its width, height, and precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ModelInputSpec {
     pub width: usize,
@@ -49,7 +48,6 @@ pub(super) struct ModelInputSpec {
     pub precision: Precision,
 }
 
-/// The detections of one ONNX Runtime run, with the QPC ticks of its two stage boundaries.
 pub(super) struct InferenceOutput {
     pub selection: Selection,
     /// After the ONNX Runtime run.
@@ -880,8 +878,6 @@ mod tests {
         assert_eq!(parse_imgsz("[a, b]"), None);
         assert_eq!(parse_imgsz(""), None);
     }
-
-    // ---- GPU tests ----
 
     use std::path::PathBuf;
 

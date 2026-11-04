@@ -33,7 +33,6 @@ const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
 /// How long the engine spins before a capture deadline. Only the capture deadline spins.
 const CAPTURE_SPIN: Duration = Duration::from_millis(1);
 
-/// Requests accepted by the engine thread.
 #[derive(Debug)]
 pub enum Command {
     /// The settings of the UI. The engine applies only what differs from its own.
@@ -107,7 +106,6 @@ struct ActiveRun {
     started: Instant,
 }
 
-/// Whether the engine keeps going after a command or a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Continue,
@@ -127,13 +125,10 @@ struct Worker {
     recorder: Recorder,
     /// Turns the capture times of the frames into seconds for the aim.
     clock: Clock,
-    /// When the statistics were last sent to the UI.
     stats_sent: Instant,
     /// The pipeline of the selected display and the model. `None` until a model is loaded, and after a fault.
     pipeline: Option<Pipeline>,
-    /// The target and the move that each frame plans.
     aim: Aim,
-    /// The MAKCU link, which the planned move is written to.
     output: Output,
     run: Option<ActiveRun>,
     /// The earliest start of the next capture in a Continuous run.
@@ -206,7 +201,6 @@ impl Worker {
                 self.poll_output_link();
                 next_housekeeping = now + HOUSEKEEPING_INTERVAL;
             }
-            // The earlier of the housekeeping and the capture deadline wakes the loop.
             let mut deadline = next_housekeeping;
             let mut spin = Duration::ZERO;
             match self.pending_capture(now) {
@@ -218,7 +212,6 @@ impl Worker {
                     if self.step_frame(commands) == Flow::Shutdown {
                         return;
                     }
-                    // The end of each pass sends the state, if it changed.
                     self.publish();
                     continue;
                 }
@@ -379,7 +372,6 @@ impl Worker {
         self.edit(|state| state.run.error = Some(error));
     }
 
-    /// Edits the state and marks it for the next `publish`.
     fn edit(&mut self, edit: impl FnOnce(&mut State)) {
         edit(&mut self.state);
         self.state_changed = true;

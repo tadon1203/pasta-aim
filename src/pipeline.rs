@@ -37,8 +37,6 @@ use crate::{
     settings::{self, Confidence},
 };
 
-// ---- Startup ----
-
 static INITIALIZED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 static GPU_DEBUG: AtomicBool = AtomicBool::new(false);
 
@@ -64,12 +62,9 @@ pub fn init_thread() -> Result<()> {
         .context("failed to initialize COM MTA on the engine thread")
 }
 
-/// Lists the displays of the system.
 pub fn displays() -> Result<Vec<DisplayInfo>> {
     gpu::enumerate_displays()
 }
-
-// ---- Types ----
 
 /// A LUID that the settings store as one number: `(high << 32) | low`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -106,7 +101,6 @@ pub struct DisplayInfo {
 }
 
 impl DisplayInfo {
-    /// The settings value that names this display.
     pub fn selection(&self) -> settings::Display {
         settings::Display {
             adapter: u64::from(self.adapter_luid),
@@ -135,7 +129,6 @@ pub enum Precision {
 }
 
 impl Precision {
-    /// The size of one tensor element.
     pub fn element_bytes(self) -> usize {
         match self {
             Self::Fp16 => std::mem::size_of::<half::f16>(),
@@ -164,7 +157,6 @@ pub struct CpuNodes {
 }
 
 impl CpuNodes {
-    /// Counts the operator type of each node.
     pub fn from_operators(operators: impl IntoIterator<Item = String>) -> Self {
         let mut counts = std::collections::BTreeMap::<String, usize>::new();
         for operator in operators {
@@ -256,8 +248,6 @@ impl GpuFaultStage {
     }
 }
 
-// ---- Pipeline ----
-
 /// The settings that the model half of a pipeline is built with.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -286,7 +276,6 @@ pub enum Fault {
     Other(anyhow::Error),
 }
 
-/// What the preprocess and the model gave for one frame.
 struct Inferred {
     /// Just before the preprocess is submitted.
     start: i64,
@@ -425,7 +414,6 @@ impl Pipeline {
         Ok((copy, gpu_copy_ms))
     }
 
-    /// Submits the preprocess of the copied frame, runs the model, and reads the result.
     fn infer_stage(&mut self, reuse_completed: u64, measure: bool) -> Result<Inferred, Fault> {
         let frame_seq = self.frame_seq;
         let start = Clock::now();
@@ -621,7 +609,6 @@ impl ProfileSampler {
         self.frames = 0;
     }
 
-    /// Counts a frame and returns whether it should be measured.
     fn should_measure(&mut self) -> bool {
         let frame = self.frames;
         self.frames = self.frames.saturating_add(1);
