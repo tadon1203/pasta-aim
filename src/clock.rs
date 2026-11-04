@@ -62,10 +62,6 @@ impl Clock {
         }
     }
 
-    pub fn frequency(self) -> i64 {
-        self.ticks_per_second as i64
-    }
-
     /// The milliseconds from `from` to `to`, two timestamps of `now`.
     pub fn ms(self, from: i64, to: i64) -> f64 {
         (to - from) as f64 * 1000.0 / self.ticks_per_second

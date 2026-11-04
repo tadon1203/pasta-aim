@@ -313,7 +313,7 @@ fn push_bounded<T>(queue: &mut VecDeque<T>, value: T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{aim::Track, pipeline::Times};
+    use crate::pipeline::Times;
 
     /// One tick is one millisecond.
     const QPC: Clock = Clock::test(1_000.0);
@@ -340,13 +340,8 @@ mod tests {
 
     fn outcome() -> Outcome {
         Outcome {
-            track: Some(Track {
-                id: 1,
-                switched: true,
-            }),
-            error: None,
-            exact: Some((1.5, -2.0)),
             rounded: Some(Move { x: 2, y: -2 }),
+            ..Outcome::default()
         }
     }
 

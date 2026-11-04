@@ -1,6 +1,6 @@
-pub mod aim;
+pub(crate) mod aim;
 pub mod channel;
-pub mod clock;
+pub(crate) mod clock;
 pub mod engine;
 pub mod hotkeys;
 pub mod output;

@@ -1,6 +1,6 @@
 use crate::{
     output::{Device, Port},
-    pipeline::{DisplayInfo, Precision},
+    pipeline::{CpuNodes, DisplayInfo, Precision},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +19,9 @@ pub struct ModelState {
     pub precision: Option<Precision>,
     pub error: Option<String>,
     /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report them.
-    pub cpu_nodes: Option<usize>,
+    pub cpu_nodes: Option<CpuNodes>,
+    /// Whether ONNX Runtime replays a captured graph on each run. `None` before a model is loaded.
+    pub graph_capture: Option<bool>,
 }
 
 impl Default for ModelState {
@@ -32,6 +34,7 @@ impl Default for ModelState {
             precision: None,
             error: None,
             cpu_nodes: None,
+            graph_capture: None,
         }
     }
 }

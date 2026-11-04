@@ -1,40 +1,30 @@
 //! The engine thread: it owns the pipeline, the aim, and the MAKCU link, and runs one frame at a time.
 
-mod frame;
+mod boost;
+mod graphics;
+mod link;
 mod state;
 mod stats;
+mod step;
 
 pub use state::{CapturePhase, ModelPhase, OutputPhase, RunPhase, State};
 pub use stats::{Percentiles, Rates, Stages, Stats};
 
 use std::{
-    mem::size_of,
-    path::Path,
     sync::{Arc, mpsc::TryRecvError},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
+use boost::boost_current_thread;
 use stats::{PUBLISH_INTERVAL, Recorder};
-use windows::{
-    Win32::{
-        Foundation::HANDLE,
-        System::Threading::{
-            AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread,
-            SetThreadInformation, SetThreadPriority, THREAD_POWER_THROTTLING_CURRENT_VERSION,
-            THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
-            THREAD_PRIORITY_HIGHEST, ThreadPowerThrottling,
-        },
-    },
-    core::w,
-};
 
 use crate::{
     aim::{Aim, AimSettings},
     channel::{Message, Receiver, Sender, channel},
     clock::{self, Clock, Wait},
-    output::{self, Device, Output},
-    pipeline::{DisplayInfo, Options, Pipeline, displays, init_thread},
+    output::Output,
+    pipeline::{Pipeline, init_thread},
     settings::{self, Settings},
 };
 
@@ -389,291 +379,6 @@ impl Worker {
         self.edit(|state| state.run.error = Some(error));
     }
 
-    /// Loads `name` on the pipeline, or builds the pipeline with it. On failure the old model stays.
-    fn load_model(&mut self, name: String) {
-        self.stop_run();
-        tracing::info!(model = %name, "loading model in engine");
-        self.edit(|state| {
-            state.model.phase = ModelPhase::Loading;
-            state.model.loading_name = Some(name.clone());
-            state.model.error = None;
-            state.run.error = None;
-        });
-        // Loading blocks this thread; show the state before it starts.
-        self.publish();
-
-        match self.install_model(&name) {
-            Ok(built) => {
-                if let Some(pipeline) = built {
-                    self.pipeline = Some(pipeline);
-                }
-                self.recorder.pipeline_changed();
-                self.sync_pipeline_state();
-                tracing::info!(model = %name, "model load succeeded");
-                self.edit(|state| {
-                    state.model.active_name = Some(name.clone());
-                    state.model.loading_name = None;
-                });
-                self.ui.send(Message::ModelLoaded(name));
-            }
-            Err(error) => {
-                let message = format!("{error:#}");
-                tracing::error!(model = %name, %message, "model load failed");
-                let phase = if self.pipeline.is_some() {
-                    ModelPhase::Ready
-                } else {
-                    ModelPhase::Empty
-                };
-                self.edit(|state| {
-                    state.model.phase = phase;
-                    state.model.loading_name = None;
-                    state.model.error = Some(message);
-                });
-            }
-        }
-    }
-
-    /// The pipeline work of a model load. `Ok(None)` means the loaded pipeline took the model in place.
-    fn install_model(&mut self, name: &str) -> anyhow::Result<Option<Pipeline>> {
-        let path = settings::model_path(name)?;
-        let options = self.options();
-        match self.pipeline.as_mut() {
-            Some(pipeline) => pipeline.set_model(&path, options).map(|()| None),
-            None => self.build_pipeline(&self.settings.display, &path).map(Some),
-        }
-    }
-
-    /// Captures `display` with the active model, and swaps it in only on success. Without a model it
-    /// only records the display.
-    fn select_display(&mut self, target: settings::Display) {
-        tracing::info!(
-            adapter = target.adapter,
-            output = target.output,
-            "changing capture selection"
-        );
-        self.stop_run();
-        let Some(info) = self.catalog_display(&target) else {
-            self.fail_capture_change("the display is not connected");
-            return;
-        };
-        let built = match self.state.model.active_name.clone() {
-            Some(name) => settings::model_path(&name)
-                .and_then(|path| self.build_pipeline(&target, &path))
-                .map(Some),
-            None => Ok(None),
-        };
-        match built {
-            Ok(Some(pipeline)) => {
-                self.commit_pipeline(pipeline);
-                self.edit(|state| state.capture.desktop_size = None);
-            }
-            Ok(None) => self.record_display_info(info),
-            Err(error) => {
-                self.fail_capture_change(&format!("{error:#}"));
-                return;
-            }
-        }
-        self.settings.display = target;
-        self.ui.send(Message::DisplayChanged(target));
-    }
-
-    /// Keeps the saved display when it is connected. Otherwise it takes the first display of the
-    /// catalog, which is the primary one, and tells the UI so that the choice is saved.
-    fn choose_startup_display(&mut self) {
-        let saved = self.settings.display;
-        if self.catalog_display(&saved).is_none()
-            && let Some(first) = self.state.graphics.displays.first()
-        {
-            let chosen = settings::Display {
-                adapter: u64::from(first.adapter_luid),
-                output: first.output_index,
-            };
-            tracing::info!(
-                adapter = chosen.adapter,
-                output = chosen.output,
-                "saved display unavailable; selected the first display"
-            );
-            self.settings.display = chosen;
-            self.ui.send(Message::DisplayChanged(chosen));
-        }
-        self.record_display(self.settings.display);
-    }
-
-    /// Records the display of the settings without a pipeline. A catalog miss is a capture failure.
-    fn record_display(&mut self, display: settings::Display) {
-        match self.catalog_display(&display) {
-            Some(info) => self.record_display_info(info),
-            None => self.edit(|state| {
-                state.capture.phase = CapturePhase::Failed;
-                state.capture.selected = None;
-                state.capture.error = Some("The selected display is unavailable".to_owned());
-            }),
-        }
-    }
-
-    fn record_display_info(&mut self, info: DisplayInfo) {
-        self.edit(|state| {
-            state.capture.phase = CapturePhase::Ready;
-            state.capture.selected = Some(info);
-            state.capture.error = None;
-        });
-    }
-
-    fn fail_capture_change(&mut self, reason: &str) {
-        let message = format!("Display change failed: {reason}");
-        tracing::error!(%message, "display change failed; active pipeline retained");
-        let phase = if self.pipeline.is_some() {
-            CapturePhase::Ready
-        } else {
-            CapturePhase::Failed
-        };
-        self.edit(|state| {
-            state.capture.phase = phase;
-            state.capture.error = Some(message);
-        });
-    }
-
-    fn retry_capture(&mut self) {
-        self.stop_run();
-        self.refresh_catalog();
-        self.select_display(self.settings.display);
-    }
-
-    fn refresh_catalog(&mut self) {
-        if !self.com_ready {
-            return;
-        }
-        match displays() {
-            Ok(found) => self.edit(|state| {
-                state.graphics.displays = found;
-                state.graphics.catalog_error = None;
-            }),
-            Err(error) => {
-                let error = format!("{error:#}");
-                tracing::error!(%error, "graphics enumeration failed");
-                self.edit(|state| {
-                    state.graphics.displays.clear();
-                    state.graphics.catalog_error = Some(error);
-                });
-            }
-        }
-    }
-
-    fn catalog_display(&self, display: &settings::Display) -> Option<DisplayInfo> {
-        self.state
-            .graphics
-            .displays
-            .iter()
-            .find(|info| {
-                u64::from(info.adapter_luid) == display.adapter
-                    && info.output_index == display.output
-            })
-            .cloned()
-    }
-
-    fn options(&self) -> Options {
-        Options {
-            confidence: self.settings.confidence,
-            low_latency: self.settings.low_latency,
-        }
-    }
-
-    fn build_pipeline(
-        &self,
-        display: &settings::Display,
-        model: &Path,
-    ) -> anyhow::Result<Pipeline> {
-        anyhow::ensure!(self.com_ready, "graphics COM initialization unavailable");
-        Pipeline::new(display, model, self.options())
-    }
-
-    /// Takes `pipeline` as the active one. The old pipeline is dropped after the new one is in place.
-    fn commit_pipeline(&mut self, pipeline: Pipeline) {
-        self.pipeline = Some(pipeline);
-        self.recorder.pipeline_changed();
-        self.sync_pipeline_state();
-    }
-
-    /// Copies what the pipeline holds into the state: the display, the model, and the precision.
-    fn sync_pipeline_state(&mut self) {
-        let Some(pipeline) = self.pipeline.as_ref() else {
-            return;
-        };
-        let selected = pipeline.display().clone();
-        let input_size = pipeline.input_size();
-        let precision = pipeline.precision();
-        let cpu_nodes = pipeline.cpu_nodes();
-        self.edit(|state| {
-            state.capture.phase = CapturePhase::Ready;
-            state.capture.selected = Some(selected);
-            state.capture.error = None;
-            state.model.phase = ModelPhase::Ready;
-            state.model.input_size = Some(input_size);
-            state.model.precision = Some(precision);
-            state.model.cpu_nodes = cpu_nodes;
-            state.model.error = None;
-        });
-    }
-
-    fn connect_output(&mut self) {
-        let ports = output::ports();
-        self.edit(|state| state.output.ports = ports);
-        self.set_output_state(OutputPhase::Connecting, None, None);
-        self.publish();
-        match self.output.connect() {
-            Ok(device) => {
-                tracing::info!(port = %device.port, firmware = device.firmware, "MAKCU connected in engine");
-                self.set_output_state(OutputPhase::Connected, Some(device), None);
-                // The device can lose the value when it restarts, so each connect sends it.
-                self.send_interpolation();
-            }
-            Err(error) => self.output_lost(format!("{error:#}")),
-        }
-    }
-
-    /// Reports a lost link: it stops the run and shows a failure. The user connects again.
-    fn poll_output_link(&mut self) {
-        if self.output.link_lost() {
-            self.output_lost("MAKCU disconnected".to_owned());
-        }
-    }
-
-    /// The link ended, by a failed write, a missing reply, or the check. Every such end comes here.
-    fn output_lost(&mut self, error: String) {
-        tracing::error!(%error, "MAKCU operation failed");
-        self.stop_run();
-        self.set_output_state(OutputPhase::Failed, None, Some(error));
-    }
-
-    /// Sends the Move interpolation. A failure of the value is shown on the error line, and the run still
-    /// starts. A failure of the link is a lost link.
-    fn send_interpolation(&mut self) {
-        let Err(error) = self.output.set_interpolation(self.settings.interpolation) else {
-            return;
-        };
-        let reason = format!("{error:#}");
-        if !self.output.is_connected() {
-            self.output_lost(reason);
-            return;
-        }
-        tracing::warn!(%reason, "move interpolation failed");
-        self.set_run_error(reason);
-    }
-
-    /// The one place that edits the MAKCU state. Each phase sets the device and the error it has.
-    fn set_output_state(
-        &mut self,
-        phase: OutputPhase,
-        device: Option<Device>,
-        error: Option<String>,
-    ) {
-        self.edit(|state| {
-            state.output.phase = phase;
-            state.output.device = device;
-            state.output.error = error;
-        });
-    }
-
     /// Edits the state and marks it for the next `publish`.
     fn edit(&mut self, edit: impl FnOnce(&mut State)) {
         edit(&mut self.state);
@@ -692,65 +397,6 @@ impl Worker {
             self.stats_sent = Instant::now();
         }
     }
-}
-
-/// Keeps a thread's scheduling boost for as long as it is alive.
-struct ThreadBoost {
-    mmcss: Option<HANDLE>,
-}
-
-impl Drop for ThreadBoost {
-    fn drop(&mut self) {
-        if let Some(handle) = self.mmcss {
-            // SAFETY: the handle came from AvSetMmThreadCharacteristicsW on this thread.
-            let _ = unsafe { AvRevertMmThreadCharacteristics(handle) };
-        }
-    }
-}
-
-/// Raises the calling thread: higher priority, no power throttling, and an
-/// MMCSS registration so it is scheduled ahead of ordinary background work.
-/// Best effort: a failure is logged and ignored.
-///
-/// Hold the returned guard for the lifetime of the thread.
-fn boost_current_thread(name: &str) -> ThreadBoost {
-    // SAFETY: pseudo-handle for the calling thread; no ownership is transferred.
-    let thread = unsafe { GetCurrentThread() };
-    if let Err(error) = unsafe { SetThreadPriority(thread, THREAD_PRIORITY_HIGHEST) } {
-        tracing::warn!(thread = name, %error, "could not raise thread priority");
-    }
-    let throttling = THREAD_POWER_THROTTLING_STATE {
-        Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
-        ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
-        StateMask: 0,
-    };
-    // SAFETY: `throttling` outlives the call and the size matches the information class.
-    let result = unsafe {
-        SetThreadInformation(
-            thread,
-            ThreadPowerThrottling,
-            std::ptr::from_ref(&throttling).cast(),
-            size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
-        )
-    };
-    if let Err(error) = result {
-        tracing::warn!(thread = name, %error, "could not disable thread power throttling");
-    }
-    let mut task_index = 0_u32;
-    // SAFETY: the task name is a static wide string and `task_index` is writable.
-    let mmcss = match unsafe { AvSetMmThreadCharacteristicsW(w!("Games"), &mut task_index) } {
-        Ok(handle) => Some(handle),
-        Err(error) => {
-            tracing::warn!(thread = name, %error, "could not register thread with MMCSS");
-            None
-        }
-    };
-    tracing::debug!(
-        thread = name,
-        mmcss = mmcss.is_some(),
-        "thread scheduling boosted"
-    );
-    ThreadBoost { mmcss }
 }
 
 /// The chosen MAKCU port. A blank port in the settings means auto-detect, as `None` does.

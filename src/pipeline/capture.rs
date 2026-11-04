@@ -148,45 +148,24 @@ impl D3d11GpuProfiler {
             if !slot.in_flight {
                 continue;
             }
-            let mut disjoint = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
-            let mut before = 0u64;
-            let mut after = 0u64;
-            let ready = unsafe {
-                context
-                    .GetData(
-                        &slot.disjoint,
-                        Some(
-                            std::ptr::from_mut::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>(
-                                &mut disjoint,
-                            )
-                            .cast(),
-                        ),
-                        std::mem::size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() as u32,
-                        D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
-                    )
-                    .is_ok()
-                    && context
-                        .GetData(
-                            &slot.before,
-                            Some(std::ptr::from_mut::<u64>(&mut before).cast()),
-                            std::mem::size_of::<u64>() as u32,
-                            D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
-                        )
-                        .is_ok()
-                    && context
-                        .GetData(
-                            &slot.after,
-                            Some(std::ptr::from_mut::<u64>(&mut after).cast()),
-                            std::mem::size_of::<u64>() as u32,
-                            D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
-                        )
-                        .is_ok()
+            // The disjoint query ends last, so the timestamps are finished when it is. A finished
+            // disjoint query always has a frequency, so zero means the GPU is not done: keep the slot.
+            let Some(disjoint) =
+                query_data::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>(context, &slot.disjoint)
+            else {
+                continue;
             };
-            if !ready {
+            if disjoint.Frequency == 0 {
                 continue;
             }
+            let (Some(before), Some(after)) = (
+                query_data::<u64>(context, &slot.before),
+                query_data::<u64>(context, &slot.after),
+            ) else {
+                continue;
+            };
             slot.in_flight = false;
-            if disjoint.Disjoint.as_bool() || disjoint.Frequency == 0 || after < before {
+            if disjoint.Disjoint.as_bool() || after < before {
                 continue;
             }
             return Some(GpuCopySample {
@@ -196,6 +175,24 @@ impl D3d11GpuProfiler {
         }
         None
     }
+}
+
+/// Reads the result of a query without a flush. `GetData` answers `S_FALSE` while the GPU is not
+/// done, and the `windows` crate reports that as success and leaves `data` untouched. The result
+/// therefore stays at its default until the query finishes, and the caller tells the two apart.
+fn query_data<T: Default>(context: &ID3D11DeviceContext4, query: &ID3D11Query) -> Option<T> {
+    let mut data = T::default();
+    // SAFETY: `data` is writable storage of `size_of::<T>()` bytes, the size of this query's result.
+    unsafe {
+        context.GetData(
+            query,
+            Some(std::ptr::from_mut::<T>(&mut data).cast()),
+            std::mem::size_of::<T>() as u32,
+            D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+        )
+    }
+    .ok()?;
+    Some(data)
 }
 
 fn create_query(device: &ID3D11Device4, query: D3D11_QUERY) -> Result<ID3D11Query> {
@@ -441,11 +438,6 @@ impl DxgiCapture {
             );
         }
         let copy_submitted_qpc = Clock::now();
-        tracing::debug!(
-            width = target.input_size.0,
-            height = target.input_size.1,
-            "copy_subresource_submitted"
-        );
         if let Some(index) = query_slot {
             self.gpu_profiler.end(&self.context, index);
         }
@@ -461,7 +453,6 @@ impl DxgiCapture {
         // The immediate context buffers commands; without a flush the copy and
         // Signal may not reach the GPU while the D3D12 queue already waits on it.
         unsafe { self.context.Flush() };
-        tracing::debug!(value = ready_value, "capture_ready_signal");
         if !self.first_signal_logged {
             tracing::info!(value = ready_value, "capture_fence_first_signal_ok");
             self.first_signal_logged = true;

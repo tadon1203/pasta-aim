@@ -5,7 +5,7 @@ use eframe::egui;
 use super::{App, controller_line, error_label, makcu_line, percent, warn_label};
 use nice_aimassist::{
     engine::{CapturePhase, Command, ModelPhase, Percentiles, Rates, Stages, State, Stats},
-    pipeline::DisplayInfo,
+    pipeline::{CpuNodes, DisplayInfo},
     settings::LogLevel,
 };
 
@@ -123,7 +123,12 @@ impl App {
         ui.end_row();
 
         ui.label("CPU fallback nodes");
-        ui.label(cpu_fallback_value(engine));
+        // The list of operator types can be long, so it wraps.
+        ui.add(egui::Label::new(cpu_fallback_value(engine)).wrap());
+        ui.end_row();
+
+        ui.label("DML graph capture");
+        ui.label(graph_capture_value(engine));
         ui.end_row();
 
         if let Some((width, height)) = engine.capture.desktop_size {
@@ -160,7 +165,7 @@ impl App {
         let warning = self.settings_warning.as_deref().unwrap_or("none");
         let save_error = self.settings_save_error.as_deref().unwrap_or("none");
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\ncapture: {display}\nmakcu: {}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nsettings warning: {warning}\nsettings save error: {save_error}",
+            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\nDML graph capture: {}\ncapture: {display}\nmakcu: {}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nsettings warning: {warning}\nsettings save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             engine
                 .capture
@@ -168,6 +173,7 @@ impl App {
                 .as_ref()
                 .map_or("Unavailable", |display| display.adapter_name.as_str()),
             cpu_fallback_line(engine),
+            graph_capture_value(engine),
             makcu_line(engine.output.phase, engine.output.device.as_ref()),
             controller_line(self.controller_slot),
             self.settings.fps_limit.get(),
@@ -236,15 +242,27 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) 
     }
 }
 
-/// The CPU fallback value of the panel and the clipboard text: `N`, or `unknown` when ORT reports none.
+/// The CPU fallback value of the panel and the clipboard text: `N: Op ×n, ...`, or `unknown` when ORT
+/// reports none.
 fn cpu_fallback_value(engine: &State) -> String {
     engine
         .model
         .cpu_nodes
-        .map_or_else(|| "unknown".to_owned(), |count| count.to_string())
+        .as_ref()
+        .map_or_else(|| "unknown".to_owned(), CpuNodes::summary)
 }
 
-/// The line that the clipboard text carries: `CPU fallback nodes: N`.
+/// The graph capture value of the panel and the clipboard text: `On`, `Off`, or `unknown` before a
+/// model is loaded.
+fn graph_capture_value(engine: &State) -> &'static str {
+    match engine.model.graph_capture {
+        Some(true) => "On",
+        Some(false) => "Off",
+        None => "unknown",
+    }
+}
+
+/// The line that the clipboard text carries: `CPU fallback nodes: N: Op ×n, ...`.
 fn cpu_fallback_line(engine: &State) -> String {
     format!("CPU fallback nodes: {}", cpu_fallback_value(engine))
 }

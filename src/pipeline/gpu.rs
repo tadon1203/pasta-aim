@@ -2,7 +2,7 @@
 //! frame and its fences, the debug layer, and the fault log. It holds the `unsafe` calls to
 //! Windows, Direct3D, and DXGI.
 
-use std::mem::size_of;
+use std::mem::{ManuallyDrop, size_of};
 
 use anyhow::{Context, Result, anyhow, bail};
 use windows::{
@@ -17,10 +17,14 @@ use windows::{
             },
             Direct3D12::{
                 D3D12_COMMAND_LIST_TYPE_COMPUTE, D3D12_COMMAND_QUEUE_DESC,
-                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-                D3D12_FENCE_FLAG_NONE, D3D12_MESSAGE, D3D12CreateDevice, D3D12GetDebugInterface,
-                ID3D12CommandQueue, ID3D12Debug, ID3D12Device, ID3D12Fence, ID3D12InfoQueue,
-                ID3D12Resource,
+                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY,
+                D3D12_COMMAND_QUEUE_PRIORITY_HIGH, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
+                D3D12_FENCE_FLAG_NONE, D3D12_MESSAGE, D3D12_RESOURCE_BARRIER,
+                D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12CreateDevice,
+                D3D12GetDebugInterface, ID3D12CommandQueue, ID3D12Debug, ID3D12Device, ID3D12Fence,
+                ID3D12InfoQueue, ID3D12Resource,
             },
             Dxgi::{
                 Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
@@ -50,6 +54,79 @@ impl Drop for OwnedHandle {
         if !self.0.is_invalid() {
             unsafe { CloseHandle(self.0) }.ok();
         }
+    }
+}
+
+/// A barrier that moves all of `resource` from the state `before` to the state `after`.
+pub(super) fn transition(
+    resource: &ID3D12Resource,
+    before: D3D12_RESOURCE_STATES,
+    after: D3D12_RESOURCE_STATES,
+) -> D3D12_RESOURCE_BARRIER {
+    D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                pResource: ManuallyDrop::new(Some(resource.clone())),
+                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                StateBefore: before,
+                StateAfter: after,
+            }),
+        },
+    }
+}
+
+/// A fence on a compute queue, and the event that wakes the CPU when the queue reaches it.
+pub(super) struct QueueFence {
+    fence: ID3D12Fence,
+    event: OwnedHandle,
+    next_value: u64,
+    /// Names the fence in the errors.
+    label: &'static str,
+}
+
+impl QueueFence {
+    pub(super) fn new(device: &ID3D12Device, label: &'static str) -> Result<Self> {
+        let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
+            .with_context(|| format!("failed to create the {label} fence"))?;
+        let event = OwnedHandle(
+            unsafe { CreateEventW(None, BOOL(0), BOOL(0), PCWSTR::null()) }
+                .with_context(|| format!("failed to create the {label} event"))?,
+        );
+        Ok(Self {
+            fence,
+            event,
+            next_value: 1,
+            label,
+        })
+    }
+
+    /// Signals the fence on `queue` and waits until the queue has passed it. All work that was
+    /// submitted to the queue before is then done. `spin` waits in a busy loop and does not sleep.
+    pub(super) fn signal_and_wait(&mut self, queue: &ID3D12CommandQueue, spin: bool) -> Result<()> {
+        let label = self.label;
+        let value = self.next_value;
+        self.next_value = value.saturating_add(1);
+        unsafe { queue.Signal(&self.fence, value) }
+            .with_context(|| format!("failed to signal the {label} fence"))?;
+        // A removed device reports `u64::MAX`, which ends the wait. The check below reports it.
+        if spin {
+            while unsafe { self.fence.GetCompletedValue() } < value {
+                std::hint::spin_loop();
+            }
+        } else if unsafe { self.fence.GetCompletedValue() } < value {
+            unsafe { self.fence.SetEventOnCompletion(value, self.event.0) }
+                .with_context(|| format!("failed to arm the {label} fence event"))?;
+            let result = unsafe { WaitForSingleObject(self.event.0, INFINITE) };
+            if result != WAIT_OBJECT_0 {
+                bail!("{label} fence wait failed: {result:?}");
+            }
+        }
+        if fence_reports_removal(unsafe { self.fence.GetCompletedValue() }) {
+            bail!("D3D12 {label} fence reports device removed");
+        }
+        Ok(())
     }
 }
 
@@ -288,13 +365,38 @@ pub(super) fn log_fault(
 
 // ---- Devices ----
 
+/// Creates the compute queue that the preprocess, the model, and the readback share. It has the high
+/// priority, so that the GPU scheduler serves it before the normal work of other programs, such as the
+/// game whose screen is captured. A system that refuses the high priority gets the normal one.
+fn create_compute_queue(device: &ID3D12Device) -> Result<ID3D12CommandQueue> {
+    let queue = |priority: D3D12_COMMAND_QUEUE_PRIORITY| {
+        let desc = D3D12_COMMAND_QUEUE_DESC {
+            Type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
+            Priority: priority.0,
+            Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+            NodeMask: 0,
+        };
+        // SAFETY: `desc` is a valid queue description for this device.
+        unsafe { device.CreateCommandQueue::<ID3D12CommandQueue>(&desc) }
+    };
+    match queue(D3D12_COMMAND_QUEUE_PRIORITY_HIGH) {
+        Ok(queue) => {
+            tracing::info!("D3D12 compute queue created with the high priority");
+            Ok(queue)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the high queue priority is refused; using the normal priority");
+            queue(D3D12_COMMAND_QUEUE_PRIORITY_NORMAL)
+                .context("failed to create D3D12 compute queue")
+        }
+    }
+}
+
 pub struct GpuDeviceContext {
     adapter_luid: AdapterLuid,
     device: ID3D12Device,
     queue: ID3D12CommandQueue,
-    idle_fence: ID3D12Fence,
-    idle_event: OwnedHandle,
-    next_idle_value: u64,
+    idle: QueueFence,
 }
 
 impl std::fmt::Debug for GpuDeviceContext {
@@ -330,21 +432,8 @@ impl GpuDeviceContext {
         unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device) }
             .context("failed to create D3D12 device")?;
         let device: ID3D12Device = device.context("D3D12CreateDevice returned no device")?;
-        let desc = D3D12_COMMAND_QUEUE_DESC {
-            Type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
-            Priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
-            Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
-            NodeMask: 0,
-        };
-        // SAFETY: `desc` is a valid queue description for this device.
-        let queue = unsafe { device.CreateCommandQueue::<ID3D12CommandQueue>(&desc) }
-            .context("failed to create D3D12 compute queue")?;
-        let idle_fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
-            .context("failed to create teardown fence")?;
-        let idle_event = OwnedHandle(
-            unsafe { CreateEventW(None, BOOL(0), BOOL(0), PCWSTR::null()) }
-                .context("failed to create teardown event")?,
-        );
+        let queue = create_compute_queue(&device)?;
+        let idle = QueueFence::new(&device, "teardown")?;
         tracing::info!(
             adapter_luid_low = adapter_luid.low,
             adapter_luid_high = adapter_luid.high,
@@ -354,9 +443,7 @@ impl GpuDeviceContext {
             adapter_luid,
             device,
             queue,
-            idle_fence,
-            idle_event,
-            next_idle_value: 1,
+            idle,
         })
     }
 
@@ -379,28 +466,7 @@ impl GpuDeviceContext {
 
     /// Waits for all work submitted to the compute queue. Teardown/rebuild only.
     pub fn wait_idle(&mut self) -> Result<()> {
-        let value = self.next_idle_value;
-        self.next_idle_value = value.saturating_add(1);
-        unsafe { self.queue.Signal(&self.idle_fence, value) }
-            .context("failed to signal teardown fence")?;
-        if fence_reports_removal(unsafe { self.idle_fence.GetCompletedValue() }) {
-            bail!("D3D12 teardown fence reports device removed");
-        }
-        if unsafe { self.idle_fence.GetCompletedValue() } < value {
-            unsafe {
-                self.idle_fence
-                    .SetEventOnCompletion(value, self.idle_event.0)
-            }
-            .context("failed to arm teardown fence event")?;
-            let result = unsafe { WaitForSingleObject(self.idle_event.0, INFINITE) };
-            if result != WAIT_OBJECT_0 {
-                bail!("teardown fence wait failed: {result:?}");
-            }
-            if fence_reports_removal(unsafe { self.idle_fence.GetCompletedValue() }) {
-                bail!("D3D12 teardown fence reports device removed after wait");
-            }
-        }
-        Ok(())
+        self.idle.signal_and_wait(&self.queue, false)
     }
 }
 

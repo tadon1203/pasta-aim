@@ -6,7 +6,6 @@ use super::{App, controller_line, error_label, makcu_line, run_idle};
 use nice_aimassist::{
     engine::{Command, OutputPhase, State},
     pipeline::DisplayInfo,
-    settings::Display,
 };
 
 /// Whether the MAKCU connection attempt is still running.
@@ -57,10 +56,7 @@ impl App {
                                     && selected.output_index == display.output_index
                             });
                             if ui.selectable_label(active, display.label()).clicked() {
-                                self.select_display(Display {
-                                    adapter: u64::from(display.adapter_luid),
-                                    output: display.output_index,
-                                });
+                                self.select_display(display.selection());
                             }
                         }
                     });

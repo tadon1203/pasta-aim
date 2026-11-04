@@ -251,6 +251,8 @@ impl Ignored {
 #[derive(Debug, Default)]
 pub(crate) struct Core {
     bindings: HashMap<Shortcut, Action>,
+    /// The keyboard keys that the bindings use. A pass reads only these, unless a recording is on.
+    bound_keys: KeySet,
     prev: Reading,
     /// The controls that are down, with the trigger hysteresis applied.
     pads: PadSet,
@@ -262,9 +264,23 @@ pub(crate) struct Core {
 impl Core {
     pub(crate) fn new(bindings: HashMap<Shortcut, Action>) -> Self {
         Self {
+            bound_keys: keys_of(&bindings),
             bindings,
             ..Self::default()
         }
+    }
+
+    /// The keyboard keys that the next pass must read, or `None` for every key. A recording takes any
+    /// key. Otherwise only the keys of the bindings matter, and reading the others is wasted work.
+    fn keys_to_read(&self) -> Option<KeySet> {
+        self.recording.is_none().then_some(self.bound_keys)
+    }
+
+    /// Takes `keys` as the keys that were down before the next pass. The thread gives a reading of every
+    /// key before a recording starts and before the bindings change, because a key that no pass read
+    /// is not in the last reading: a key that is held at that moment must not look like a new press.
+    fn set_down_keys(&mut self, keys: KeySet) {
+        self.prev.keys = keys;
     }
 
     /// Applies one command. Returns `false` on `Shutdown`.
@@ -278,6 +294,7 @@ impl Core {
                         shortcut.input == *input && *action == Action::Hold
                     })
                 });
+                self.bound_keys = keys_of(&bindings);
                 self.bindings = bindings;
                 self.settle(before, out);
             }
@@ -397,6 +414,17 @@ impl Core {
     }
 }
 
+/// The keyboard keys that the shortcuts of `bindings` use. A modifier is read in every pass already.
+fn keys_of(bindings: &HashMap<Shortcut, Action>) -> KeySet {
+    let mut keys = KeySet::default();
+    for shortcut in bindings.keys() {
+        if let Input::Key(code) = shortcut.input {
+            keys.insert(code);
+        }
+    }
+    keys
+}
+
 /// Checks the bindings: a shortcut may belong to one action only.
 pub fn bindings(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
     let mut bindings = HashMap::new();
@@ -469,13 +497,17 @@ fn run(
     'passes: loop {
         wait.until(Some(Instant::now() + POLL_INTERVAL), Duration::ZERO);
         while let Ok(command) = inbox.try_recv() {
+            if matches!(command, Command::Record | Command::SetBindings(_)) {
+                // The keys that are held now are the baseline, also those that no pass reads.
+                core.set_down_keys(read_keys(None));
+            }
             let running = core.command(command, &mut out);
             flush(&mut out, ui, engine);
             if !running {
                 break 'passes;
             }
         }
-        let reading = read(&mut pads, Instant::now());
+        let reading = read(&mut pads, Instant::now(), core.keys_to_read());
         core.step(reading, &mut out);
         flush(&mut out, ui, engine);
     }
@@ -494,14 +526,20 @@ fn flush(out: &mut Vec<Signal>, ui: &Sender<Message>, engine: &Sender<engine::Co
     }
 }
 
-/// Reads the keyboard and the controller.
-fn read(pads: &mut PadPoll, now: Instant) -> Reading {
+/// The keys of the table that are down. `only` limits the keys that are asked for, and `None` asks for all.
+fn read_keys(only: Option<KeySet>) -> KeySet {
     let mut keys = KeySet::default();
     for &(_, code) in keys::KEYS {
-        if key_down(code) {
+        if only.is_none_or(|only| only.contains(code)) && key_down(code) {
             keys.insert(code);
         }
     }
+    keys
+}
+
+/// Reads the keyboard and the controller. `only` is the keys that matter in this pass.
+fn read(pads: &mut PadPoll, now: Instant, only: Option<KeySet>) -> Reading {
+    let keys = read_keys(only);
     let (slot, pad) = pads.poll(now);
     Reading {
         keys,
@@ -878,6 +916,43 @@ mod tests {
         assert_eq!(
             command(&mut core, Command::Record),
             vec![Signal::Action(Action::Hold, false)]
+        );
+    }
+
+    #[test]
+    fn a_pass_reads_only_the_bound_keys_and_a_recording_reads_every_key() {
+        let mut core = core(&[(key(F8), Action::Hold), (pad(Pad::A), Action::RunOnce)]);
+        let bound = core.keys_to_read().expect("the bound keys");
+        assert!(bound.contains(F8));
+        assert!(!bound.contains(F9) && !bound.contains(KEY_A));
+
+        command(&mut core, Command::Record);
+        assert_eq!(core.keys_to_read(), None);
+        step(&mut core, key_reading(&[KEY_A], Mods::default()));
+        assert!(core.keys_to_read().is_some(), "the recording ended");
+    }
+
+    #[test]
+    fn new_bindings_change_the_keys_that_are_read() {
+        let mut core = core(&[(key(F8), Action::Hold)]);
+        let bindings = [(key(F9), Action::RunOnce)].into_iter().collect();
+        command(&mut core, Command::SetBindings(bindings));
+        let bound = core.keys_to_read().expect("the bound keys");
+        assert!(bound.contains(F9) && !bound.contains(F8));
+    }
+
+    #[test]
+    fn a_key_that_is_held_when_the_bindings_change_is_not_a_press() {
+        let mut core = core(&[]);
+        let mut held = KeySet::default();
+        held.insert(F9);
+        // The thread reads every key before it applies the new bindings.
+        core.set_down_keys(held);
+        let bindings = [(key(F9), Action::RunOnce)].into_iter().collect();
+        command(&mut core, Command::SetBindings(bindings));
+        assert_eq!(
+            step(&mut core, key_reading(&[F9], Mods::default())),
+            Vec::new()
         );
     }
 

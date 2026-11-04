@@ -53,10 +53,10 @@ pub struct Track {
 /// What one frame gave, for the frame record.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
-    pub track: Option<Track>,
     /// `(dx, dy)` from the capture region center to the aim point, in model input pixels.
     pub error: Option<(f32, f32)>,
-    /// The move before rounding.
+    /// The move before rounding. Only the tests read it.
+    #[cfg(test)]
     pub exact: Option<(f32, f32)>,
     /// The move to send. `None` when the move rounds to zero or there is no target.
     pub rounded: Option<Move>,
@@ -123,10 +123,7 @@ impl Aim {
             self.motion = Motion::default();
         }
         let Some(detection) = target else {
-            return Outcome {
-                track,
-                ..Outcome::default()
-            };
+            return Outcome::default();
         };
         let velocity =
             self.motion
@@ -143,8 +140,8 @@ impl Aim {
             ),
         );
         Outcome {
-            track,
             error: Some(error),
+            #[cfg(test)]
             exact: Some(movement),
             rounded,
         }
@@ -450,7 +447,6 @@ mod tests {
     fn a_frame_without_a_target_gives_nothing() {
         let mut aim = Aim::new(settings(100, 50));
         let outcome = aim.update(None, INPUT, 0.0);
-        assert_eq!(outcome.track, None);
         assert_eq!(outcome.rounded, None);
         assert_eq!(outcome.error, None);
     }

@@ -8,6 +8,7 @@ mod capture;
 mod gpu;
 mod inference;
 mod preprocess;
+mod readback;
 
 use std::{
     path::Path,
@@ -21,14 +22,14 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
-#[cfg(test)]
 pub(crate) use self::capture::AcquiredDesktopFrame;
 pub(crate) use self::capture::CapturePoll;
 pub use self::capture::DxgiCapture;
 pub(crate) use self::gpu::GpuDeviceContext;
 use self::{
+    capture::CopyTimes,
     gpu::{CaptureFrame, InferenceFrame},
-    inference::{ModelInputSpec, OrtDirectMlBackend},
+    inference::{InferenceOutput, ModelInputSpec, OrtDirectMlBackend},
     preprocess::GpuPreprocessor,
 };
 use crate::{
@@ -105,6 +106,14 @@ pub struct DisplayInfo {
 }
 
 impl DisplayInfo {
+    /// The settings value that names this display.
+    pub fn selection(&self) -> settings::Display {
+        settings::Display {
+            adapter: u64::from(self.adapter_luid),
+            output: self.output_index,
+        }
+    }
+
     pub fn label(&self) -> String {
         format!(
             "{} · {} · {}×{} @ {:.1} Hz",
@@ -144,6 +153,44 @@ impl Precision {
             Self::Fp16 => "FP16",
             Self::Fp32 => "FP32",
         }
+    }
+}
+
+/// The nodes that ONNX Runtime assigned to the CPU, counted by operator type.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CpuNodes {
+    /// `(operator type, count)`. The most frequent type is first, and equal counts are in name order.
+    ops: Vec<(String, usize)>,
+}
+
+impl CpuNodes {
+    /// Counts the operator type of each node.
+    pub fn from_operators(operators: impl IntoIterator<Item = String>) -> Self {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for operator in operators {
+            *counts.entry(operator).or_default() += 1;
+        }
+        let mut ops: Vec<(String, usize)> = counts.into_iter().collect();
+        // The map is in name order, and the sort is stable, so equal counts stay in name order.
+        ops.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        Self { ops }
+    }
+
+    pub fn total(&self) -> usize {
+        self.ops.iter().map(|&(_, count)| count).sum()
+    }
+
+    /// The text for a person: `0`, or `5: Gather ×3, Shape ×2`.
+    pub fn summary(&self) -> String {
+        if self.ops.is_empty() {
+            return "0".to_owned();
+        }
+        let ops: Vec<String> = self
+            .ops
+            .iter()
+            .map(|(operator, count)| format!("{operator} ×{count}"))
+            .collect();
+        format!("{}: {}", self.total(), ops.join(", "))
     }
 }
 
@@ -239,6 +286,14 @@ pub enum Fault {
     Other(anyhow::Error),
 }
 
+/// What the preprocess and the model gave for one frame.
+struct Inferred {
+    /// Just before the preprocess is submitted.
+    start: i64,
+    gpu_preprocess_ms: Option<f64>,
+    output: InferenceOutput,
+}
+
 /// Numbers the pipelines of the process, for the GPU fault log.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -252,7 +307,7 @@ struct ModelHalf {
     prepare_id: String,
     input_size: (usize, usize),
     precision: Precision,
-    cpu_nodes: Option<usize>,
+    cpu_nodes: Option<CpuNodes>,
 }
 
 impl Drop for ModelHalf {
@@ -282,14 +337,10 @@ impl Pipeline {
     pub fn new(display: &settings::Display, model: &Path, options: Options) -> Result<Self> {
         let info = displays()?
             .into_iter()
-            .find(|info| {
-                u64::from(info.adapter_luid) == display.adapter
-                    && info.output_index == display.output
-            })
+            .find(|info| info.selection() == *display)
             .context("the selected display is not connected")?;
         let mut capture = DxgiCapture::new(info.adapter_index, info.output_index)?;
-        let (model, capture_frame) = build_model(&capture, model, options)?;
-        capture.bind_copy_target(&capture_frame, model.input_size)?;
+        let (model, capture_frame) = build_model(&mut capture, model, options)?;
         Ok(Self {
             model,
             capture_frame,
@@ -303,9 +354,7 @@ impl Pipeline {
 
     /// Changes the model and the options on the same capture. On failure the pipeline is not changed.
     pub fn set_model(&mut self, model: &Path, options: Options) -> Result<()> {
-        let (new_model, capture_frame) = build_model(&self.capture, model, options)?;
-        self.capture
-            .bind_copy_target(&capture_frame, new_model.input_size)?;
+        let (new_model, capture_frame) = build_model(&mut self.capture, model, options)?;
         // Dropping the old model waits for its GPU queue.
         let old_model = std::mem::replace(&mut self.model, new_model);
         let old_frame = std::mem::replace(&mut self.capture_frame, capture_frame);
@@ -330,61 +379,9 @@ impl Pipeline {
             Err(error) => return Err(self.capture_fault(&error)),
         };
         let acquired_qpc = Clock::now();
-        let frame_seq = self
-            .frame_seq
-            .checked_add(1)
-            .expect("frame sequence exhausted");
-        self.frame_seq = frame_seq;
-
         let measure = self.sampler.should_measure();
-        let copy = match self.capture.copy_to_target(&frame, frame_seq, measure) {
-            Ok(copy) => copy,
-            Err(error) => return Err(self.copy_fault(&error)),
-        };
-        // One GPU copy time per new frame. A sample that is not ready yet waits for the next frame.
-        let gpu_copy_ms = self
-            .capture
-            .try_take_gpu_copy_sample()
-            .map(|sample| sample.gpu_copy_ms);
-
-        let inference_start = Clock::now();
-        let ticket = match self.model.preprocess.submit(
-            frame_seq,
-            &self.model.frame.capture_ready_fence,
-            &self.model.frame.reuse_fence,
-            reuse_completed,
-            measure,
-        ) {
-            Ok(ticket) => ticket,
-            Err(error) => {
-                let stage = self.model.preprocess.fault_stage();
-                return Err(self.fault(stage, "GPU pipeline failed", &error));
-            }
-        };
-        self.last_submitted = frame_seq;
-
-        // The ONNX Runtime run is checked after the collect, so that the GPU work of the frame is complete.
-        let run = self.model.backend.run();
-        let gpu_preprocess_ms = match self
-            .model
-            .preprocess
-            .collect(ticket, &self.model.frame.reuse_fence)
-        {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(self.fault(
-                    GpuFaultStage::PreprocessCollect,
-                    "GPU pipeline failed",
-                    &error,
-                ));
-            }
-        };
-        let output = match run {
-            Ok(output) => output,
-            Err(error) => {
-                return Err(self.fault(GpuFaultStage::BackendRun, "inference failed", &error));
-            }
-        };
+        let (copy, gpu_copy_ms) = self.copy_stage(&frame, measure)?;
+        let inferred = self.infer_stage(reuse_completed, measure)?;
 
         Ok(Some(Frame {
             desktop_size: frame.desktop_size(),
@@ -394,14 +391,80 @@ impl Pipeline {
                 acquired: acquired_qpc,
                 copy_submitted: copy.copy_submitted_qpc,
                 ready: copy.ready_qpc,
-                inference_start,
-                inference_done: output.inference_done_qpc,
-                postprocess_done: output.postprocess_done_qpc,
+                inference_start: inferred.start,
+                inference_done: inferred.output.inference_done_qpc,
+                postprocess_done: inferred.output.postprocess_done_qpc,
             },
-            gpu_preprocess_ms,
+            gpu_preprocess_ms: inferred.gpu_preprocess_ms,
             gpu_copy_ms,
-            selected: output.selection.nearest,
+            selected: inferred.output.selection.nearest,
         }))
+    }
+
+    /// Takes the next frame number and copies the acquired image into the shared texture.
+    /// Also returns the GPU copy time, when a sample is ready.
+    fn copy_stage(
+        &mut self,
+        frame: &AcquiredDesktopFrame,
+        measure: bool,
+    ) -> Result<(CopyTimes, Option<f64>), Fault> {
+        let frame_seq = self
+            .frame_seq
+            .checked_add(1)
+            .expect("frame sequence exhausted");
+        self.frame_seq = frame_seq;
+        let copy = self
+            .capture
+            .copy_to_target(frame, frame_seq, measure)
+            .map_err(|error| self.copy_fault(&error))?;
+        // One GPU copy time per new frame. A sample that is not ready yet waits for the next frame.
+        let gpu_copy_ms = self
+            .capture
+            .try_take_gpu_copy_sample()
+            .map(|sample| sample.gpu_copy_ms);
+        Ok((copy, gpu_copy_ms))
+    }
+
+    /// Submits the preprocess of the copied frame, runs the model, and reads the result.
+    fn infer_stage(&mut self, reuse_completed: u64, measure: bool) -> Result<Inferred, Fault> {
+        let frame_seq = self.frame_seq;
+        let start = Clock::now();
+        let ticket = self
+            .model
+            .preprocess
+            .submit(
+                frame_seq,
+                &self.model.frame.capture_ready_fence,
+                &self.model.frame.reuse_fence,
+                reuse_completed,
+                measure,
+            )
+            .map_err(|error| {
+                let stage = self.model.preprocess.fault_stage();
+                self.fault(stage, "GPU pipeline failed", &error)
+            })?;
+        self.last_submitted = frame_seq;
+
+        // The ONNX Runtime run is checked after the collect, so that the GPU work of the frame is complete.
+        let run = self.model.backend.run();
+        let gpu_preprocess_ms = self
+            .model
+            .preprocess
+            .collect(ticket, &self.model.frame.reuse_fence)
+            .map_err(|error| {
+                self.fault(
+                    GpuFaultStage::PreprocessCollect,
+                    "GPU pipeline failed",
+                    &error,
+                )
+            })?;
+        let output =
+            run.map_err(|error| self.fault(GpuFaultStage::BackendRun, "inference failed", &error))?;
+        Ok(Inferred {
+            start,
+            gpu_preprocess_ms,
+            output,
+        })
     }
 
     pub fn set_confidence(&mut self, value: Confidence) {
@@ -428,8 +491,13 @@ impl Pipeline {
     }
 
     /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report the assignment.
-    pub fn cpu_nodes(&self) -> Option<usize> {
-        self.model.cpu_nodes
+    pub fn cpu_nodes(&self) -> Option<&CpuNodes> {
+        self.model.cpu_nodes.as_ref()
+    }
+
+    /// Whether ONNX Runtime replays a captured graph on each run.
+    pub fn graph_capture(&self) -> bool {
+        self.model.backend.graph_capture()
     }
 
     /// Reads the reuse fence once for a frame. Fails when the GPU is still reading the shared
@@ -487,9 +555,9 @@ impl Pipeline {
 }
 
 /// Builds the model half on a new D3D12 device, and the D3D11 half of the shared frame on `capture`'s device.
-/// It binds nothing and changes no state.
+/// It binds the shared frame to `capture` as the last step, so a failure leaves `capture` unchanged.
 fn build_model(
-    capture: &DxgiCapture,
+    capture: &mut DxgiCapture,
     model: &Path,
     options: Options,
 ) -> Result<(ModelHalf, CaptureFrame)> {
@@ -513,7 +581,7 @@ fn build_model(
         spec.precision,
     )?;
     let prepare_id = backend.prepare_id().to_owned();
-    let cpu_nodes = backend.cpu_nodes();
+    let cpu_nodes = backend.cpu_nodes().cloned();
     tracing::info!(
         model = %model.display(),
         input_width = spec.width,
@@ -531,6 +599,7 @@ fn build_model(
         precision: spec.precision,
         cpu_nodes,
     };
+    capture.bind_copy_target(&capture_frame, model.input_size)?;
     Ok((model, capture_frame))
 }
 
@@ -572,5 +641,35 @@ impl Detection {
             confidence: 0.9,
             class_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nodes(operators: &[&str]) -> CpuNodes {
+        CpuNodes::from_operators(operators.iter().map(|&operator| operator.to_owned()))
+    }
+
+    #[test]
+    fn cpu_nodes_are_counted_by_operator_with_the_most_frequent_first() {
+        let cpu = nodes(&["Shape", "Gather", "Shape", "Gather", "Gather", "Cast"]);
+        assert_eq!(cpu.total(), 6);
+        assert_eq!(cpu.summary(), "6: Gather ×3, Shape ×2, Cast ×1");
+    }
+
+    #[test]
+    fn cpu_nodes_with_equal_counts_are_in_name_order() {
+        assert_eq!(
+            nodes(&["Slice", "Add", "Mul"]).summary(),
+            "3: Add ×1, Mul ×1, Slice ×1"
+        );
+    }
+
+    #[test]
+    fn no_cpu_nodes_are_zero() {
+        assert_eq!(CpuNodes::default().total(), 0);
+        assert_eq!(CpuNodes::default().summary(), "0");
     }
 }
