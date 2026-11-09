@@ -235,16 +235,10 @@ fn deserialize_hotkeys<'de, D: Deserializer<'de>>(
 }
 
 fn default_hotkeys() -> Vec<Hotkey> {
-    vec![
-        Hotkey {
-            action: Action::Hold,
-            shortcut: "F8".parse().expect("F8 is a valid shortcut"),
-        },
-        Hotkey {
-            action: Action::RunOnce,
-            shortcut: "F9".parse().expect("F9 is a valid shortcut"),
-        },
-    ]
+    vec![Hotkey {
+        action: Action::Hold,
+        shortcut: "F8".parse().expect("F8 is a valid shortcut"),
+    }]
 }
 
 fn back_up(path: &Path) -> Result<()> {

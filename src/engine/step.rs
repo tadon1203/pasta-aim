@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use super::{CapturePhase, Command, Flow, ModelPhase, RunPhase, Worker};
+use super::{CapturePhase, Command, Flow, ModelPhase, Worker};
 use crate::{
     channel::Receiver,
     clock::Clock,
@@ -14,8 +14,7 @@ pub(super) fn next_capture(started: Instant, fps: FpsLimit) -> Instant {
 
 impl Worker {
     pub(super) fn pending_capture(&self, now: Instant) -> Option<Instant> {
-        let continuous = self.run.is_some() && self.state.run.phase == RunPhase::Continuous;
-        (continuous && now < self.next_capture).then_some(self.next_capture)
+        (self.run.is_some() && now < self.next_capture).then_some(self.next_capture)
     }
 
     /// Commands are drained after the capture, so a stop suppresses the output of a late frame.
@@ -76,9 +75,6 @@ impl Worker {
             .frame(frame, &outcome, output_done, Instant::now());
         self.note_output(frame.desktop_size);
         self.rebuilt = false;
-        if self.state.run.phase == RunPhase::OneShot {
-            self.stop_run();
-        }
         Flow::Continue
     }
 
@@ -187,21 +183,13 @@ mod tests {
     }
 
     #[test]
-    fn continuous_runs_are_paced_and_run_once_is_not() {
+    fn runs_are_paced_by_the_fps_limit() {
         let (mut worker, _fake, _messages, _waker) = worker();
         let now = Instant::now();
         worker.next_capture = now + Duration::from_secs(10);
         assert_eq!(worker.pending_capture(now), None, "no run");
 
-        worker.begin_run(RunPhase::OneShot);
-        assert_eq!(
-            worker.pending_capture(now),
-            None,
-            "run once ignores the limit"
-        );
-
-        worker.stop_run();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         assert_eq!(worker.pending_capture(Instant::now()), None);
         let now = Instant::now();
         worker.next_capture = now + Duration::from_secs(10);
@@ -214,7 +202,7 @@ mod tests {
     #[test]
     fn stop_and_shutdown_during_the_fps_wait_are_handled_at_once() {
         let (mut worker, _fake, _messages, waker) = worker();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         worker.next_capture = Instant::now() + Duration::from_secs(10);
         let (tx, rx) = mpsc::channel();
         let sender = std::thread::spawn(move || {
@@ -244,7 +232,7 @@ mod tests {
         ] {
             let shutdown = matches!(command, Command::Shutdown);
             let (mut worker, fake, _messages, _waker) = worker();
-            worker.begin_run(RunPhase::Continuous);
+            worker.begin_run();
             let frame = processed(Clock::now());
             let (tx, rx) = mpsc::channel();
             tx.send(command).unwrap();
@@ -258,7 +246,7 @@ mod tests {
     #[test]
     fn a_valid_detection_reaches_the_output_and_the_statistics() {
         let (mut worker, fake, _messages, _waker) = worker();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         let (_tx, rx) = mpsc::channel();
         let frame = processed(Clock::now());
         assert_eq!(finish(&mut worker, &rx, &frame), Flow::Continue);
@@ -275,7 +263,7 @@ mod tests {
     #[test]
     fn a_failed_move_write_is_a_lost_makcu_and_stops_the_run() {
         let (mut worker, fake, _messages, _waker) = worker();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         fake.disconnect();
         let (_tx, rx) = mpsc::channel();
         assert_eq!(
@@ -326,7 +314,7 @@ mod tests {
     #[test]
     fn a_failed_display_change_and_model_load_keep_the_previous_selection() {
         let (mut worker, _fake, _messages, _waker) = worker();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         let before = worker.settings.display;
         worker.handle(Command::SelectDisplay(settings::Display {
             adapter: 99,
@@ -342,26 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_outputs_once_and_stops() {
-        let (mut worker, fake, _messages, _waker) = worker();
-        worker.begin_run(RunPhase::OneShot);
-        let (_tx, rx) = mpsc::channel();
-        assert_eq!(
-            finish(&mut worker, &rx, &processed(Clock::now())),
-            Flow::Continue
-        );
-        assert_ne!(moves(&fake).len(), 0);
-        assert!(worker.run.is_none());
-        assert_eq!(worker.state.run.phase, RunPhase::Idle);
-        assert_eq!(worker.recorder.counts().0, 1);
-    }
-
-    #[test]
     fn a_frame_captured_before_a_new_run_is_dropped() {
         let (mut worker, _fake, _messages, _waker) = worker();
         let attempt_start = Instant::now();
         worker.stop_run();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         let (_tx, rx) = mpsc::channel();
         assert_eq!(
             worker.finish_frame(&rx, attempt_start, &processed(Clock::now())),

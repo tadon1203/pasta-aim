@@ -30,16 +30,14 @@ const SLOT_COUNT: u32 = 4;
 pub enum Action {
     #[serde(rename = "continuous_hold")]
     Hold,
-    RunOnce,
 }
 
 impl Action {
-    pub const ALL: [Self; 2] = [Self::Hold, Self::RunOnce];
+    pub const ALL: [Self; 1] = [Self::Hold];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Hold => "Hold continuous",
-            Self::RunOnce => "Run once",
         }
     }
 }
@@ -345,7 +343,6 @@ impl Core {
             Some(Action::Hold) => {
                 self.held.insert(input);
             }
-            Some(Action::RunOnce) => out.push(Signal::Action(Action::RunOnce, true)),
             None => {}
         }
     }
@@ -467,8 +464,6 @@ fn flush(out: &mut Vec<Signal>, ui: &Sender<Message>, engine: &Sender<engine::Co
     for signal in out.drain(..) {
         match signal {
             Signal::Action(Action::Hold, down) => engine.send(engine::Command::Hold(down)),
-            Signal::Action(Action::RunOnce, true) => engine.send(engine::Command::RunOnce),
-            Signal::Action(Action::RunOnce, false) => {}
             Signal::Event(event) => ui.send(Message::Hotkeys(event)),
         }
     }
@@ -668,14 +663,14 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_keyboard_shortcuts_are_rejected_across_actions() {
+    fn duplicate_keyboard_shortcuts_are_rejected() {
         let hotkeys = [
             Hotkey {
                 action: Action::Hold,
                 shortcut: "F8".parse().unwrap(),
             },
             Hotkey {
-                action: Action::RunOnce,
+                action: Action::Hold,
                 shortcut: "F8".parse().unwrap(),
             },
         ];
@@ -683,14 +678,14 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_xinput_shortcuts_are_rejected_across_actions() {
+    fn duplicate_xinput_shortcuts_are_rejected() {
         let hotkeys = [
             Hotkey {
                 action: Action::Hold,
                 shortcut: "xinput:a".parse().unwrap(),
             },
             Hotkey {
-                action: Action::RunOnce,
+                action: Action::Hold,
                 shortcut: "xinput:a".parse().unwrap(),
             },
         ];
@@ -705,7 +700,7 @@ mod tests {
                 shortcut: "A".parse().unwrap(),
             },
             Hotkey {
-                action: Action::RunOnce,
+                action: Action::Hold,
                 shortcut: "xinput:a".parse().unwrap(),
             },
         ];
@@ -722,12 +717,15 @@ mod tests {
 
     #[test]
     fn button_edges_are_generated_once() {
-        let mut core = core(&[(pad(Pad::A), Action::RunOnce)]);
+        let mut core = core(&[(pad(Pad::A), Action::Hold)]);
         step(&mut core, pad_reading(0, 0, 0));
         let pressed = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        assert_eq!(pressed, vec![Signal::Action(Action::RunOnce, true),]);
+        assert_eq!(pressed, vec![Signal::Action(Action::Hold, true)]);
         assert_eq!(step(&mut core, pad_reading(PAD_A_HELD, 0, 0)), Vec::new());
-        assert_eq!(step(&mut core, pad_reading(0, 0, 0)), Vec::new());
+        assert_eq!(
+            step(&mut core, pad_reading(0, 0, 0)),
+            vec![Signal::Action(Action::Hold, false)]
+        );
     }
 
     #[test]
@@ -748,13 +746,6 @@ mod tests {
         let states = [None, Some(sample), Some(sample), None];
         let first = select_first_with(|slot| states[slot as usize]);
         assert_eq!(first.map(|(slot, _)| slot), Some(1));
-    }
-
-    #[test]
-    fn a_controller_held_at_connect_is_a_baseline_not_a_press() {
-        let mut core = core(&[(pad(Pad::A), Action::RunOnce)]);
-        let connected = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
-        assert_eq!(connected, vec![Signal::Event(Event::Controller(Some(0)))]);
     }
 
     #[test]
@@ -824,7 +815,7 @@ mod tests {
 
     #[test]
     fn esc_during_recording_cancels_and_starts_no_action() {
-        let mut core = core(&[(key(F8), Action::RunOnce)]);
+        let mut core = core(&[(key(F8), Action::Hold)]);
         command(&mut core, Command::Record);
         let escape = Reading {
             escape: true,
@@ -839,7 +830,7 @@ mod tests {
 
     #[test]
     fn no_action_fires_while_recording() {
-        let mut core = core(&[(key(F9), Action::RunOnce), (key(F8), Action::Hold)]);
+        let mut core = core(&[(key(F9), Action::Hold), (key(F8), Action::Hold)]);
         command(&mut core, Command::Record);
         let out = step(&mut core, key_reading(&[F9], Mods::default()));
         assert!(
@@ -861,7 +852,7 @@ mod tests {
 
     #[test]
     fn a_pass_reads_only_the_bound_keys_and_a_recording_reads_every_key() {
-        let mut core = core(&[(key(F8), Action::Hold), (pad(Pad::A), Action::RunOnce)]);
+        let mut core = core(&[(key(F8), Action::Hold), (pad(Pad::A), Action::Hold)]);
         let bound = core.keys_to_read().expect("the bound keys");
         assert!(bound.contains(F8));
         assert!(!bound.contains(F9) && !bound.contains(KEY_A));
@@ -875,7 +866,7 @@ mod tests {
     #[test]
     fn new_bindings_change_the_keys_that_are_read() {
         let mut core = core(&[(key(F8), Action::Hold)]);
-        let bindings = [(key(F9), Action::RunOnce)].into_iter().collect();
+        let bindings = [(key(F9), Action::Hold)].into_iter().collect();
         command(&mut core, Command::SetBindings(bindings));
         let bound = core.keys_to_read().expect("the bound keys");
         assert!(bound.contains(F9) && !bound.contains(F8));
@@ -887,7 +878,7 @@ mod tests {
         let mut held = KeySet::default();
         held.insert(F9);
         core.set_down_keys(held);
-        let bindings = [(key(F9), Action::RunOnce)].into_iter().collect();
+        let bindings = [(key(F9), Action::Hold)].into_iter().collect();
         command(&mut core, Command::SetBindings(bindings));
         assert_eq!(
             step(&mut core, key_reading(&[F9], Mods::default())),

@@ -106,7 +106,7 @@ impl App {
         ui.group(|ui| {
             ui.strong("Calibration");
             self.draw_calibration_values(ui);
-            self.draw_run_once(ui, engine);
+            self.draw_blocked(ui, engine);
             draw_last_run(ui, stats);
             if let Some(error) = &engine.run.error {
                 error_label(ui, error);
@@ -190,21 +190,8 @@ impl App {
         ui.small("Higher = steadier target speed, slower to react.");
     }
 
-    fn draw_run_once(&mut self, ui: &mut egui::Ui, engine: &State) {
-        let ready = engine.blocked().is_none();
-        if ui
-            .add_enabled(ready && run_idle(engine), egui::Button::new("Run once"))
-            .clicked()
-        {
-            self.commands.send(Command::RunOnce);
-        }
-
-        let once_shortcuts = bindings_summary(&self.settings, Action::RunOnce);
-        if !once_shortcuts.is_empty() {
-            ui.small(format!("Shortcuts: {once_shortcuts}"));
-        }
-
-        if !ready && let Some(reason) = engine.blocked() {
+    fn draw_blocked(&mut self, ui: &mut egui::Ui, engine: &State) {
+        if let Some(reason) = engine.blocked() {
             ui.horizontal(|ui| {
                 ui.small(reason);
                 if engine.capture.phase == CapturePhase::Failed
@@ -223,7 +210,6 @@ impl App {
                 ui.separator();
                 ui.label(match engine.run.phase {
                     RunPhase::Continuous => "● Running",
-                    RunPhase::OneShot => "Single run",
                     RunPhase::Idle => "Idle",
                 });
             });

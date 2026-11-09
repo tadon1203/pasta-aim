@@ -33,7 +33,6 @@ pub enum Command {
     LoadModel(String),
     SelectDisplay(settings::Display),
     Hold(bool),
-    RunOnce,
     ReconnectOutput,
     RescanDisplays,
     RetryCapture,
@@ -226,7 +225,6 @@ impl Worker {
                 }
             }
             Command::Hold(active) => self.hold(active),
-            Command::RunOnce => self.run_once(),
             Command::ReconnectOutput => {
                 tracing::info!("reconnecting MAKCU in engine");
                 self.stop_run();
@@ -277,42 +275,31 @@ impl Worker {
         if !active {
             self.stop_run();
         } else if self.state.run.phase != RunPhase::Continuous {
-            self.start_run(RunPhase::Continuous);
+            self.start_run();
         }
     }
 
-    fn run_once(&mut self) {
-        if self.state.run.phase == RunPhase::Continuous {
-            tracing::warn!("single inference requested while continuous inference is active");
-            self.set_run_error("Stop continuous inference before running once".to_owned());
-            return;
-        }
-        self.start_run(RunPhase::OneShot);
-    }
-
-    fn start_run(&mut self, mode: RunPhase) {
+    fn start_run(&mut self) {
         if let Some(reason) = self.state.blocked() {
-            tracing::warn!(%reason, ?mode, "inference start blocked");
+            tracing::warn!(%reason, "inference start blocked");
             self.set_run_error(reason.to_owned());
             return;
         }
-        self.begin_run(mode);
+        self.begin_run();
     }
 
-    fn begin_run(&mut self, mode: RunPhase) {
+    fn begin_run(&mut self) {
         self.aim.reset();
         let now = Instant::now();
         self.next_capture = now;
         self.recorder.run_started(now);
         self.run = Some(ActiveRun { started: now });
-        if mode == RunPhase::Continuous {
-            tracing::info!(
-                fps_limit = self.settings.fps_limit.get(),
-                "continuous inference started"
-            );
-        }
+        tracing::info!(
+            fps_limit = self.settings.fps_limit.get(),
+            "continuous inference started"
+        );
         self.edit(|state| {
-            state.run.phase = mode;
+            state.run.phase = RunPhase::Continuous;
             state.run.error = None;
         });
     }
@@ -461,7 +448,7 @@ mod tests {
     #[test]
     fn select_display_during_a_run_stops_the_run() {
         let (mut worker, _fake, _messages, _waker) = worker();
-        worker.begin_run(RunPhase::Continuous);
+        worker.begin_run();
         worker.handle(Command::SelectDisplay(Display {
             adapter: 1,
             output: 9,
@@ -473,7 +460,7 @@ mod tests {
     #[test]
     fn the_state_is_sent_once_after_a_change_and_not_after_a_pass_without_one() {
         let (mut worker, _fake, messages, _waker) = worker();
-        worker.handle(Command::RunOnce);
+        worker.handle(Command::Hold(true));
         worker.publish();
         assert_eq!(count_states(&messages), 1);
 

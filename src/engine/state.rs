@@ -92,7 +92,6 @@ impl Default for OutputState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunPhase {
     Idle,
-    OneShot,
     Continuous,
 }
 
