@@ -1,12 +1,6 @@
-//! The MAKCU wire format. No I/O.
-//!
-//! Every protocol fact is in `docs/makcu-protocol.md`. The comments here link to its sections.
-
-/// The wire value of `INTERPOLATE` for Auto.
 pub(super) const INTERPOLATE_AUTO: u8 = 255;
 
 pub(super) const HEADER: [u8; 2] = [0xDE, 0xAD];
-/// A packet that declares more payload than this is not a MAKCU packet.
 pub(super) const MAX_PAYLOAD: usize = 64;
 
 pub(super) const CMD_DEVICE: u8 = 0x02;
@@ -15,13 +9,10 @@ pub(super) const CMD_MOVE: u8 = 0x18;
 pub(super) const CMD_INTERPOLATE: u8 = 0x1F;
 pub(super) const CMD_SET_BAUD: u8 = 0xA5;
 
-/// The bit of the `DEVICE` reply that means the mouse route is up. See "Opcodes" in `docs/makcu-protocol.md`.
 pub(super) const KIND_MOUSE: u8 = 0x01;
 
-/// The payload of a reject. See "Reject form" in `docs/makcu-protocol.md`.
 pub(super) const REJECT: u8 = 0xFF;
 
-/// A query to MAKCU. See "Opcodes" in `docs/makcu-protocol.md`.
 /// A `SET` that MAKCU accepts has no reply, except `Interpolate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Query {
@@ -33,7 +24,6 @@ pub(super) enum Query {
 }
 
 impl Query {
-    /// The command byte of the packet. See "Opcodes" in `docs/makcu-protocol.md`.
     pub(super) fn command(self) -> u8 {
         match self {
             Self::Device => CMD_DEVICE,
@@ -49,7 +39,6 @@ impl Query {
             Self::Device | Self::FirmwareVersion => 0,
             Self::Move { .. } => 4,
             Self::Interpolate(_) => 1,
-            // This one packet has its own length rule. See "Baud switch" in `docs/makcu-protocol.md`.
             Self::SetBaud(_) => 5,
         };
         out.extend_from_slice(&HEADER);
@@ -67,8 +56,6 @@ impl Query {
     }
 }
 
-/// One packet from MAKCU. See "Packet" in `docs/makcu-protocol.md`.
-/// The payload is kept in the packet, so a packet is `Copy` and needs no heap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Packet {
     pub cmd: u8,
@@ -93,8 +80,6 @@ impl Packet {
     }
 }
 
-/// A reply that is a reject: the command of the query and the payload `FF`.
-/// See "Reject form" in `docs/makcu-protocol.md`.
 /// `INTERPOLATE 255` is the exception: its accepted echo has the same bytes, so it is never a reject.
 pub(super) fn is_reject(query: Query, packet: &Packet) -> bool {
     packet.payload() == [REJECT] && query != Query::Interpolate(INTERPOLATE_AUTO)
@@ -110,7 +95,6 @@ pub(super) fn confirms_interpolate(value: u8, packet: &Packet) -> bool {
     !is_reject(Query::Interpolate(value), packet) && is_interpolate_echo(value, packet)
 }
 
-/// Splits a byte stream into packets. Keeps the partial packet between calls.
 #[derive(Debug, Default)]
 pub(super) struct PacketDecoder {
     buffer: Vec<u8>,
@@ -149,12 +133,10 @@ impl PacketDecoder {
     }
 }
 
-/// Whether the mouse route is up, from the `DEVICE` reply. See "Opcodes" in `docs/makcu-protocol.md`.
 pub(super) fn mouse_route(kinds: u8) -> bool {
     kinds & KIND_MOUSE != 0
 }
 
-/// See "Firmware version" in `docs/makcu-protocol.md`.
 pub(super) fn format_firmware(version: u32) -> String {
     format!("V{}.{:03}", version / 1000, version % 1000)
 }

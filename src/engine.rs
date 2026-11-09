@@ -1,5 +1,3 @@
-//! The engine thread: it owns the pipeline, the aim, and the MAKCU link, and runs one frame at a time.
-
 mod boost;
 mod graphics;
 mod link;
@@ -28,30 +26,22 @@ use crate::{
     settings::{self, Settings},
 };
 
-/// How often the engine polls MAKCU connection state, when no other event wakes it.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
-/// How long the engine spins before a capture deadline. Only the capture deadline spins.
 const CAPTURE_SPIN: Duration = Duration::from_millis(1);
 
 #[derive(Debug)]
 pub enum Command {
-    /// The settings of the UI. The engine applies only what differs from its own.
     Settings(Settings),
-    /// Loads a model from `models/` by its file name, and stops the run.
     LoadModel(String),
-    /// Captures another display, and stops the run.
     SelectDisplay(settings::Display),
-    /// `true` starts a Continuous run, `false` stops it.
     Hold(bool),
     RunOnce,
-    /// Connects again: the output ports in order, or only the one that the user chose.
     ReconnectOutput,
     RescanDisplays,
     RetryCapture,
     Shutdown,
 }
 
-/// The engine thread. Dropping it stops the thread and waits for it.
 #[derive(Debug)]
 pub struct Engine {
     commands: Sender<Command>,
@@ -59,8 +49,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Starts the engine thread. It sends the state and the statistics to `ui`.
-    ///
     /// # Panics
     ///
     /// Panics if the wait handle, the QPC clock, or the thread cannot be created.
@@ -99,8 +87,7 @@ impl Drop for Engine {
     }
 }
 
-/// The active run. `started` is when it began: a frame whose capture was attempted before that is stale.
-/// Its mode is `State::run.phase`.
+/// A frame whose capture started before `started` is stale.
 #[derive(Debug, Clone, Copy)]
 struct ActiveRun {
     started: Instant,
@@ -112,35 +99,25 @@ enum Flow {
     Shutdown,
 }
 
-/// The state of the engine thread. The engine keeps no copy of a fact that `State` holds.
 struct Worker {
     ui: Sender<Message>,
-    /// Wakes the engine for a command, the housekeeping, or the capture deadline.
     wait: Wait,
-    /// The settings that the engine applies. Its display is the one the user chose.
     settings: Settings,
-    /// The engine state. `publish` sends it to the UI after an edit.
     state: State,
     state_changed: bool,
     recorder: Recorder,
-    /// Turns the capture times of the frames into seconds for the aim.
     clock: Clock,
     stats_sent: Instant,
-    /// The pipeline of the selected display and the model. `None` until a model is loaded, and after a fault.
     pipeline: Option<Pipeline>,
     aim: Aim,
     output: Output,
     run: Option<ActiveRun>,
-    /// The earliest start of the next capture in a Continuous run.
     next_capture: Instant,
-    /// A GPU rebuild happened since the last frame that reached the output.
     rebuilt: bool,
-    /// COM is initialized on this thread, so that DXGI can be used.
     com_ready: bool,
 }
 
 impl Worker {
-    /// Runs on the engine thread: COM, the display catalog, the display, the MAKCU, and the model.
     fn start(ui: Sender<Message>, wait: Wait, clock: Clock, settings: Settings) -> Self {
         let com_error = init_thread().err().map(|error| {
             tracing::error!(error = %format_args!("{error:#}"), "engine thread COM initialization failed");
@@ -222,7 +199,6 @@ impl Worker {
         }
     }
 
-    /// Applies the queued commands. A closed channel shuts the engine down.
     fn drain(&mut self, commands: &Receiver<Command>) -> Flow {
         loop {
             match commands.try_recv() {
@@ -246,7 +222,6 @@ impl Worker {
                 if display == self.settings.display
                     && self.state.capture.phase == CapturePhase::Ready
                 {
-                    // The same display is already captured: only the run stops, and the UI hears it.
                     self.stop_run();
                     self.ui.send(Message::DisplayChanged(display));
                 } else {
@@ -270,7 +245,6 @@ impl Worker {
         Flow::Continue
     }
 
-    /// Applies only the differences from the settings that the engine has.
     fn apply_settings(&mut self, mut new: Settings) {
         // The display changes only through `SelectDisplay`, so the engine keeps its own.
         new.display = self.settings.display;
@@ -328,11 +302,9 @@ impl Worker {
         self.begin_run(mode);
     }
 
-    /// Starts a run with no readiness check. `start_run` checks the readiness first.
     fn begin_run(&mut self, mode: RunPhase) {
         self.aim.reset();
         let now = Instant::now();
-        // The first capture of a run is due at once.
         self.next_capture = now;
         self.recorder.run_started(now);
         if let Some(pipeline) = self.pipeline.as_mut() {
@@ -351,7 +323,6 @@ impl Worker {
         });
     }
 
-    /// Stops any active run. Safe to call when idle.
     fn stop_run(&mut self) {
         if self.run.take().is_some() {
             tracing::info!("inference stopped");
@@ -377,8 +348,6 @@ impl Worker {
         self.state_changed = true;
     }
 
-    /// Sends the state to the UI after an edit. It also sends the statistics when they changed: while
-    /// a run is active, not more often than `PUBLISH_INTERVAL`.
     fn publish(&mut self) {
         if std::mem::take(&mut self.state_changed) {
             self.ui.send(Message::State(Arc::new(self.state.clone())));
@@ -391,7 +360,6 @@ impl Worker {
     }
 }
 
-/// The chosen MAKCU port. A blank port in the settings means auto-detect, as `None` does.
 fn chosen_port(port: Option<&str>) -> Option<String> {
     port.filter(|port| !port.trim().is_empty())
         .map(str::to_owned)
@@ -415,8 +383,6 @@ mod fixture {
     use super::*;
     use crate::{clock::Wake, output::fake::FakeMakcu};
 
-    /// A worker with no GPU: the output is the fake MAKCU, and the state is a ready capture and model
-    /// with a 100 by 100 input. The worker has no run and no pipeline.
     pub(super) fn worker() -> (Worker, FakeMakcu, Receiver<Message>, Wake) {
         let settings = Settings::default();
         let (output, fake) = Output::fake();
@@ -494,7 +460,6 @@ mod tests {
     #[test]
     fn settings_with_a_new_low_latency_value_start_a_model_reload() {
         let (mut worker, _fake, _messages, _waker) = worker();
-        // The model file does not exist, so the reload runs and fails on the name.
         worker.state.model.active_name = Some("missing-model.onnx".into());
         let mut settings = worker.settings.clone();
         settings.low_latency = !settings.low_latency;
@@ -517,7 +482,6 @@ mod tests {
     #[test]
     fn the_state_is_sent_once_after_a_change_and_not_after_a_pass_without_one() {
         let (mut worker, _fake, messages, _waker) = worker();
-        // A run that is not ready sets the run error: that is a change.
         worker.handle(Command::RunOnce);
         worker.publish();
         assert_eq!(count_states(&messages), 1);

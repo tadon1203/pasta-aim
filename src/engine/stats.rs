@@ -1,6 +1,3 @@
-//! The statistics of a run. The engine thread records each frame that reached the output, and it sends
-//! the result to the UI as `Stats`, at most `PUBLISH_INTERVAL` apart.
-
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -13,14 +10,11 @@ use crate::{
 };
 
 pub(super) const PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
-/// The rates are made over windows of at least this length.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
 const MAX_SAMPLES: usize = 256;
 
-/// What the UI shows. The UI keeps the last value it received.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Stats {
-    /// `(dx, dy, confidence, class_id)` of the last target, from the capture region center.
     pub last_target: Option<(f32, f32, f32, i32)>,
     pub last_move: Option<Move>,
     pub last_total_ms: Option<f64>,
@@ -28,16 +22,12 @@ pub struct Stats {
     pub rates: Rates,
 }
 
-/// The rates over the last window. The window is at least one second, and it ends only when a frame arrives.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rates {
-    /// Frames the capture produced per second, including dropped frames.
     pub fresh_fps: f64,
-    /// Frames that reached the output per second.
     pub processed_fps: f64,
 }
 
-/// The rolling statistics of the frames that reached the output. The first frame of a pipeline is left out.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Stages {
     pub sample_count: usize,
@@ -62,7 +52,6 @@ pub struct Percentiles {
     pub p95: f64,
 }
 
-/// The stage times of one frame, in milliseconds.
 #[derive(Debug, Clone, Copy)]
 struct Sample {
     present_to_gpu_submit: f64,
@@ -70,7 +59,6 @@ struct Sample {
     acquire_wait: f64,
     capture: f64,
     copy_submit: f64,
-    /// Only measured on some frames.
     preprocess: Option<f64>,
     inference: f64,
     postprocess: f64,
@@ -79,7 +67,6 @@ struct Sample {
     cadence: Option<f64>,
 }
 
-/// The totals when the rate window started, and when it started.
 #[derive(Debug, Clone, Copy)]
 struct RateWindow {
     started: Instant,
@@ -87,15 +74,12 @@ struct RateWindow {
     dropped: u64,
 }
 
-/// The engine thread's record of a run. It has no thread and no clock of its own.
 pub(super) struct Recorder {
     clock: Clock,
     samples: VecDeque<Sample>,
     gpu_copy: VecDeque<f64>,
-    /// The next frame is the first frame of a pipeline. It is not a sample.
     skip_next: bool,
     previous_started: Option<i64>,
-    /// Run totals.
     frames: u64,
     dropped: u64,
     window: RateWindow,
@@ -103,7 +87,6 @@ pub(super) struct Recorder {
     last_target: Option<(f32, f32, f32, i32)>,
     last_move: Option<Move>,
     last_total_ms: Option<f64>,
-    /// A frame or a drop was recorded since the last `take_changed`.
     changed: bool,
 }
 
@@ -130,7 +113,6 @@ impl Recorder {
         }
     }
 
-    /// Starts again. The pipeline is the same, so the next frame is a sample.
     pub(super) fn run_started(&mut self, now: Instant) {
         let clock = self.clock;
         *self = Self {
@@ -145,7 +127,6 @@ impl Recorder {
         };
     }
 
-    /// The next frame is the first frame of a pipeline, and the samples start again.
     pub(super) fn pipeline_changed(&mut self) {
         self.skip_next = true;
         self.samples.clear();
@@ -159,7 +140,6 @@ impl Recorder {
         self.dropped += 1;
     }
 
-    /// The frames that reached the output and the frames that were dropped, in this run.
     #[cfg(test)]
     pub(super) fn counts(&self) -> (u64, u64) {
         (self.frames, self.dropped)
@@ -169,7 +149,6 @@ impl Recorder {
         std::mem::take(&mut self.changed)
     }
 
-    /// One new frame that reached the output. `output_start` and `output_done` are QPC ticks.
     pub(super) fn frame(
         &mut self,
         frame: &Frame,
@@ -221,7 +200,6 @@ impl Recorder {
         self.update_rates(now);
     }
 
-    /// The statistics. The percentiles are made here, when they are read.
     pub(super) fn stats(&self) -> Stats {
         Stats {
             last_target: self.last_target,
@@ -232,7 +210,6 @@ impl Recorder {
         }
     }
 
-    /// The rates come from two frames that are at least one window apart.
     fn update_rates(&mut self, now: Instant) {
         let elapsed = now.duration_since(self.window.started);
         if elapsed < RATE_WINDOW {
@@ -283,7 +260,6 @@ impl Recorder {
     }
 }
 
-/// The p50 and p95 of `values`. Empty values give zeros.
 fn percentiles(mut values: Vec<f64>) -> Percentiles {
     Percentiles {
         p50: percentile(&mut values, 50),
@@ -291,7 +267,6 @@ fn percentiles(mut values: Vec<f64>) -> Percentiles {
     }
 }
 
-/// The `percent`-th percentile of `values`, selected without a full sort. `values` is reordered.
 fn percentile(values: &mut [f64], percent: usize) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -312,10 +287,8 @@ mod tests {
     use super::*;
     use crate::pipeline::Times;
 
-    /// One tick is one millisecond.
     const QPC: Clock = Clock::test(1_000.0);
 
-    /// A new frame. The stage boundaries follow `present`, and the output is done `total` ticks after it.
     fn frame(present: i64) -> Frame {
         Frame {
             desktop_size: (100, 100),
@@ -342,7 +315,6 @@ mod tests {
         }
     }
 
-    /// Records a frame whose output is done `total` ticks after `present`.
     fn record(recorder: &mut Recorder, present: i64, total: i64, now: Instant) {
         recorder.frame(
             &frame(present),
@@ -393,13 +365,11 @@ mod tests {
         recorder.run_started(start);
         record(&mut recorder, 0, 30, start);
         record(&mut recorder, 100, 30, start + Duration::from_millis(500));
-        // Less than one window after the start: no rates yet.
         assert_eq!(recorder.stats().rates.fresh_fps, 0.0);
 
         recorder.frame_dropped();
         record(&mut recorder, 200, 30, start + Duration::from_secs(1));
         let rates = recorder.stats().rates;
-        // Three frames reached the output and one was dropped, in one second.
         assert_eq!(rates.processed_fps, 3.0);
         assert_eq!(rates.fresh_fps, 4.0);
     }

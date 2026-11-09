@@ -1,7 +1,6 @@
 use std::sync::{Mutex, MutexGuard};
 
-/// Locks a mutex, treating poisoning as recoverable: every guarded value here
-/// is plain state that stays valid if another thread panicked while holding it.
+/// Every guarded value stays valid after a panic, so poisoning is ignored.
 pub(crate) trait MutexExt<T> {
     fn lock_recover(&self) -> MutexGuard<'_, T>;
 }

@@ -1,7 +1,3 @@
-//! How threads talk. Every thread takes its input from one `Receiver<T>`. Any thread sends to it through a
-//! `Sender<T>`, which also tells the receiving thread that something arrived: a wake-up for the engine and
-//! the hotkeys thread, a repaint for the UI.
-
 use std::sync::{Arc, mpsc};
 
 use crate::{engine, hotkeys, settings::Display};
@@ -12,18 +8,13 @@ pub use mpsc::Receiver;
 // `Stats` is sent at most ten times each second, so its size does not matter here.
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
-    /// The engine state, when it changes.
     State(Arc<engine::State>),
-    /// The statistics of the run, at most ten times each second.
     Stats(engine::Stats),
-    /// A model loaded after the UI asked to be told. The name is the file in `models/`.
     ModelLoaded(String),
-    /// The display capture changed. The UI saves the choice.
     DisplayChanged(Display),
     Hotkeys(hotkeys::Event),
 }
 
-/// The sending end of a channel. Any thread can hold a clone.
 pub struct Sender<T> {
     tx: mpsc::Sender<T>,
     notify: Arc<dyn Fn() + Send + Sync>,
@@ -45,8 +36,7 @@ impl<T> std::fmt::Debug for Sender<T> {
 }
 
 impl<T> Sender<T> {
-    /// Never blocks. A receiver that has gone is not an error: the value is dropped.
-    /// A value that was sent is followed by a call of the notify function.
+    /// A closed receiver is ignored, so this never fails.
     pub fn send(&self, value: T) {
         if self.tx.send(value).is_ok() {
             (self.notify)();

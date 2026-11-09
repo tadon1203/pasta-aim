@@ -1,5 +1,3 @@
-//! The Output, Calibration, and Continuous panels: the values that the engine applies to each frame.
-
 use std::ops::RangeInclusive;
 
 use eframe::egui;
@@ -14,18 +12,14 @@ use nice_aimassist::{
     },
 };
 
-/// The fixed interpolation that a switch from Auto starts with.
 const FIXED_INTERPOLATION_START: u16 = 50;
 
 const STEPS: [(&str, i32); 4] = [("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)];
 
 #[derive(Debug)]
 struct Edit<T> {
-    /// A new value to apply immediately.
     value: Option<T>,
-    /// The edit is finished and should be saved.
     persist: bool,
-    /// The value still has an edit that is not saved yet.
     dirty: bool,
 }
 
@@ -44,8 +38,6 @@ impl App {
         }
     }
 
-    /// A labelled drag-value row, without its own line. `set` applies the value, and the edit is
-    /// saved when the drag or the text entry ends.
     fn drag_row<T>(
         &mut self,
         ui: &mut egui::Ui,
@@ -122,7 +114,6 @@ impl App {
         });
     }
 
-    /// The three percentages and the per-frame cap of the aim.
     fn draw_calibration_values(&mut self, ui: &mut egui::Ui) {
         let edit = percent_row(
             ui,
@@ -185,7 +176,6 @@ impl App {
         self.draw_lead_values(ui);
     }
 
-    /// The lead mode, its time, and the smoothing of the target velocity.
     fn draw_lead_values(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Lead");
@@ -241,7 +231,6 @@ impl App {
         ui.small("Higher = steadier target speed, slower to react.");
     }
 
-    /// The Run once button, its shortcuts, and why it is off while the engine is blocked.
     fn draw_run_once(&mut self, ui: &mut egui::Ui, engine: &State) {
         let ready = engine.blocked().is_none();
         if ui
@@ -325,7 +314,6 @@ impl App {
         }
     }
 
-    /// The latency switch. It changes only while idle, and it reloads the model.
     fn draw_low_latency(&mut self, ui: &mut egui::Ui, engine: &State) {
         let can_change_latency = run_idle(engine) && engine.model.phase != ModelPhase::Loading;
         ui.add_enabled_ui(can_change_latency, |ui| {
@@ -344,7 +332,6 @@ impl App {
         });
     }
 
-    /// The GPU-debug warning and the FPS and timing line. Shown once a frame has been sampled.
     fn draw_frame_stats(&self, ui: &mut egui::Ui, stats: &Stats) {
         if stats.stages.sample_count == 0 {
             return;
@@ -367,7 +354,6 @@ impl App {
     }
 }
 
-/// The target, the command, and the pipeline time of the last run. Shown once a run has one.
 fn draw_last_run(ui: &mut egui::Ui, stats: &Stats) {
     if stats.last_target.is_some() || stats.last_move.is_some() || stats.last_total_ms.is_some() {
         ui.separator();
@@ -386,8 +372,6 @@ fn draw_last_run(ui: &mut egui::Ui, stats: &Stats) {
     }
 }
 
-/// A draggable integer field. `dirty` says whether an unsaved edit is pending, so the
-/// setting is saved once the drag or text entry ends, not on every intermediate value.
 fn drag_value<T>(ui: &mut egui::Ui, value: T, range: RangeInclusive<T>, dirty: bool) -> Edit<T>
 where
     T: Copy + Into<i32> + TryFrom<i32>,
@@ -417,7 +401,6 @@ where
     edit
 }
 
-/// A labelled percentage field with −10/−1/+1/+10 buttons.
 fn percent_row<T>(
     ui: &mut egui::Ui,
     label: &str,
@@ -450,7 +433,6 @@ where
     .inner
 }
 
-/// The shortcuts of `action`, joined for one line of text.
 fn bindings_summary(settings: &Settings, action: Action) -> String {
     settings
         .bindings_for(action)

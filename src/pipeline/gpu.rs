@@ -1,7 +1,3 @@
-//! The GPU layer of the pipeline: DXGI enumeration, the D3D11 and D3D12 devices, the shared
-//! frame and its fences, the debug layer, and the fault log. It holds the `unsafe` calls to
-//! Windows, Direct3D, and DXGI.
-
 use std::mem::{ManuallyDrop, size_of};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -46,7 +42,6 @@ use crate::pipeline::{AdapterLuid, DisplayInfo};
 
 const GENERIC_ALL: u32 = 0x1000_0000;
 
-/// A Win32 handle. It is closed on drop.
 pub(super) struct OwnedHandle(HANDLE);
 
 impl Drop for OwnedHandle {
@@ -57,7 +52,6 @@ impl Drop for OwnedHandle {
     }
 }
 
-/// A barrier that moves all of `resource` from the state `before` to the state `after`.
 pub(super) fn transition(
     resource: &ID3D12Resource,
     before: D3D12_RESOURCE_STATES,
@@ -77,12 +71,10 @@ pub(super) fn transition(
     }
 }
 
-/// A fence on a compute queue, and the event that wakes the CPU when the queue reaches it.
 pub(super) struct QueueFence {
     fence: ID3D12Fence,
     event: OwnedHandle,
     next_value: u64,
-    /// Names the fence in the errors.
     label: &'static str,
 }
 
@@ -102,15 +94,13 @@ impl QueueFence {
         })
     }
 
-    /// Signals the fence on `queue` and waits until the queue has passed it. All work that was
-    /// submitted to the queue before is then done. `spin` waits in a busy loop and does not sleep.
     pub(super) fn signal_and_wait(&mut self, queue: &ID3D12CommandQueue, spin: bool) -> Result<()> {
         let label = self.label;
         let value = self.next_value;
         self.next_value = value.saturating_add(1);
         unsafe { queue.Signal(&self.fence, value) }
             .with_context(|| format!("failed to signal the {label} fence"))?;
-        // A removed device reports `u64::MAX`, which ends the wait. The check below reports it.
+        // A removed device reports `u64::MAX`, which ends the wait.
         if spin {
             while unsafe { self.fence.GetCompletedValue() } < value {
                 std::hint::spin_loop();
@@ -130,7 +120,6 @@ impl QueueFence {
     }
 }
 
-/// Formats an optional HRESULT as eight hex digits. `None` is `0x00000000`.
 pub(crate) fn hex(value: Option<i32>) -> String {
     value.map_or_else(
         || "0x00000000".to_owned(),
@@ -143,7 +132,6 @@ fn factory() -> Result<IDXGIFactory1> {
     unsafe { CreateDXGIFactory1() }.context("failed to create DXGI factory")
 }
 
-/// Every adapter of the system, with its index, until `DXGI_ERROR_NOT_FOUND`.
 fn adapters(factory: &IDXGIFactory1) -> impl Iterator<Item = Result<(u32, IDXGIAdapter1)>> + '_ {
     (0..).map_while(move |index| match unsafe { factory.EnumAdapters1(index) } {
         Ok(adapter) => Some(Ok((index, adapter))),
@@ -152,7 +140,6 @@ fn adapters(factory: &IDXGIFactory1) -> impl Iterator<Item = Result<(u32, IDXGIA
     })
 }
 
-/// Every output of one adapter, with its index, until `DXGI_ERROR_NOT_FOUND`.
 fn outputs(adapter: &IDXGIAdapter1) -> impl Iterator<Item = Result<(u32, IDXGIOutput)>> + '_ {
     (0..).map_while(move |index| match unsafe { adapter.EnumOutputs(index) } {
         Ok(output) => Some(Ok((index, output))),
@@ -185,7 +172,6 @@ pub(super) struct SelectedOutput {
     pub info: DisplayInfo,
 }
 
-/// Selects one output by its indices, as `enumerate_displays` lists them.
 pub(super) fn select_output(adapter_index: u32, output_index: u32) -> Result<SelectedOutput> {
     let factory = factory()?;
     let (_, adapter) = adapters(&factory)
@@ -262,26 +248,22 @@ fn wide_string(value: &[u16]) -> String {
     String::from_utf16_lossy(&value[..end])
 }
 
-/// The removed reason of a D3D11 device, or `None` while it is alive.
 pub(super) fn d3d11_removed_reason(device: &ID3D11Device4) -> Option<i32> {
     unsafe { device.GetDeviceRemovedReason() }
         .err()
         .map(|error| error.code().0)
 }
 
-/// The removed reason of a D3D12 device, or `None` while it is alive.
 pub(super) fn d3d12_removed_reason(device: &ID3D12Device) -> Option<i32> {
     unsafe { device.GetDeviceRemovedReason() }
         .err()
         .map(|error| error.code().0)
 }
 
-/// A completed value of a fence. `u64::MAX` means the device was removed.
 pub(super) fn fence_reports_removal(completed: u64) -> bool {
     completed == u64::MAX
 }
 
-/// Enables the D3D12 debug layer. Call once, before any D3D12 device is created.
 pub(super) fn enable_debug_layer() -> Result<()> {
     let mut debug: Option<ID3D12Debug> = None;
     unsafe { D3D12GetDebugInterface(&mut debug) }.context("failed to get D3D12 debug interface")?;
@@ -290,7 +272,6 @@ pub(super) fn enable_debug_layer() -> Result<()> {
     Ok(())
 }
 
-/// Drains the D3D12 info queue. Each entry is one debug layer message.
 fn drain_debug_messages(device: &ID3D12Device) -> Vec<String> {
     let Ok(queue) = device.cast::<ID3D12InfoQueue>() else {
         return Vec::new();
@@ -302,7 +283,6 @@ fn drain_debug_messages(device: &ID3D12Device) -> Vec<String> {
         if unsafe { queue.GetMessage(index, None, &mut length) }.is_err() {
             continue;
         }
-        // Eight-byte words, so that the buffer is aligned for D3D12_MESSAGE.
         let mut buffer = vec![0u64; length.div_ceil(size_of::<u64>())];
         let message = buffer.as_mut_ptr().cast::<D3D12_MESSAGE>();
         if unsafe { queue.GetMessage(index, Some(message), &mut length) }.is_err() {
@@ -330,8 +310,6 @@ fn drain_debug_messages(device: &ID3D12Device) -> Vec<String> {
     messages
 }
 
-/// Logs one GPU fault with the pipeline, the stage, the error chain, the HRESULT, both removed
-/// reasons, and the drained debug layer messages.
 pub(super) fn log_fault(
     gpu: &GpuDeviceContext,
     d3d11_removed: Option<i32>,
@@ -355,9 +333,6 @@ pub(super) fn log_fault(
     );
 }
 
-/// Creates the compute queue that the preprocess, the model, and the readback share. It has the high
-/// priority, so that the GPU scheduler serves it before the normal work of other programs, such as the
-/// game whose screen is captured. A system that refuses the high priority gets the normal one.
 fn create_compute_queue(device: &ID3D12Device) -> Result<ID3D12CommandQueue> {
     let queue = |priority: D3D12_COMMAND_QUEUE_PRIORITY| {
         let desc = D3D12_COMMAND_QUEUE_DESC {
@@ -396,7 +371,6 @@ impl std::fmt::Debug for GpuDeviceContext {
 }
 
 impl GpuDeviceContext {
-    /// Creates the D3D12 device and its compute queue on the adapter with `adapter_luid`.
     pub fn new(adapter_luid: AdapterLuid) -> Result<Self> {
         let factory = factory()?;
         let mut selected = None;
@@ -449,12 +423,10 @@ impl GpuDeviceContext {
         &self.queue
     }
 
-    /// The removed reason of the D3D12 device, or `None` while it is alive.
     pub fn removed_reason(&self) -> Option<i32> {
         d3d12_removed_reason(&self.device)
     }
 
-    /// Waits for all work submitted to the compute queue. Teardown/rebuild only.
     pub fn wait_idle(&mut self) -> Result<()> {
         self.idle.signal_and_wait(&self.queue, false)
     }
@@ -472,13 +444,11 @@ impl std::fmt::Debug for InferenceFrame {
     }
 }
 
-/// The D3D11 half of the shared frame. The capture writes it.
 pub struct CaptureFrame {
     pub texture: ID3D11Texture2D,
     pub capture_ready_fence: ID3D11Fence,
 }
 
-/// The D3D12 half of the shared frame. The preprocess reads it.
 pub struct InferenceFrame {
     pub resource: ID3D12Resource,
     pub capture_ready_fence: ID3D12Fence,
@@ -486,20 +456,13 @@ pub struct InferenceFrame {
 }
 
 impl InferenceFrame {
-    /// The completed value of the reuse fence. `u64::MAX` means the device was removed.
     pub fn reuse_completed(&self) -> u64 {
         // SAFETY: the fence is a live COM object owned by this frame.
         unsafe { self.reuse_fence.GetCompletedValue() }
     }
 }
 
-/// Creates the shared frame with the **D3D11 capture device as owner**.
-///
-/// The texture and capture-ready fence are created on the D3D11 device (`SHARED | SHARED_NTHANDLE`,
-/// `D3D11_FENCE_FLAG_SHARED`) and only *opened* on the D3D12 device through
-/// `ID3D12Device::OpenSharedHandle`. The producer keeps the native resource and the
-/// consumer imports it, so the D3D11 runtime never has to accept a D3D12-authored
-/// resource description (the previous direction failed with `E_INVALIDARG`).
+/// The D3D11 device owns the texture and the fence; D3D12 only opens them.
 pub fn create_shared_frame(
     gpu: &GpuDeviceContext,
     capture_device: &ID3D11Device4,
@@ -599,8 +562,6 @@ pub fn create_shared_frame(
     ))
 }
 
-/// The D3D11 device creates the fence and D3D12 opens it, so both sides observe a
-/// single monotonically increasing timeline and the hot path never waits on the CPU.
 fn create_shared_fence(
     gpu: &GpuDeviceContext,
     capture_device: &ID3D11Device5,

@@ -1,8 +1,3 @@
-//! The aim: it tracks the target, works out the mouse move for each frame, and rounds it to whole counts.
-//!
-//! It knows nothing about MAKCU. The engine owns one `Aim`, and sends the move that it gives to the
-//! output.
-
 use crate::{
     pipeline::Detection,
     settings::{
@@ -10,26 +5,20 @@ use crate::{
     },
 };
 
-/// The share of a new delay measurement that enters the estimate of the delay.
 const DELAY_BLEND: f32 = 0.2;
 
-/// The longest lead in the Auto mode, in seconds.
 const MAX_AUTO_LEAD: f32 = 0.2;
 
-/// Boxes overlapping less than this are treated as different targets.
 const MIN_OVERLAP: f32 = 0.3;
 
-/// Two frames further apart than this (seconds) give no velocity sample.
 const MAX_FRAME_GAP: f64 = 0.1;
 
-/// The mouse movement that the engine sends for one frame, in whole counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Move {
     pub x: i16,
     pub y: i16,
 }
 
-/// The settings that shape the aim and the move. The engine applies them directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AimSettings {
     pub sensitivity_x: Sensitivity,
@@ -42,22 +31,17 @@ pub struct AimSettings {
     pub velocity_smoothing: VelocitySmoothing,
 }
 
-/// The target of a frame, associated across frames by box overlap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Track {
     pub id: u64,
-    /// First frame of a new target: after a loss or a jump to another box.
     pub switched: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
-    /// `(dx, dy)` from the capture region center to the aim point, in model input pixels.
     pub error: Option<(f32, f32)>,
-    /// The move before rounding. Only the tests read it.
     #[cfg(test)]
     pub exact: Option<(f32, f32)>,
-    /// The move to send. `None` when the move rounds to zero or there is no target.
     pub rounded: Option<Move>,
 }
 
@@ -65,12 +49,8 @@ pub struct Outcome {
 pub struct Aim {
     settings: AimSettings,
     tracker: Tracker,
-    /// The remainder carried to the next frame of the same target, so
-    /// low gains do not stall inside the dead zone of whole counts.
     carry: (f32, f32),
     motion: Motion,
-    /// The smoothed delay in seconds from the capture of a frame to its move. `None` before the first
-    /// measurement.
     delay: Option<f32>,
 }
 
@@ -89,8 +69,6 @@ impl Aim {
         self.settings = settings;
     }
 
-    /// Takes in the measured delay of a frame, in seconds, from its capture to the start of its move.
-    /// The Auto lead follows it.
     pub fn observe_delay(&mut self, seconds: f64) {
         let seconds = seconds.max(0.0) as f32;
         self.delay = Some(
@@ -99,7 +77,6 @@ impl Aim {
         );
     }
 
-    /// The lead time in seconds.
     fn lead_seconds(&self) -> f32 {
         match self.settings.lead_mode {
             LeadMode::Manual => self.settings.lead.seconds(),
@@ -109,7 +86,6 @@ impl Aim {
         }
     }
 
-    /// Works out the move for one frame. `at` is the capture time of the frame, in seconds.
     pub fn update(
         &mut self,
         target: Option<Detection>,
@@ -160,15 +136,10 @@ struct Seen {
     at: f64,
 }
 
-/// The velocity of the tracked target on the screen, in pixels per second.
-///
-/// A move turns the view, so a target that stands still seems to slide by the move. The estimate adds
-/// back the shift that the last move caused, to measure the target itself.
 #[derive(Debug, Default)]
 struct Motion {
     velocity: (f32, f32),
     previous: Option<Seen>,
-    /// The shift of the view in pixels that the move sent after `previous` causes.
     shift: (f32, f32),
 }
 
@@ -193,7 +164,6 @@ impl Motion {
         self.velocity
     }
 
-    /// Records the move sent for the frame just observed. `gain` is the gain of each axis.
     fn sent(&mut self, rounded: Option<Move>, gain: (f32, f32)) {
         self.shift = rounded.map_or((0.0, 0.0), |sent| {
             (f32::from(sent.x) / gain.0, f32::from(sent.y) / gain.1)
@@ -201,7 +171,6 @@ impl Motion {
     }
 }
 
-/// The detection moved ahead by `velocity` over `seconds`, by at most one box size per axis.
 fn led(detection: Detection, velocity: (f32, f32), seconds: f32) -> Detection {
     let ahead = |speed: f32, size: f32| (speed * seconds).min(size).max(-size);
     Detection {
@@ -211,20 +180,17 @@ fn led(detection: Detection, velocity: (f32, f32), seconds: f32) -> Detection {
     }
 }
 
-/// The aim error and the move that one detection asks for, before rounding.
 #[derive(Debug, PartialEq)]
 struct Correction {
-    /// `(dx, dy)` from the capture region center to the aim point.
     error: (f32, f32),
     movement: (f32, f32),
 }
 
-/// Rounds `movement + carry` to whole counts and returns the new remainder.
-/// `None` when the result is zero (the remainder is still kept by the caller).
+/// The remainder is kept even when the move is `None`.
 fn round_with_carry(movement: (f32, f32), carry: (f32, f32)) -> (Option<Move>, (f32, f32)) {
     let (wx, wy) = (movement.0 + carry.0, movement.1 + carry.1);
     let (x, y) = (round_to_i16(wx), round_to_i16(wy));
-    // A clamped (saturated) axis must not leave a huge remainder behind.
+    // A saturated axis must not leave a huge remainder.
     let remainder = (
         (wx - f32::from(x)).clamp(-0.5, 0.5),
         (wy - f32::from(y)).clamp(-0.5, 0.5),
@@ -232,7 +198,6 @@ fn round_with_carry(movement: (f32, f32), carry: (f32, f32)) -> (Option<Move>, (
     ((x != 0 || y != 0).then_some(Move { x, y }), remainder)
 }
 
-/// Whole counts, clamped to the `i16` range of the wire.
 fn round_to_i16(value: f32) -> i16 {
     value
         .round()
@@ -249,7 +214,6 @@ fn correct(detection: Detection, input_size: (u32, u32), settings: AimSettings) 
         dy * settings.sensitivity_y.gain(),
     );
     if let Some(limit) = settings.max_delta.limit() {
-        // Scale the vector so its direction is kept while its length is capped.
         let length = sx.hypot(sy);
         if length > limit {
             let scale = limit / length;
@@ -263,7 +227,6 @@ fn correct(detection: Detection, input_size: (u32, u32), settings: AimSettings) 
     }
 }
 
-/// Associates the selected target across consecutive frames by box overlap.
 #[derive(Debug, Default)]
 struct Tracker {
     last: Option<Detection>,
@@ -296,7 +259,6 @@ impl Tracker {
     }
 }
 
-/// The overlap of two boxes: the area they share divided by the area they cover together. 0 to 1.
 fn overlap(a: &Detection, b: &Detection) -> f32 {
     let ax1 = a.center_x - a.box_width * 0.5;
     let ay1 = a.center_y - a.box_height * 0.5;
@@ -329,7 +291,6 @@ mod tests {
         }
     }
 
-    /// Settings with a lead in milliseconds and no smoothing, at 100% sensitivity.
     fn leading(lead_ms: u16) -> AimSettings {
         AimSettings {
             lead: Lead::new(lead_ms),
@@ -337,7 +298,6 @@ mod tests {
         }
     }
 
-    /// A detection whose center is `center_x` and `center_y`, in a 100 by 100 input.
     fn at(center_x: f32, center_y: f32, box_height: f32) -> Detection {
         Detection {
             box_width: 30.0,
@@ -346,7 +306,6 @@ mod tests {
         }
     }
 
-    /// Move without carry-over: `None` when it rounds to zero.
     fn rounded_of(correction: &Correction) -> Option<Move> {
         round_with_carry(correction.movement, (0.0, 0.0)).0
     }
@@ -359,11 +318,8 @@ mod tests {
 
     #[test]
     fn target_y_offset_picks_a_point_in_the_box_before_sensitivity() {
-        // Center is (50, 50); the box center is 10 px right and 20 px down and
-        // the box is 40 px tall, so 75% aims 10 px below its center.
         let middle = correct(at(60.0, 70.0, 40.0), INPUT, settings(50, 75));
         assert_eq!(rounded_of(&middle), Some(movement(5, 15)));
-        // 0% and 100% aim at the top and bottom edges.
         let top = correct(at(60.0, 70.0, 40.0), INPUT, settings(100, 0));
         assert_eq!(rounded_of(&top), Some(movement(10, 0)));
         let bottom = correct(at(60.0, 70.0, 40.0), INPUT, settings(100, 100));
@@ -377,22 +333,18 @@ mod tests {
             sensitivity_y: Sensitivity::new(200),
             ..settings(100, 50)
         };
-        // Error is (10, 20): x is halved and y is doubled.
         let correction = correct(at(60.0, 70.0, 40.0), INPUT, split);
         assert_eq!(rounded_of(&correction), Some(movement(5, 40)));
     }
 
     #[test]
     fn max_delta_caps_movement_length_and_keeps_direction() {
-        // Move is (10, 20) at 100% sensitivity; length ~22.4.
         let capped = AimSettings {
             max_delta: MaxDelta::new(10),
             ..settings(100, 50)
         };
-        // Scaled to length 10: (4.47, 8.94) -> (4, 9).
         let correction_capped = correct(at(60.0, 70.0, 40.0), INPUT, capped);
         assert_eq!(rounded_of(&correction_capped), Some(movement(4, 9)));
-        // A cap above the movement length changes nothing.
         let loose = AimSettings {
             max_delta: MaxDelta::new(100),
             ..capped
@@ -411,7 +363,6 @@ mod tests {
 
     #[test]
     fn carry_over_accumulates_sub_count_movement() {
-        // 0.3 counts per frame: nothing at first, then a whole count once 0.6 has built up.
         let mut carry = (0.0, 0.0);
         let mut sent = Vec::new();
         for _ in 0..4 {
@@ -450,7 +401,6 @@ mod tests {
     #[test]
     fn the_remainder_goes_to_the_next_frame_of_the_same_track() {
         let mut aim = Aim::new(settings(100, 50));
-        // dx is 0.3 per frame: nothing at first, then one count once 0.6 has built up.
         let first = aim.update(Some(at(50.3, 50.0, 40.0)), INPUT, 0.0);
         assert_eq!(first.rounded, None);
         let second = aim.update(Some(at(50.3, 50.0, 40.0)), INPUT, 0.0);
@@ -478,17 +428,14 @@ mod tests {
     #[test]
     fn the_aim_point_leads_a_moving_target_by_its_velocity() {
         let mut aim = Aim::new(leading(20));
-        // The first frame has no velocity yet and the target is centered.
         let first = aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
         assert_eq!(first.exact, Some((0.0, 0.0)));
-        // 10 px in 10 ms is 1000 px/s, so 20 ms ahead is 20 px: the aim point is 80, not 60.
         let moved = aim.update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01);
         let (x, y) = moved.exact.unwrap();
         assert!((x - 30.0).abs() < 1e-3, "x was {x}");
         assert_eq!(y, 0.0);
     }
 
-    /// A target that moves 10 px in 10 ms, as the second frame, and the exact x move that it asks for.
     fn x_move_of_second_frame(aim: &mut Aim) -> f32 {
         aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
         aim.update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01)
@@ -505,11 +452,9 @@ mod tests {
             ..leading(0)
         };
         let mut aim = Aim::new(auto);
-        // A first measurement of 10 ms plus 10 ms extra is a 20 ms lead, as in the manual test.
         aim.observe_delay(0.010);
         assert!((x_move_of_second_frame(&mut aim) - 30.0).abs() < 1e-3);
 
-        // Later measurements are smoothed: 10 ms moves 20% of the way to 60 ms, which is 20 ms.
         aim.reset();
         aim.observe_delay(0.010);
         aim.observe_delay(0.060);
@@ -545,7 +490,6 @@ mod tests {
     fn the_lead_is_at_most_one_box_size() {
         let mut aim = Aim::new(leading(200));
         aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
-        // 1000 px/s for 200 ms is 200 px, capped to the 30 px box width.
         let (x, _) = aim
             .update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01)
             .exact
@@ -556,7 +500,6 @@ mod tests {
     #[test]
     fn the_shift_of_our_own_move_is_not_a_target_velocity() {
         let mut aim = Aim::new(leading(100));
-        // A move of 10 counts goes out. The target stands still, so the view brings it to the center.
         let first = aim.update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.0);
         assert_eq!(first.rounded, Some(movement(10, 0)));
         let second = aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.01);
@@ -571,7 +514,6 @@ mod tests {
         };
         let mut aim = Aim::new(smooth);
         aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
-        // Half of 1000 px/s enters: 10 px ahead, so the aim point is 70.
         let (x, _) = aim
             .update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01)
             .exact
@@ -591,7 +533,6 @@ mod tests {
 
         let mut switched = Aim::new(leading(20));
         still(&mut switched, 50.0, 0.0);
-        // A jump to a far box is a new target, whose velocity starts at zero.
         let exact = still(&mut switched, 95.0, 0.01).exact;
         assert_eq!(exact, Some((45.0, 0.0)));
 

@@ -1,8 +1,3 @@
-//! The two tables that name the inputs: the keyboard keys (virtual-key codes) and the `XInput`
-//! controls. Every lookup reads these tables.
-
-/// A keyboard key: its name in shortcut text, and its virtual-key code. Modifiers are not here;
-/// they are read as part of a shortcut.
 pub(super) const KEYS: &[(&str, u16)] = &[
     ("KeyA", 0x41),
     ("KeyB", 0x42),
@@ -92,9 +87,7 @@ pub(super) const KEYS: &[(&str, u16)] = &[
     ("BrowserBack", 0xA6),
 ];
 
-/// The virtual-key code of the Escape key. It cancels a recording and is not a shortcut key.
 pub(super) const ESCAPE: u16 = 0x1B;
-/// The virtual-key codes of the modifiers, as `GetAsyncKeyState` reads them.
 pub(super) const CONTROL: u16 = 0x11;
 pub(super) const SHIFT: u16 = 0x10;
 pub(super) const ALT: u16 = 0x12;
@@ -105,8 +98,7 @@ pub(super) fn key_name(code: u16) -> Option<&'static str> {
         .map(|(name, _)| *name)
 }
 
-/// The virtual-key code of a key name, ignoring case. A bare letter or digit, such as `A` or `1`,
-/// is the same key as `KeyA` or `Digit1`, which is how older settings files wrote them.
+/// Bare letters and digits are accepted for older settings files.
 pub(super) fn key_code(name: &str) -> Option<u16> {
     let alias = match name.as_bytes() {
         [letter] if letter.is_ascii_alphabetic() => format!("Key{}", char::from(*letter)),
@@ -118,7 +110,6 @@ pub(super) fn key_code(name: &str) -> Option<u16> {
         .map(|(_, code)| *code)
 }
 
-/// One `XInput` control. Its order is the order of `PADS`, which is the order of the bits in a `PadSet`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Pad {
     A,
@@ -139,8 +130,6 @@ pub(super) enum Pad {
     RightTrigger,
 }
 
-/// One row of the `XInput` table: the control, its slug in shortcut text, its label, and its button bit.
-/// The triggers have no button bit; they are read from their analog values.
 pub(super) struct PadInfo {
     pub pad: Pad,
     pub slug: &'static str,
@@ -271,7 +260,6 @@ impl Pad {
         &PADS[self as usize]
     }
 
-    /// The control named by a slug in shortcut text. Sticks are not controls.
     pub(super) fn from_slug(slug: &str) -> Option<Self> {
         PADS.iter()
             .find(|info| info.slug == slug)
@@ -279,7 +267,6 @@ impl Pad {
     }
 }
 
-/// A raw `XInput` reading of one controller: the button bits, and the two analog triggers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PadSample {
     pub buttons: u16,
@@ -290,7 +277,6 @@ pub(super) struct PadSample {
 const TRIGGER_PRESS_THRESHOLD: u8 = 128;
 const TRIGGER_RELEASE_THRESHOLD: u8 = 102;
 
-/// A trigger is down at 128 and up below 102, so that it does not flicker near one value.
 pub(super) fn trigger_is_pressed(value: u8, was_pressed: bool) -> bool {
     if was_pressed {
         value >= TRIGGER_RELEASE_THRESHOLD
@@ -299,7 +285,6 @@ pub(super) fn trigger_is_pressed(value: u8, was_pressed: bool) -> bool {
     }
 }
 
-/// The controls that are down in `sample`. A trigger keeps its hysteresis from `was`.
 pub(super) fn pressed(sample: PadSample, was: PadSet) -> PadSet {
     let mut down = PadSet::default();
     for pad in Pad::ALL {
@@ -315,7 +300,6 @@ pub(super) fn pressed(sample: PadSample, was: PadSet) -> PadSet {
     down
 }
 
-/// The `XInput` controls that are down. One bit for each control, in `PADS` order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PadSet(u16);
 
@@ -337,7 +321,6 @@ impl PadSet {
     }
 }
 
-/// The keyboard keys that are down. One bit for each virtual-key code.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct KeySet([u64; 4]);
 

@@ -1,9 +1,3 @@
-//! The settings file, its value types, the runtime paths, and the model list.
-//!
-//! The file loads with plain serde rules. A missing field gets its default, an
-//! unknown field is ignored, and a value out of range is clamped. An invalid
-//! hotkey entry is dropped. Any other error resets the whole file to the defaults.
-
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -15,7 +9,6 @@ use serde_json::Value;
 
 use crate::hotkeys::{Action, Hotkey, Shortcut};
 
-/// An integer setting that is kept inside `MIN..=MAX`. `DEFAULT` is used when the value is missing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "u16", into = "u16")]
 pub struct Ranged<const MIN: u16, const DEFAULT: u16, const MAX: u16>(u16);
@@ -52,25 +45,15 @@ impl<const MIN: u16, const DEFAULT: u16, const MAX: u16> From<Ranged<MIN, DEFAUL
     }
 }
 
-/// Mouse movement gain in percent. 100 is 1:1.
 pub type Sensitivity = Ranged<1, 100, 10_000>;
-/// Minimum detection confidence in percent.
 pub type Confidence = Ranged<0, 50, 100>;
-/// Aim point inside the target box in percent of its height. 0 is the top edge, 100 the bottom.
 pub type TargetYOffset = Ranged<0, 50, 100>;
-/// Per-frame cap on the output movement length, in command units. 0 is no cap.
 pub type MaxDelta = Ranged<0, 512, 32_767>;
-/// How far ahead the aim point leads a moving target, in milliseconds. 0 is no lead.
 pub type Lead = Ranged<0, 30, 200>;
-/// The time added to the measured delay in the Auto lead mode, in milliseconds.
 pub type LeadExtra = Ranged<0, 10, 100>;
-/// How strongly the target velocity estimate is smoothed over frames, in percent. 0 is no smoothing.
 pub type VelocitySmoothing = Ranged<0, 50, 95>;
-/// Frame rate cap.
 pub type FpsLimit = Ranged<1, 240, 1_000>;
-/// Milliseconds to wait for a new frame.
 pub type NewFrameWait = Ranged<1, 2, 20>;
-/// The fixed Move interpolation, in percent.
 pub type InterpolationPercent = Ranged<0, 0, 100>;
 
 impl Sensitivity {
@@ -94,14 +77,12 @@ impl LeadExtra {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LeadMode {
-    /// The delay from the capture of a frame to its move, measured, plus the extra.
     #[default]
     Auto,
     Manual,
 }
 
 impl VelocitySmoothing {
-    /// The share of a new velocity sample that enters the estimate. 1.0 is no smoothing.
     pub fn blend(self) -> f32 {
         1.0 - f32::from(self.get()) / 100.0
     }
@@ -114,15 +95,12 @@ impl Confidence {
 }
 
 impl TargetYOffset {
-    /// The aim point as a fraction of box height measured from the box center
-    /// (-0.5 = top edge, 0.0 = center, 0.5 = bottom edge).
     pub fn center_relative(self) -> f32 {
         (f32::from(self.get()) - f32::from(Self::DEFAULT)) / 100.0
     }
 }
 
 impl MaxDelta {
-    /// The cap, or `None` when unlimited.
     pub fn limit(self) -> Option<f32> {
         (self.get() != Self::MIN).then(|| f32::from(self.get()))
     }
@@ -131,14 +109,12 @@ impl MaxDelta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Interpolation {
-    /// MAKCU chooses. This is the `INTERPOLATE 255` value.
     #[default]
     Auto,
     Percent(InterpolationPercent),
 }
 
 impl Interpolation {
-    /// The value of the `INTERPOLATE` command. `Auto` is 255.
     pub fn wire_value(self) -> u8 {
         match self {
             Self::Auto => 255,
@@ -148,11 +124,9 @@ impl Interpolation {
     }
 }
 
-/// The DirectX adapter and output that capture uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Display {
-    /// The adapter LUID: `(high << 32) | low`.
     pub adapter: u64,
     pub output: u32,
 }
@@ -191,11 +165,9 @@ impl LogLevel {
     }
 }
 
-/// The whole settings file. Missing fields take their defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// The loaded model file name in `models/`.
     pub model: Option<String>,
     pub display: Display,
     pub sensitivity_x: Sensitivity,
@@ -210,14 +182,12 @@ pub struct Settings {
     pub fps_limit: FpsLimit,
     pub new_frame_wait: NewFrameWait,
     pub interpolation: Interpolation,
-    /// The serial port of MAKCU, such as `COM4`. `None` detects it automatically.
     pub makcu_port: Option<String>,
-    /// Busy-waits on `DirectML` completion for lower tail latency at the cost of one CPU core.
     pub low_latency: bool,
     #[serde(deserialize_with = "deserialize_hotkeys")]
     pub hotkeys: Vec<Hotkey>,
     pub log_level: LogLevel,
-    /// D3D12 debug layer. Applied at startup only; slows inference.
+    /// Applied at startup only.
     pub gpu_debug: bool,
 }
 
@@ -250,14 +220,11 @@ impl Default for Settings {
 #[derive(Debug)]
 pub struct Loaded {
     pub settings: Settings,
-    /// One message for the UI, or `None` when the file loaded without a problem.
     pub warning: Option<String>,
-    /// The file could not be read or parsed. The next save copies it to `settings.json.bak` first.
     pub unusable: bool,
 }
 
 impl Settings {
-    /// Reads `settings.json` next to the program. A missing file gives the defaults with no warning.
     pub fn load() -> Loaded {
         let path = match settings_path() {
             Ok(path) => path,
@@ -291,7 +258,6 @@ impl Settings {
         }
     }
 
-    /// Parses settings JSON. Invalid JSON, a value of the wrong type, or a file that is not an object resets everything.
     pub fn from_json(bytes: &[u8]) -> Loaded {
         let raw: Value = match serde_json::from_slice(bytes) {
             Ok(raw) => raw,
@@ -321,8 +287,6 @@ impl Settings {
         }
     }
 
-    /// Writes the settings. When the file was unusable at load, it is copied to
-    /// `settings.json.bak` first, so that the save does not lose its content.
     pub fn save(&self, unusable: bool) -> Result<()> {
         self.save_at(&settings_path()?, unusable)
     }
@@ -364,7 +328,6 @@ fn unusable(error: &impl std::fmt::Display) -> Loaded {
     }
 }
 
-/// Keeps the entries that parse as a hotkey. The caller counts the dropped ones.
 fn deserialize_hotkeys<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<Hotkey>, D::Error> {
@@ -414,7 +377,6 @@ pub fn logs_dir() -> Result<PathBuf> {
     Ok(exe_dir()?.join("logs"))
 }
 
-/// The `.onnx` file names in `models/`, sorted case-insensitively. Creates `models/`.
 pub fn models() -> Result<Vec<String>> {
     let dir = models_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
@@ -433,7 +395,6 @@ pub fn models() -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// The path of a model in `models/`. Rejects an empty name, a path, and a file that is not there.
 pub fn model_path(name: &str) -> Result<PathBuf> {
     if name.is_empty() {
         bail!("model filename is empty");

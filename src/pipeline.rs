@@ -1,9 +1,3 @@
-//! The pipeline: one capture attempt to one postprocessed frame, and its replacement as a unit.
-//!
-//! The pipeline owns the capture, the shared frame, the preprocess, and the inference session.
-//! The engine sees no fence, no texture, and no fence value. The `unsafe` code is in the
-//! children: `gpu`, `capture`, `preprocess`, and `inference`.
-
 mod capture;
 mod gpu;
 mod inference;
@@ -40,7 +34,6 @@ use crate::{
 static INITIALIZED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 static GPU_DEBUG: AtomicBool = AtomicBool::new(false);
 
-/// Once at startup, before any device. GPU debug enables the D3D12 debug layer.
 pub fn init(gpu_debug: bool) -> Result<()> {
     let initialized = INITIALIZED.get_or_init(|| {
         if gpu_debug {
@@ -54,7 +47,6 @@ pub fn init(gpu_debug: bool) -> Result<()> {
         .map_err(|error| anyhow!(error).context("failed to enable the GPU debug layer"))
 }
 
-/// Once at the start of the engine thread: COM MTA for that thread, never uninitialized.
 pub fn init_thread() -> Result<()> {
     // SAFETY: the engine thread lives until the process ends, so MTA is never balanced.
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
@@ -66,7 +58,6 @@ pub fn displays() -> Result<Vec<DisplayInfo>> {
     gpu::enumerate_displays()
 }
 
-/// A LUID that the settings store as one number: `(high << 32) | low`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdapterLuid {
     pub low: u32,
@@ -116,12 +107,10 @@ impl DisplayInfo {
     }
 }
 
-/// Top-left corner of the centered `input` region inside a `desktop`-sized frame.
 pub fn center_crop_origin(desktop: (usize, usize), input: (usize, usize)) -> (usize, usize) {
     ((desktop.0 - input.0) / 2, (desktop.1 - input.1) / 2)
 }
 
-/// Floating point element type of a model's input tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Precision {
     Fp32,
@@ -136,7 +125,6 @@ impl Precision {
         }
     }
 
-    /// Number of 32-bit words needed to hold `elements` tensor elements.
     pub fn packed_words(self, elements: usize) -> Option<usize> {
         Some(elements.checked_mul(self.element_bytes())?.div_ceil(4))
     }
@@ -149,10 +137,8 @@ impl Precision {
     }
 }
 
-/// The nodes that ONNX Runtime assigned to the CPU, counted by operator type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CpuNodes {
-    /// `(operator type, count)`. The most frequent type is first, and equal counts are in name order.
     ops: Vec<(String, usize)>,
 }
 
@@ -163,7 +149,6 @@ impl CpuNodes {
             *counts.entry(operator).or_default() += 1;
         }
         let mut ops: Vec<(String, usize)> = counts.into_iter().collect();
-        // The map is in name order, and the sort is stable, so equal counts stay in name order.
         ops.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
         Self { ops }
     }
@@ -172,7 +157,6 @@ impl CpuNodes {
         self.ops.iter().map(|&(_, count)| count).sum()
     }
 
-    /// The text for a person: `0`, or `5: Gather ×3, Shape ×2`.
     pub fn summary(&self) -> String {
         if self.ops.is_empty() {
             return "0".to_owned();
@@ -186,7 +170,6 @@ impl CpuNodes {
     }
 }
 
-/// One detection in input-image pixels. `box_width` is kept: the tracker and the trace use it.
 #[derive(Debug, Clone, Copy)]
 pub struct Detection {
     pub center_x: f32,
@@ -197,28 +180,18 @@ pub struct Detection {
     pub class_id: i32,
 }
 
-/// The stage boundaries of one frame, as QPC ticks.
 #[derive(Debug, Clone, Copy)]
 pub struct Times {
-    /// The Present time of the desktop update.
     pub present: i64,
-    /// The capture attempt started, just before `AcquireNextFrame`.
     pub attempt_start: i64,
-    /// The desktop image was acquired.
     pub acquired: i64,
-    /// The copy to the shared texture was recorded.
     pub copy_submitted: i64,
-    /// The capture-ready fence was signalled and flushed.
     pub ready: i64,
-    /// Just before the preprocess is submitted.
     pub inference_start: i64,
-    /// After the ONNX Runtime run.
     pub inference_done: i64,
-    /// After the postprocess.
     pub postprocess_done: i64,
 }
 
-/// The GPU stage in which a fault happened. The fault log names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GpuFaultStage {
     CaptureAcquire,
@@ -248,14 +221,12 @@ impl GpuFaultStage {
     }
 }
 
-/// The settings that the model half of a pipeline is built with.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub confidence: Confidence,
     pub low_latency: bool,
 }
 
-/// A new frame after the inference and the postprocess.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     pub desktop_size: (usize, usize),
@@ -265,29 +236,23 @@ pub struct Frame {
     pub selected: Option<Detection>,
 }
 
-/// A failure of the pipeline. `Gpu` may be cured by a rebuild, `Other` means the pipeline is dropped.
 #[derive(Debug, thiserror::Error)]
 pub enum Fault {
-    /// The GPU transport is poisoned or the device is lost. The engine rebuilds the pipeline once.
     #[error("GPU failed: {0:#}")]
     Gpu(anyhow::Error),
-    /// The pipeline cannot be used. The engine drops it.
     #[error("{0:#}")]
     Other(anyhow::Error),
 }
 
 struct Inferred {
-    /// Just before the preprocess is submitted.
     start: i64,
     gpu_preprocess_ms: Option<f64>,
     output: InferenceOutput,
 }
 
-/// Numbers the pipelines of the process, for the GPU fault log.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Field order is drop order: the ONNX Runtime objects, the preprocessor, the D3D12 half of the
-/// shared frame, and the D3D12 device last. Dropping waits for the queue first.
+/// Field order is drop order: the D3D12 device goes last.
 struct ModelHalf {
     backend: OrtDirectMlBackend,
     preprocess: GpuPreprocessor,
@@ -314,15 +279,12 @@ pub(crate) struct Pipeline {
     capture_frame: CaptureFrame,
     capture: DxgiCapture,
     id: u64,
-    /// The New frames of this pipeline. Each frame uses its count as the fence value.
     frame_seq: u64,
-    /// The fence value of the last submitted frame. The shared frame is free once it completes.
     last_submitted: u64,
     sampler: ProfileSampler,
 }
 
 impl Pipeline {
-    /// Builds a pipeline on the display that `display` names, with `model`. Nothing is kept on failure.
     pub fn new(display: &settings::Display, model: &Path, options: Options) -> Result<Self> {
         let info = displays()?
             .into_iter()
@@ -341,23 +303,18 @@ impl Pipeline {
         })
     }
 
-    /// Changes the model and the options on the same capture. On failure the pipeline is not changed.
     pub fn set_model(&mut self, model: &Path, options: Options) -> Result<()> {
         let (new_model, capture_frame) = build_model(&mut self.capture, model, options)?;
-        // Dropping the old model waits for its GPU queue.
         let old_model = std::mem::replace(&mut self.model, new_model);
         let old_frame = std::mem::replace(&mut self.capture_frame, capture_frame);
         drop(old_model);
         drop(old_frame);
         self.id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        // The new shared frame has new fences, so the frame count starts again.
         self.frame_seq = 0;
         self.last_submitted = 0;
         Ok(())
     }
 
-    /// One capture attempt and, for a new frame, the copy, the preprocess, the inference, and the postprocess.
-    /// `Ok(None)` means there is no new desktop update.
     pub fn process_next(&mut self, wait_ms: u32) -> Result<Option<Frame>, Fault> {
         let reuse_completed = self.check_reuse_fence()?;
 
@@ -390,8 +347,6 @@ impl Pipeline {
         }))
     }
 
-    /// Takes the next frame number and copies the acquired image into the shared texture.
-    /// Also returns the GPU copy time, when a sample is ready.
     fn copy_stage(
         &mut self,
         frame: &AcquiredDesktopFrame,
@@ -406,7 +361,6 @@ impl Pipeline {
             .capture
             .copy_to_target(frame, frame_seq, measure)
             .map_err(|error| self.copy_fault(&error))?;
-        // One GPU copy time per new frame. A sample that is not ready yet waits for the next frame.
         let gpu_copy_ms = self
             .capture
             .try_take_gpu_copy_sample()
@@ -459,7 +413,6 @@ impl Pipeline {
         self.model.backend.set_confidence_threshold(value);
     }
 
-    /// Called at the start of a run: the first frames are measured again.
     pub fn reset_timing(&mut self) {
         self.sampler.reset();
         self.capture.reset_gpu_profiler();
@@ -478,18 +431,14 @@ impl Pipeline {
         self.model.precision
     }
 
-    /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report the assignment.
     pub fn cpu_nodes(&self) -> Option<&CpuNodes> {
         self.model.cpu_nodes.as_ref()
     }
 
-    /// Whether ONNX Runtime replays a captured graph on each run.
     pub fn graph_capture(&self) -> bool {
         self.model.backend.graph_capture()
     }
 
-    /// Reads the reuse fence once for a frame. Fails when the GPU is still reading the shared
-    /// frame or the device is removed. No capture was made for the frame.
     fn check_reuse_fence(&self) -> Result<u64, Fault> {
         let reuse_completed = self.model.frame.reuse_completed();
         if gpu::fence_reports_removal(reuse_completed) {
@@ -522,8 +471,7 @@ impl Pipeline {
         )
     }
 
-    /// Logs the fault once when GPU debug is on, and classifies it for the engine. A DXGI acquire
-    /// failure and an inference failure are not GPU transport faults, so a rebuild does not help.
+    /// A DXGI acquire failure and an inference failure are not GPU transport faults, so a rebuild does not help.
     fn fault(&self, stage: GpuFaultStage, message: &str, error: &anyhow::Error) -> Fault {
         if GPU_DEBUG.load(Ordering::Relaxed) {
             gpu::log_fault(
@@ -542,8 +490,7 @@ impl Pipeline {
     }
 }
 
-/// Builds the model half on a new D3D12 device, and the D3D11 half of the shared frame on `capture`'s device.
-/// It binds the shared frame to `capture` as the last step, so a failure leaves `capture` unchanged.
+/// Binds the shared frame to `capture` as the last step, so a failure leaves `capture` unchanged.
 fn build_model(
     capture: &mut DxgiCapture,
     model: &Path,
@@ -591,11 +538,6 @@ fn build_model(
     Ok((model, capture_frame))
 }
 
-/// Decides which frames get GPU timestamp queries.
-///
-/// The first frames are always measured (they include the cold run); after
-/// that only every `STEADY_STRIDE`-th frame is, so steady-state frames skip the
-/// query and resolve work.
 #[derive(Debug, Default)]
 struct ProfileSampler {
     frames: u64,
@@ -618,7 +560,6 @@ impl ProfileSampler {
 
 #[cfg(test)]
 impl Detection {
-    /// A detection for the tests of the engine and the telemetry. The box is 10 by 10 pixels.
     pub(crate) fn for_test(center_x: f32, center_y: f32, class_id: i32) -> Self {
         Self {
             center_x,

@@ -1,8 +1,3 @@
-//! A MAKCU in memory, for the tests of the output.
-//!
-//! Each write of a port is one query, as the output sends it. The fake answers the queries
-//! that the output needs, and it can be made to fail the way the device fails.
-
 use std::{collections::VecDeque, io, sync::Arc, sync::Mutex, thread, time::Duration};
 
 use super::{
@@ -20,31 +15,23 @@ pub(crate) struct FakeMakcu {
 }
 
 struct State {
-    /// The rate that the device listens at. A port at another rate gets no reply.
     baud: u32,
-    /// The rates that a `SetBaud` switches to. Another rate is rejected.
     accepted: Vec<u32>,
     firmware: u32,
     kinds: u8,
     connected: bool,
-    /// Every query that the device received, in order. One port write can hold several.
     frames: Vec<Vec<u8>>,
     replies: VecDeque<u8>,
-    /// The command whose next query gets no reply.
     mute: Option<u8>,
-    /// The command whose next query gets a reject.
     reject: Option<u8>,
-    /// The value that `INTERPOLATE` echoes instead of its own. `None` echoes the value sent.
     interpolate_echo: Option<u8>,
 }
 
-/// The error of a port while the cable is pulled. Built here once, for every place that raises it.
 fn unplugged() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "MAKCU is unplugged")
 }
 
 impl FakeMakcu {
-    /// A MAKCU at 115,200 baud with firmware V4.094, a mouse route, and both rates accepted.
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
@@ -62,12 +49,10 @@ impl FakeMakcu {
         }
     }
 
-    /// Every query that the device received, in order. One port write can hold several.
     pub(crate) fn frames(&self) -> Vec<Vec<u8>> {
         self.state.lock_recover().frames.clone()
     }
 
-    /// The cable is pulled. Reads and writes fail until `reconnect`.
     pub(crate) fn disconnect(&self) {
         let mut state = self.state.lock_recover();
         state.connected = false;
@@ -123,7 +108,6 @@ impl Connector for FakeMakcu {
         if !state.connected {
             return Err(unplugged());
         }
-        // Like `PurgeComm` on open: the bytes of the old connection are gone.
         state.replies.clear();
         Ok(Box::new(FakePort {
             state: Arc::clone(&self.state),
@@ -165,7 +149,6 @@ impl Serial for FakePort {
         }
         for query in split_requests(bytes) {
             state.frames.push(query.to_vec());
-            // A device does not hear a host at another rate.
             if self.baud == state.baud {
                 state.answer(query[4], &query[5..]);
             }
@@ -210,13 +193,11 @@ impl State {
             CMD_SET_BAUD => {
                 let baud = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 if self.accepted.contains(&baud) {
-                    // A `SetBaud` that is accepted gets no reply.
                     self.baud = baud;
                 } else {
                     self.reject_with(cmd);
                 }
             }
-            // The moves are not answered.
             _ => {}
         }
     }
@@ -232,8 +213,7 @@ impl State {
     }
 }
 
-/// The queries in one port write. A `SET_BAUD` packet is 9 bytes whatever its length byte says.
-/// See "Baud switch" in `docs/makcu-protocol.md`.
+/// A `SET_BAUD` packet is 9 bytes whatever its length byte says.
 fn split_requests(mut bytes: &[u8]) -> Vec<&[u8]> {
     let mut queries = Vec::new();
     while bytes.len() >= 5 {

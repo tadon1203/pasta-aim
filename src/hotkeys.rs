@@ -1,8 +1,3 @@
-//! Hotkeys: keyboard keys and `XInput` controls that run an action while they are held or once
-//! when they are pressed. The hotkeys thread polls every shortcut each millisecond with
-//! `GetAsyncKeyState` and `XInputGetState`. It never takes a key from another app, so a shortcut
-//! key also reaches the focused window. The same thread records a new shortcut.
-
 mod keys;
 
 use std::{
@@ -33,10 +28,8 @@ const SLOT_COUNT: u32 = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
-    /// Runs while the shortcut is held.
     #[serde(rename = "continuous_hold")]
     Hold,
-    /// Runs once when the shortcut is pressed.
     RunOnce,
 }
 
@@ -64,8 +57,7 @@ struct Mods {
     alt: bool,
 }
 
-/// A keyboard key with Ctrl, Shift, and Alt, or one `XInput` control (a button, LT, or RT).
-/// `Display` and `FromStr` are the canonical text, such as `control+shift+KeyA` or `xinput:lt`.
+/// `Display` and `FromStr` must round-trip: the settings file stores the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Shortcut {
     input: Input,
@@ -74,7 +66,6 @@ pub struct Shortcut {
 
 impl Shortcut {
     fn new(input: Input, mods: Mods) -> Self {
-        // A controller control has no modifiers.
         let mods = match input {
             Input::Key(_) => mods,
             Input::Pad(_) => Mods::default(),
@@ -82,7 +73,6 @@ impl Shortcut {
         Self { input, mods }
     }
 
-    /// The text for a person: `Ctrl+Shift+A`, or `XInput LT`.
     pub fn label(self) -> String {
         match self.input {
             Input::Key(code) => {
@@ -176,28 +166,21 @@ pub struct Hotkey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    /// A shortcut was recorded. Recording has ended.
     Recorded(Shortcut),
-    /// Recording ended without a shortcut, because Esc was pressed or it was cancelled.
     RecordCancelled,
-    /// The controller in use changed. `None` means no controller is connected.
     Controller(Option<u32>),
 }
 
 #[derive(Debug)]
 pub enum Command {
-    /// Replaces the bindings. `bindings` checks them first.
     SetBindings(HashMap<Shortcut, Action>),
-    /// Starts recording a shortcut. Dispatch stops until it ends.
     Record,
     CancelRecord,
     Shutdown,
 }
 
-/// What one step of the hotkeys thread produces, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Signal {
-    /// A command for the engine: `Hold` while any Hold shortcut is down, `RunOnce` on each press.
     Action(Action, bool),
     Event(Event),
 }
@@ -211,7 +194,6 @@ pub(crate) struct Reading {
     pad: Option<PadSample>,
 }
 
-/// The controls that are ignored while a recording starts, until each one is released.
 #[derive(Debug, Clone, Copy, Default)]
 struct Ignored {
     keys: KeySet,
@@ -234,17 +216,12 @@ impl Ignored {
     }
 }
 
-/// The state of the hotkeys thread. It is pure: each pass is one `Reading`, and the output is the
-/// actions and events that the pass produces.
 #[derive(Debug, Default)]
 pub(crate) struct Core {
     bindings: HashMap<Shortcut, Action>,
-    /// The keyboard keys that the bindings use. A pass reads only these, unless a recording is on.
     bound_keys: KeySet,
     prev: Reading,
-    /// The controls that are down, with the trigger hysteresis applied.
     pads: PadSet,
-    /// The Hold shortcuts that are down. A Hold run is active while this is not empty.
     held: HashSet<Input>,
     recording: Option<Ignored>,
 }
@@ -258,25 +235,19 @@ impl Core {
         }
     }
 
-    /// The keyboard keys that the next pass must read, or `None` for every key. A recording takes any
-    /// key. Otherwise only the keys of the bindings matter, and reading the others is wasted work.
     fn keys_to_read(&self) -> Option<KeySet> {
         self.recording.is_none().then_some(self.bound_keys)
     }
 
-    /// Takes `keys` as the keys that were down before the next pass. The thread gives a reading of every
-    /// key before a recording starts and before the bindings change, because a key that no pass read
-    /// is not in the last reading: a key that is held at that moment must not look like a new press.
+    /// Must be called with a reading of every key, so that a key held at that moment is not a new press.
     fn set_down_keys(&mut self, keys: KeySet) {
         self.prev.keys = keys;
     }
 
-    /// Applies one command. Returns `false` on `Shutdown`.
     fn command(&mut self, command: Command, out: &mut Vec<Signal>) -> bool {
         match command {
             Command::SetBindings(bindings) => {
                 let before = self.holding();
-                // A held control that no longer starts a Hold run stops being held.
                 self.held.retain(|input| {
                     bindings.iter().any(|(shortcut, action)| {
                         shortcut.input == *input && *action == Action::Hold
@@ -288,7 +259,6 @@ impl Core {
             }
             Command::Record => {
                 if self.recording.is_none() {
-                    // Dispatch stops while recording: the Hold runs end, and the held controls are ignored.
                     let before = self.holding();
                     self.held.clear();
                     self.recording = Some(Ignored {
@@ -337,8 +307,7 @@ impl Core {
             }
         } else {
             out.push(Signal::Event(Event::Controller(reading.slot)));
-            // The old controller's controls are released. The new one's are already down, so
-            // they are a baseline: they make a Hold run active, but they are not presses.
+            // Controls already down on a new controller are a baseline, not presses.
             for pad in pads_before.iter() {
                 self.release(Input::Pad(pad));
             }
@@ -392,7 +361,6 @@ impl Core {
         !self.held.is_empty()
     }
 
-    /// Reports a change of the Hold state. Call it after every change to `held`.
     fn settle(&self, before: bool, out: &mut Vec<Signal>) {
         let now = self.holding();
         if now != before {
@@ -401,7 +369,6 @@ impl Core {
     }
 }
 
-/// The keyboard keys that the shortcuts of `bindings` use. A modifier is read in every pass already.
 fn keys_of(bindings: &HashMap<Shortcut, Action>) -> KeySet {
     let mut keys = KeySet::default();
     for shortcut in bindings.keys() {
@@ -412,7 +379,6 @@ fn keys_of(bindings: &HashMap<Shortcut, Action>) -> KeySet {
     keys
 }
 
-/// Checks the bindings: a shortcut may belong to one action only.
 pub fn bindings(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
     let mut bindings = HashMap::new();
     for hotkey in hotkeys {
@@ -427,7 +393,6 @@ pub fn bindings(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
     Ok(bindings)
 }
 
-/// The hotkeys thread. Dropping it stops the thread and waits for it.
 #[derive(Debug)]
 pub struct Hotkeys {
     commands: Sender<Command>,
@@ -435,8 +400,6 @@ pub struct Hotkeys {
 }
 
 impl Hotkeys {
-    /// Starts the hotkeys thread. It sends `Hold` and `RunOnce` to `engine`, and what the user needs to
-    /// see to `ui`. For `Hold`, the command is `Hold(true)` while any Hold shortcut is down.
     pub fn spawn(
         hotkeys: &[Hotkey],
         ui: Sender<Message>,
@@ -461,7 +424,6 @@ impl Hotkeys {
 }
 
 impl Drop for Hotkeys {
-    /// Stops and joins the hotkeys thread. The thread sends `Hold(false)` before it ends.
     fn drop(&mut self) {
         self.commands.send(Command::Shutdown);
         if let Some(join) = self.join.take() {
@@ -485,7 +447,6 @@ fn run(
         wait.until(Some(Instant::now() + POLL_INTERVAL), Duration::ZERO);
         while let Ok(command) = inbox.try_recv() {
             if matches!(command, Command::Record | Command::SetBindings(_)) {
-                // The keys that are held now are the baseline, also those that no pass reads.
                 core.set_down_keys(read_keys(None));
             }
             let running = core.command(command, &mut out);
@@ -513,7 +474,6 @@ fn flush(out: &mut Vec<Signal>, ui: &Sender<Message>, engine: &Sender<engine::Co
     }
 }
 
-/// The keys of the table that are down. `only` limits the keys that are asked for, and `None` asks for all.
 fn read_keys(only: Option<KeySet>) -> KeySet {
     let mut keys = KeySet::default();
     for &(_, code) in keys::KEYS {
@@ -524,7 +484,6 @@ fn read_keys(only: Option<KeySet>) -> KeySet {
     keys
 }
 
-/// Reads the keyboard and the controller. `only` is the keys that matter in this pass.
 fn read(pads: &mut PadPoll, now: Instant, only: Option<KeySet>) -> Reading {
     let keys = read_keys(only);
     let (slot, pad) = pads.poll(now);
@@ -546,7 +505,6 @@ fn key_down(code: u16) -> bool {
     unsafe { GetAsyncKeyState(i32::from(code)) }.cast_unsigned() & 0x8000 != 0
 }
 
-/// The controller in use. A connected one is read every pass; a disconnected one is looked for once a second.
 struct PadPoll {
     slot: Option<u32>,
     next_probe: Instant,
@@ -814,9 +772,7 @@ mod tests {
             step(&mut core, reading(&[F8], 0)),
             vec![Signal::Action(Action::Hold, true)]
         );
-        // The second Hold shortcut goes down while the first is held: no change of state.
         assert_eq!(step(&mut core, reading(&[F8], PAD_A_HELD)), Vec::new());
-        // The first is released while the second is still down: the run stays on.
         assert_eq!(step(&mut core, reading(&[], PAD_A_HELD)), Vec::new());
     }
 
@@ -930,7 +886,6 @@ mod tests {
         let mut core = core(&[]);
         let mut held = KeySet::default();
         held.insert(F9);
-        // The thread reads every key before it applies the new bindings.
         core.set_down_keys(held);
         let bindings = [(key(F9), Action::RunOnce)].into_iter().collect();
         command(&mut core, Command::SetBindings(bindings));

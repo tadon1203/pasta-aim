@@ -1,5 +1,3 @@
-//! The Diagnostics panel, and the text that its Copy button puts on the clipboard.
-
 use eframe::egui;
 
 use super::{App, controller_line, error_label, makcu_line, percent, warn_label};
@@ -69,7 +67,6 @@ impl App {
         }
     }
 
-    /// The engine and input state, as two grids so that each stays a short block.
     fn draw_state_grids(&self, ui: &mut egui::Ui, engine: &State, stats: &Stats) {
         egui::Grid::new("diagnostics_engine_state")
             .num_columns(2)
@@ -123,7 +120,6 @@ impl App {
         ui.end_row();
 
         ui.label("CPU fallback nodes");
-        // The list of operator types can be long, so it wraps.
         ui.add(egui::Label::new(cpu_fallback_value(engine)).wrap());
         ui.end_row();
 
@@ -214,7 +210,6 @@ fn capture_phase_label(phase: CapturePhase) -> &'static str {
     }
 }
 
-/// The input rows: MAKCU, `XInput`, and the value settings in use.
 fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) {
     ui.label("MAKCU");
     ui.label(makcu_line(
@@ -242,8 +237,6 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) 
     }
 }
 
-/// The CPU fallback value of the panel and the clipboard text: `N: Op ×n, ...`, or `unknown` when ORT
-/// reports none.
 fn cpu_fallback_value(engine: &State) -> String {
     engine
         .model
@@ -252,8 +245,6 @@ fn cpu_fallback_value(engine: &State) -> String {
         .map_or_else(|| "unknown".to_owned(), CpuNodes::summary)
 }
 
-/// The graph capture value of the panel and the clipboard text: `On`, `Off`, or `unknown` before a
-/// model is loaded.
 fn graph_capture_value(engine: &State) -> &'static str {
     match engine.model.graph_capture {
         Some(true) => "On",
@@ -262,12 +253,10 @@ fn graph_capture_value(engine: &State) -> &'static str {
     }
 }
 
-/// The line that the clipboard text carries: `CPU fallback nodes: N: Op ×n, ...`.
 fn cpu_fallback_line(engine: &State) -> String {
     format!("CPU fallback nodes: {}", cpu_fallback_value(engine))
 }
 
-/// The rates, and when a run has samples, the timing grid of each stage.
 fn draw_performance(ui: &mut egui::Ui, performance: &Stages, rates: &Rates) {
     ui.label(format!(
         "Fresh FPS {:.1} · Processed FPS {:.1}",
@@ -286,7 +275,6 @@ fn draw_performance(ui: &mut egui::Ui, performance: &Stages, rates: &Rates) {
     ui.small("pipeline: DXGI LastPresentTime → MAKCU write completion");
 }
 
-/// The p50 and p95 of each stage, from the capture to the MAKCU write.
 fn draw_stage_grid(ui: &mut egui::Ui, performance: &Stages) {
     egui::Grid::new("performance_grid")
         .num_columns(3)

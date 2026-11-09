@@ -1,5 +1,3 @@
-//! The Model panel: the model choice, the rescan, and the models folder.
-
 use std::{fs, process::Command};
 
 use anyhow::Context;
@@ -77,7 +75,6 @@ impl App {
     }
 }
 
-/// Opens `models/` in Explorer, creating it first.
 fn open_models_folder() -> anyhow::Result<()> {
     let dir = settings::models_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;

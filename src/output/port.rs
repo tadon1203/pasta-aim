@@ -1,8 +1,3 @@
-//! The serial port of MAKCU: finding the ports and opening them.
-//!
-//! `Serial` and `Connector` are the seam. The Windows implementation is below, and `fake` (test only)
-//! is a MAKCU in memory. The Windows code is the only `unsafe` in `src/output`.
-
 use std::{io, mem, time::Duration};
 
 use windows::{
@@ -39,26 +34,19 @@ use windows::{
 
 use super::Port as Entry;
 
-/// A port that is open. `read` gives `TimedOut` when nothing came.
 pub(super) trait Serial: Send {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
-    /// Fails when the device is gone. It does not wait.
     fn check(&mut self) -> io::Result<()>;
 }
 
 pub(super) trait Connector: Send + Sync {
-    /// Every serial port of the system, the MAKCU chips first. See `list_ports`.
     fn ports(&self) -> io::Result<Vec<Entry>>;
-    /// Opens the port at `baud`. The input buffer is empty when it returns.
     fn open(&self, port: &str, baud: u32) -> io::Result<Box<dyn Serial>>;
 }
 
-/// The USB ids of the chips of MAKCU: CH343 first, then CH340.
 const CHIPS: [(u16, u16); 2] = [(0x1A86, 0x55D3), (0x1A86, 0x7523)];
 
-/// Every port, the MAKCU chips first (CH343 before CH340), then the others by name.
-/// Each device is its hardware id and its port name.
 pub(super) fn list_ports(devices: &[(&str, &str)]) -> Vec<Entry> {
     let mut ports: Vec<(Option<usize>, &str)> = devices
         .iter()
@@ -68,7 +56,6 @@ pub(super) fn list_ports(devices: &[(&str, &str)]) -> Vec<Entry> {
             (rank, port)
         })
         .collect();
-    // `None` sorts first in an `Option`, so the rank is mapped to put it last. `COM2` sorts before `COM10`.
     ports.sort_by_key(|&(rank, port)| (rank.unwrap_or(usize::MAX), port.len(), port));
     ports
         .into_iter()
@@ -83,7 +70,6 @@ pub(super) fn list_ports(devices: &[(&str, &str)]) -> Vec<Entry> {
         .collect()
 }
 
-/// The VID and the PID of a hardware id such as `USB\VID_1A86&PID_55D3&MI_00`.
 fn usb_ids(hardware_id: &str) -> Option<(u16, u16)> {
     let upper = hardware_id.to_ascii_uppercase();
     let vid = upper.split("VID_").nth(1)?.get(..4)?;
@@ -94,7 +80,6 @@ fn usb_ids(hardware_id: &str) -> Option<(u16, u16)> {
     ))
 }
 
-/// The ports of the Windows system. Its `open` gives the port with an empty input buffer.
 pub(in crate::output) struct WindowsConnector;
 
 impl Connector for WindowsConnector {
@@ -114,7 +99,6 @@ fn as_refs(devices: &[(String, String)]) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// The hardware id and the port name of each device of the ports class.
 fn port_devices() -> io::Result<Vec<(String, String)>> {
     let set = unsafe {
         SetupDiGetClassDevsW(
@@ -176,18 +160,15 @@ fn port_name(set: HDEVINFO, info: &SP_DEVINFO_DATA) -> Option<String> {
     (status.is_ok() && kind == REG_SZ).then(|| wide_to_string(&buffer))
 }
 
-/// The text up to the first NUL. A `REG_MULTI_SZ` gives its first string.
 fn wide_to_string(buffer: &[u16]) -> String {
     let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
     String::from_utf16_lossy(&buffer[..end])
 }
 
-/// Converts a Windows error to the `io::Error` of its Win32 code.
 fn os_error(error: &windows::core::Error) -> io::Error {
     io::Error::from_raw_os_error(error.code().0 & 0xFFFF)
 }
 
-/// The read gave no bytes in time. It is the one `TimedOut` that the port reports.
 fn timed_out() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "no reply from MAKCU")
 }
@@ -240,7 +221,6 @@ impl WindowsPort {
     }
 
     fn configure(&self, baud: u32) -> io::Result<()> {
-        // Binary mode, and no flag for parity or flow control: the bits are cleared.
         const F_BINARY: u32 = 1 << 0;
         let mut dcb: DCB = unsafe { mem::zeroed() };
         dcb.DCBlength = mem::size_of::<DCB>() as u32;
@@ -261,8 +241,6 @@ impl WindowsPort {
         unsafe { SetCommTimeouts(self.handle, &timeouts) }.map_err(|error| os_error(&error))
     }
 
-    /// Runs one overlapped transfer that `start` begins. It waits at most `watchdog`, then cancels,
-    /// and returns the number of bytes that moved.
     fn transfer(
         &self,
         watchdog: Duration,
@@ -342,7 +320,6 @@ impl Serial for WindowsPort {
         Ok(())
     }
 
-    /// `ClearCommError` fails once the USB device is removed. It reads no byte and does not wait.
     fn check(&mut self) -> io::Result<()> {
         unsafe { ClearCommError(self.handle, None, None) }.map_err(|error| os_error(&error))
     }

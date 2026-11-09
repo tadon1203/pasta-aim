@@ -1,5 +1,3 @@
-//! The Devices panel: the capture display, the MAKCU link, and the `XInput` hotkey pad.
-
 use eframe::egui;
 
 use super::{App, controller_line, error_label, makcu_line, run_idle};
@@ -138,7 +136,6 @@ impl App {
         ui.end_row();
     }
 
-    /// The one MAKCU action. It is off while a connect is running.
     fn draw_makcu_actions(&mut self, ui: &mut egui::Ui, engine: &State) {
         ui.horizontal(|ui| {
             if engine.output.phase == OutputPhase::Connecting {

@@ -1,5 +1,3 @@
-//! The pipeline work of the engine: the model, the display, and the pipeline that holds both.
-
 use std::path::Path;
 
 use super::{CapturePhase, Message, ModelPhase, Worker};
@@ -9,7 +7,6 @@ use crate::{
 };
 
 impl Worker {
-    /// Loads `name` on the pipeline, or builds the pipeline with it. On failure the old model stays.
     pub(super) fn load_model(&mut self, name: String) {
         self.stop_run();
         tracing::info!(model = %name, "loading model in engine");
@@ -53,7 +50,6 @@ impl Worker {
         }
     }
 
-    /// The pipeline work of a model load. `Ok(None)` means the loaded pipeline took the model in place.
     fn install_model(&mut self, name: &str) -> anyhow::Result<Option<Pipeline>> {
         let path = settings::model_path(name)?;
         let options = self.options();
@@ -63,8 +59,6 @@ impl Worker {
         }
     }
 
-    /// Captures `display` with the active model, and swaps it in only on success. Without a model it
-    /// only records the display.
     pub(super) fn select_display(&mut self, target: settings::Display) {
         tracing::info!(
             adapter = target.adapter,
@@ -97,8 +91,6 @@ impl Worker {
         self.ui.send(Message::DisplayChanged(target));
     }
 
-    /// Keeps the saved display when it is connected. Otherwise it takes the first display of the
-    /// catalog, which is the primary one, and tells the UI so that the choice is saved.
     pub(super) fn choose_startup_display(&mut self) {
         let saved = self.settings.display;
         if self.catalog_display(&saved).is_none()
@@ -116,7 +108,6 @@ impl Worker {
         self.record_display(self.settings.display);
     }
 
-    /// Records the display of the settings without a pipeline. A catalog miss is a capture failure.
     fn record_display(&mut self, display: settings::Display) {
         match self.catalog_display(&display) {
             Some(info) => self.record_display_info(info),
@@ -201,14 +192,13 @@ impl Worker {
         Pipeline::new(display, model, self.options())
     }
 
-    /// Takes `pipeline` as the active one. The old pipeline is dropped after the new one is in place.
+    /// The old pipeline is dropped only after the new one is in place.
     pub(super) fn commit_pipeline(&mut self, pipeline: Pipeline) {
         self.pipeline = Some(pipeline);
         self.recorder.pipeline_changed();
         self.sync_pipeline_state();
     }
 
-    /// Copies what the pipeline holds into the state: the display, the model, and the precision.
     fn sync_pipeline_state(&mut self) {
         let Some(pipeline) = self.pipeline.as_ref() else {
             return;

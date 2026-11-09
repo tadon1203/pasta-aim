@@ -47,8 +47,6 @@ use windows::{
     core::{Interface, PCSTR},
 };
 
-/// BGRA texture -> planar RGB (NCHW) buffer. One thread writes the three channels of one pixel.
-/// The destination is a typed buffer, so the GPU converts each store to the format of the view.
 const SHADER: &str = r"
 Texture2D<float4> source_image : register(t0);
 RWBuffer<float> destination : register(u0);
@@ -76,12 +74,8 @@ impl std::fmt::Debug for GpuPreprocessor {
 
 /// Field order is drop order: the recorded lists go before everything they refer to.
 pub struct GpuPreprocessor {
-    /// Recorded once: shapes and descriptors are static,
-    /// so a frame only needs to be submitted.
     timed_list: ID3D12CommandList,
-    /// Same dispatch without timestamp queries, for frames that are not measured.
     untimed_list: ID3D12CommandList,
-    // Objects the recorded lists refer to.
     _allocator: ID3D12CommandAllocator,
     _descriptor_heap: ID3D12DescriptorHeap,
     _pipeline: ID3D12PipelineState,
@@ -89,7 +83,6 @@ pub struct GpuPreprocessor {
     _destination: ID3D12Resource,
     _source: ID3D12Resource,
     queue: ID3D12CommandQueue,
-    /// Completion value after which the lists may be executed again.
     list_in_flight: Option<u64>,
     timestamps: PreprocessTimestamps,
     fault_stage: GpuFaultStage,
@@ -211,8 +204,6 @@ impl GpuPreprocessor {
         })
     }
 
-    /// `reuse_completed` is the completed value of the reuse fence that the caller read for this frame.
-    /// `measure` submits the list with the timestamp queries.
     pub fn submit(
         &mut self,
         frame_seq: u64,
@@ -258,8 +249,6 @@ impl GpuPreprocessor {
         })
     }
 
-    /// Returns the GPU time of a measured frame, `None` for an unmeasured one.
-    /// Only a measured frame reads the reuse fence here.
     pub fn collect(
         &mut self,
         ticket: PreprocessTicket,
@@ -295,7 +284,6 @@ fn tensor_format(precision: Precision) -> DXGI_FORMAT {
     }
 }
 
-/// Typed unordered access stores are optional in Direct3D 12. The device is asked before the view is made.
 fn ensure_typed_uav_store(
     device: &ID3D12Device,
     format: DXGI_FORMAT,
@@ -335,7 +323,6 @@ struct PreprocessRecording<'a> {
     timestamps: &'a PreprocessTimestamps,
     constants: [u32; PREPROCESS_PARAMETER_COUNT as usize],
     dispatch: (u32, u32),
-    /// Bracket the dispatch with timestamp queries and resolve them.
     timed: bool,
 }
 
@@ -575,7 +562,6 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
         .context("failed to create preprocess root signature")
 }
 
-/// Compiles the BGRA to NCHW compute shader.
 fn compile_shader() -> Result<ID3DBlob> {
     let source = SHADER.as_bytes();
     let entry = PCSTR(c"main".as_ptr().cast());
@@ -620,7 +606,6 @@ fn create_pipeline(device: &ID3D12Device) -> Result<(ID3D12RootSignature, ID3D12
     Ok((root_signature, pipeline))
 }
 
-/// Writes the source SRV in slot 0 and the output UAV in slot 1 of the descriptor heap.
 fn write_descriptors(
     device: &ID3D12Device,
     source: &ID3D12Resource,
@@ -715,7 +700,6 @@ mod tests {
     /// The GPU tests open the same desktop output, so they run one at a time.
     static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// A GPU buffer that holds the tensor of `elements` values in `precision`, in the UAV state.
     fn create_tensor_buffer(
         gpu: &GpuDeviceContext,
         precision: Precision,
@@ -756,7 +740,6 @@ mod tests {
         destination.context("no test input buffer")
     }
 
-    /// Copies the first `byte_len` bytes of `buffer` to the CPU. Waits for the queue to finish.
     fn read_back(
         gpu: &mut GpuDeviceContext,
         buffer: &ID3D12Resource,
@@ -827,7 +810,7 @@ mod tests {
         Ok(bytes)
     }
 
-    /// The first desktop image that the capture acquires. The copy target must be bound first.
+    /// The copy target must be bound first.
     fn acquire_fresh_image(capture: &mut DxgiCapture) -> Result<AcquiredDesktopFrame> {
         for _ in 0..50 {
             if let CapturePoll::Fresh(frame) = capture.acquire(20)? {
@@ -974,7 +957,6 @@ mod tests {
             drained?;
             let tolerance = match precision {
                 Precision::Fp32 => 1e-6,
-                // Half precision rounds each value to 11 significant bits.
                 Precision::Fp16 => 1e-3,
             };
             for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {

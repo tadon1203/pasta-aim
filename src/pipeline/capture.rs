@@ -32,7 +32,6 @@ pub(crate) enum CapturePoll {
     NoDesktopUpdate,
 }
 
-/// A desktop image that the capture acquired, with the source region that the copy reads.
 #[derive(Clone)]
 pub(crate) struct AcquiredDesktopFrame {
     texture: ID3D11Texture2D,
@@ -41,12 +40,9 @@ pub(crate) struct AcquiredDesktopFrame {
     present_qpc: i64,
 }
 
-/// The QPC ticks that the capture reports for one copy.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CopyTimes {
-    /// After the copy was recorded.
     pub copy_submitted_qpc: i64,
-    /// After the capture-ready fence was signalled and flushed.
     pub ready_qpc: i64,
 }
 
@@ -60,14 +56,12 @@ impl AcquiredDesktopFrame {
     }
 }
 
-/// The shared texture and its ready fence, as the interface types that the copy needs.
 struct CopyTarget {
     resource: ID3D11Resource,
     ready_fence: windows::Win32::Graphics::Direct3D11::ID3D11Fence,
     input_size: (usize, usize),
 }
 
-/// The validated layout of the desktop for the bound copy target.
 #[derive(Clone, Copy)]
 struct FrameLayout {
     desktop_size: (usize, usize),
@@ -177,9 +171,7 @@ impl D3d11GpuProfiler {
     }
 }
 
-/// Reads the result of a query without a flush. `GetData` answers `S_FALSE` while the GPU is not
-/// done, and the `windows` crate reports that as success and leaves `data` untouched. The result
-/// therefore stays at its default until the query finishes, and the caller tells the two apart.
+/// `GetData` reports success while the GPU is not done and leaves `data` at its default.
 fn query_data<T: Default>(context: &ID3D11DeviceContext4, query: &ID3D11Query) -> Option<T> {
     let mut data = T::default();
     // SAFETY: `data` is writable storage of `size_of::<T>()` bytes, the size of this query's result.
@@ -221,9 +213,7 @@ pub struct DxgiCapture {
     context: ID3D11DeviceContext4,
     info: DisplayInfo,
     gpu_profiler: D3d11GpuProfiler,
-    /// Set by the first copy that the pipeline binds. Empty until then.
     copy_target: Option<CopyTarget>,
-    /// Validated for the current duplication and copy target. Cleared when either is replaced.
     layout: Option<FrameLayout>,
     first_signal_logged: bool,
     last_fault_stage: GpuFaultStage,
@@ -285,8 +275,6 @@ impl DxgiCapture {
         self.last_fault_stage
     }
 
-    /// Sets the texture and the fence that every later copy writes to and signals, and the size of
-    /// the capture region. The next acquired image is validated again.
     pub(crate) fn bind_copy_target(
         &mut self,
         target: &CaptureFrame,
@@ -367,7 +355,6 @@ impl DxgiCapture {
         }))
     }
 
-    /// Checks the first image after a duplication is created: its format, and that the Model input fits.
     fn validate_frame(&self, texture: &ID3D11Texture2D) -> Result<FrameLayout> {
         let target = self
             .copy_target
@@ -406,8 +393,6 @@ impl DxgiCapture {
         })
     }
 
-    /// Copies the capture region of `frame` to the bound target and signals `ready_value`.
-    /// `measure` adds the GPU timestamp queries to this copy.
     pub(crate) fn copy_to_target(
         &mut self,
         frame: &AcquiredDesktopFrame,
@@ -479,7 +464,6 @@ impl DxgiCapture {
         Ok(())
     }
 
-    /// Writes a known BGRA image into the bound shared texture and signals `ready_value`, for the GPU tests.
     #[cfg(test)]
     pub(crate) fn write_test_image(
         &self,

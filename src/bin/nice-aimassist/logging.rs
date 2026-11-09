@@ -38,8 +38,6 @@ impl Drop for Logging {
     }
 }
 
-/// Starts the file logger. A file that cannot be created is reported on stderr and gives `None`.
-/// The logs folder itself cannot be found, which is an error.
 pub fn init() -> Result<Option<Logging>> {
     let path = session_log_path()?;
     let file = match create_session_file(&path) {
@@ -84,7 +82,6 @@ pub fn init() -> Result<Option<Logging>> {
     }))
 }
 
-/// A new file for each run, named by the start time and the process id.
 fn session_log_path() -> Result<PathBuf> {
     let unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)

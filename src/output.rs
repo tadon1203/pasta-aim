@@ -1,9 +1,3 @@
-//! The output: it writes the mouse move to MAKCU.
-//!
-//! The engine owns one `Output` and calls it on the engine thread. There is no I/O thread: a move
-//! is one write, and the one query with a reply waits for it. The port is in `port`, the connect
-//! in `connect`, and the wire format in `protocol`.
-
 mod connect;
 #[cfg(test)]
 pub(crate) mod fake;
@@ -30,22 +24,17 @@ pub struct Device {
 }
 
 impl Device {
-    /// The firmware as the UI and the trace show it, such as `V4.094`.
     pub fn firmware_label(&self) -> String {
         protocol::format_firmware(self.firmware)
     }
 }
 
-/// A serial port of the system, as the port selector lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Port {
     pub name: String,
-    /// The label that the selector shows after the name: `MAKCU` for a MAKCU chip, empty otherwise.
     pub description: String,
 }
 
-/// Every serial port of the system, for the port selector. A failure leaves the list empty, which
-/// only hides the choices: the connect does not need it.
 pub fn ports() -> Vec<Port> {
     WindowsConnector.ports().unwrap_or_else(|error| {
         tracing::warn!(%error, "serial ports could not be listed");
@@ -53,20 +42,15 @@ pub fn ports() -> Vec<Port> {
     })
 }
 
-/// An open port with the device behind it. A failed write or a missing reply ends the link for
-/// good: the engine connects a new one.
 struct Link {
     port: Box<dyn Serial>,
     device: Device,
-    /// The buffer that a write encodes into, kept for the next write.
     buffer: Vec<u8>,
 }
 
 pub struct Output {
     connector: Arc<dyn Connector>,
-    /// `None` while disconnected.
     link: Option<Link>,
-    /// The port that the user chose. `None` is auto-detect.
     chosen: Option<String>,
 }
 
@@ -91,15 +75,13 @@ impl Output {
         }
     }
 
-    /// Chooses the port: `None` is auto. A chosen port is the only one tried, also on reconnects.
     pub fn set_port(&mut self, port: Option<String>) {
         self.chosen = port;
     }
 
-    /// Closes the link and connects. The Move interpolation is not sent here: the caller sends it.
     pub fn connect(&mut self) -> Result<Device> {
         tracing::info!(chosen_port = ?self.chosen, "connecting to MAKCU device");
-        // The old link closes its port before the new connect.
+        // Windows does not open a COM port twice, so the old port closes first.
         self.link = None;
         let (port, device) = connect::connect(self.connector.as_ref(), self.chosen.as_deref())?;
         tracing::info!(
@@ -117,8 +99,6 @@ impl Output {
         Ok(device)
     }
 
-    /// Whether the device went away since the last call. The link is dropped then, and the caller
-    /// connects again. A link that a failed write dropped is not reported: that write was the report.
     pub fn link_lost(&mut self) -> bool {
         let Some(link) = self.link.as_mut() else {
             return false;
@@ -141,10 +121,7 @@ impl Output {
             .is_some_and(|link| link.device.mouse_route)
     }
 
-    /// Sends the Move interpolation and checks the echo. The device can lose the value when it
-    /// restarts, so the caller sends it after each connect.
-    /// A reply that does not confirm the value is an error, and the link stays up. A missing reply
-    /// ends the link: a late reply would look like the answer to the next query.
+    /// A missing reply ends the link: a late reply would answer the next query.
     pub fn set_interpolation(&mut self, interpolation: Interpolation) -> Result<()> {
         let value = interpolation.wire_value();
         let link = self.link.as_mut().context("MAKCU is not connected")?;
@@ -164,7 +141,6 @@ impl Output {
         Ok(())
     }
 
-    /// Writes one move as one port write. It never waits for a reply. A failed write ends the link.
     pub fn write(&mut self, step: Move) -> Result<()> {
         let link = self.link.as_mut().context("MAKCU is not connected")?;
         let query = Query::Move {
@@ -181,7 +157,6 @@ impl Output {
 
 #[cfg(test)]
 impl Output {
-    /// A connected output on a fake MAKCU, which the test can change and inspect.
     pub(crate) fn fake() -> (Self, fake::FakeMakcu) {
         let fake = fake::FakeMakcu::new();
         let mut output = Self::with_connector(Arc::new(fake.clone()));
@@ -203,7 +178,6 @@ mod tests {
         Interpolation::Percent(InterpolationPercent::new(value))
     }
 
-    /// The last query that the fake received.
     fn last_frame(fake: &fake::FakeMakcu) -> Vec<u8> {
         fake.frames().last().unwrap().clone()
     }

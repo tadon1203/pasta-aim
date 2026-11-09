@@ -1,5 +1,3 @@
-//! The scheduling boost of the engine thread.
-
 use std::mem::size_of;
 
 use windows::{
@@ -15,7 +13,6 @@ use windows::{
     core::w,
 };
 
-/// Keeps a thread's scheduling boost for as long as it is alive.
 pub(super) struct ThreadBoost {
     mmcss: Option<HANDLE>,
 }
@@ -29,10 +26,6 @@ impl Drop for ThreadBoost {
     }
 }
 
-/// Raises the calling thread: higher priority, no power throttling, and an
-/// MMCSS registration so it is scheduled ahead of ordinary background work.
-/// Best effort: a failure is logged and ignored.
-///
 /// Hold the returned guard for the lifetime of the thread.
 pub(super) fn boost_current_thread(name: &str) -> ThreadBoost {
     // SAFETY: pseudo-handle for the calling thread; no ownership is transferred.

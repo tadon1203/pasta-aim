@@ -1,9 +1,3 @@
-//! Reads a small GPU buffer back to the CPU on the compute queue. The model output goes through it.
-//!
-//! The output of the model stays on the GPU, so that ONNX Runtime can replay a captured graph with
-//! the same buffers on each run. The copy to the CPU is ours: one recorded command list, and a fence
-//! that the CPU waits for.
-
 use anyhow::{Context, Result, bail};
 use windows::Win32::Graphics::{
     Direct3D12::{
@@ -22,24 +16,20 @@ use windows::core::Interface;
 use super::gpu::{GpuDeviceContext, QueueFence, transition};
 
 pub(super) struct Readback {
-    /// Recorded once: the barriers and the copy. It runs again after each wait.
     list: ID3D12CommandList,
     _allocator: ID3D12CommandAllocator,
     /// Kept so that the recorded list never outlives the buffer that it reads.
     _source: ID3D12Resource,
     buffer: ID3D12Resource,
-    /// The whole readback buffer, mapped for as long as `Readback` lives.
     mapped: *const u8,
     len: usize,
     queue: ID3D12CommandQueue,
     fence: QueueFence,
-    /// Wait in a busy loop and do not sleep.
     spin: bool,
 }
 
 impl Readback {
-    /// Prepares the copy of the first `len` bytes of `source`. The buffer must be in the unordered
-    /// access state, as the buffers of `DirectML` are, and it is back in that state after each copy.
+    /// The source must be in the unordered access state, and it is returned to that state after each copy.
     pub(super) fn new(
         gpu: &GpuDeviceContext,
         source: &ID3D12Resource,
@@ -136,13 +126,10 @@ impl Readback {
         })
     }
 
-    /// Waits until all the work that is already on the queue is done.
     pub(super) fn drain(&mut self) -> Result<()> {
         self.fence.signal_and_wait(&self.queue, false)
     }
 
-    /// Copies the source after all the work that is already on the queue, and waits for the copy. The
-    /// bytes are valid until the next call.
     pub(super) fn read(&mut self) -> Result<&[u8]> {
         // SAFETY: the list is closed, and the wait of the last read ended its previous run.
         unsafe { self.queue.ExecuteCommandLists(&[Some(self.list.clone())]) };

@@ -17,36 +17,25 @@ use nice_aimassist::{
 
 pub struct App {
     settings: Settings,
-    /// `gpu_debug` as applied at process start; the toggle only takes effect on restart.
     gpu_debug_at_startup: bool,
-    /// Stops the engine thread when the app drops it.
     _engine: Engine,
     commands: Sender<Command>,
-    /// The `.onnx` file names in `models/`.
     models: Vec<String>,
-    /// `None` when the hotkeys thread could not start; `hotkey_error` says why.
     hotkeys: Option<Hotkeys>,
-    /// What the engine thread and the hotkeys thread send to the UI.
     messages: Receiver<Message>,
-    /// The engine state and the statistics, as they last arrived.
     state: Arc<State>,
     stats: Stats,
-    /// The `XInput` controller in use, as the hotkeys thread last reported it.
     controller_slot: Option<u32>,
-    /// The action of the binding that the user is adding. Some while the dialog is open.
     hotkey_capture: Option<Action>,
     hotkey_capture_error: Option<String>,
     hotkey_error: Option<String>,
     model_catalog_error: Option<String>,
     settings_warning: Option<String>,
-    /// The settings file could not be read at startup; the next save backs it up first.
     settings_unusable: bool,
     settings_save_error: Option<String>,
-    /// Value fields edited since they were last saved (see `run::drag_value`).
     dirty: HashSet<EditField>,
 }
 
-/// A numeric setting edited through a widget that saves once the edit ends.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EditField {
     Interpolation,
@@ -158,7 +147,6 @@ impl App {
         self.commands.send(Command::LoadModel(name));
     }
 
-    /// Loads the only model in `models/` when no model is saved. The engine reports the load, so it is saved.
     fn request_sole_model_load(&mut self) {
         if self.settings.model.is_none()
             && let [name] = self.models.as_slice()
@@ -177,8 +165,7 @@ impl App {
         self.commands.send(Command::SelectDisplay(target));
     }
 
-    /// Applies a change to the settings and sends all of them: the engine applies what differs. A drag
-    /// or a click is saved by the caller with `persist`.
+    /// The caller saves the change with `persist`.
     fn edit(&mut self, change: impl FnOnce(&mut Settings)) {
         change(&mut self.settings);
         self.commands.send(Command::Settings(self.settings.clone()));
@@ -213,7 +200,6 @@ impl App {
         }
     }
 
-    /// Replaces the bindings in the hotkeys thread. The error is text for the UI.
     fn apply_hotkeys(&self, hotkeys: &[Hotkey]) -> Result<(), String> {
         let Some(running) = &self.hotkeys else {
             return Err("Hotkeys are not running".to_owned());
@@ -255,7 +241,6 @@ impl App {
                 self.cancel_hotkey_capture();
             }
             Err(error) => {
-                // The recording has ended. Record again, so that the user can choose another shortcut.
                 tracing::warn!(%error, "hotkey binding was rejected");
                 self.hotkey_capture_error = Some(error);
                 if let Some(hotkeys) = &self.hotkeys {
@@ -351,7 +336,6 @@ impl eframe::App for App {
     }
 }
 
-/// Whether no run is active. The settings that a run uses change only while it is idle.
 fn run_idle(engine: &State) -> bool {
     engine.run.phase == RunPhase::Idle
 }
@@ -364,8 +348,6 @@ fn warn_label(ui: &mut egui::Ui, text: impl Into<egui::RichText>) {
     ui.colored_label(ui.visuals().warn_fg_color, text.into());
 }
 
-/// The one line for the MAKCU link: the phase, then the port and the firmware once it is connected.
-/// The Devices panel and the diagnostics show it.
 fn makcu_line(phase: OutputPhase, device: Option<&Device>) -> String {
     let phase = format!("{} {}", makcu_phase_mark(phase), makcu_phase_label(phase));
     match device {
@@ -390,7 +372,6 @@ fn makcu_phase_mark(phase: OutputPhase) -> &'static str {
     }
 }
 
-/// The `XInput` hotkey pad: the slot, or that no pad is connected.
 fn controller_line(slot: Option<u32>) -> String {
     match slot {
         Some(slot) => format!("● Connected · slot {slot}"),
@@ -398,7 +379,6 @@ fn controller_line(slot: Option<u32>) -> String {
     }
 }
 
-/// A percentage, as the panels show it.
 fn percent(value: impl fmt::Display) -> String {
     format!("{value}%")
 }

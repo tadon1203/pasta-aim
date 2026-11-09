@@ -18,9 +18,7 @@ pub struct ModelState {
     pub input_size: Option<(u32, u32)>,
     pub precision: Option<Precision>,
     pub error: Option<String>,
-    /// The nodes that ONNX Runtime assigned to the CPU. `None` when ORT does not report them.
     pub cpu_nodes: Option<CpuNodes>,
-    /// Whether ONNX Runtime replays a captured graph on each run. `None` before a model is loaded.
     pub graph_capture: Option<bool>,
 }
 
@@ -81,10 +79,8 @@ pub enum OutputPhase {
 #[derive(Debug, Clone)]
 pub struct OutputState {
     pub phase: OutputPhase,
-    /// The MAKCU of the connected link. `None` while it is not connected.
     pub device: Option<Device>,
     pub error: Option<String>,
-    /// The serial ports of the system, listed at each connect.
     pub ports: Vec<Port>,
 }
 
@@ -126,14 +122,12 @@ pub(super) const BLOCK_CAPTURE: &str = "DXGI capture is not ready";
 pub(super) const BLOCK_OUTPUT: &str = "MAKCU is not connected";
 pub(super) const BLOCK_MOUSE_ROUTE: &str = "Mouse route is unavailable";
 
-/// The first reason that blocks a run. `checks` is `(ready, reason)` in the order to report.
 pub(super) fn run_block_reason(checks: [(bool, &'static str); 4]) -> Option<&'static str> {
     checks
         .into_iter()
         .find_map(|(ready, reason)| (!ready).then_some(reason))
 }
 
-/// The state of the engine that the UI shows. It changes on a command or a fault, not on a frame.
 #[derive(Debug, Clone, Default)]
 pub struct State {
     pub graphics: GraphicsState,
@@ -144,7 +138,6 @@ pub struct State {
 }
 
 impl State {
-    /// The first reason that blocks a run: model, capture, output, then mouse route.
     pub fn blocked(&self) -> Option<&'static str> {
         run_block_reason([
             (self.model.phase == ModelPhase::Ready, BLOCK_MODEL),

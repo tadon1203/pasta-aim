@@ -1,5 +1,3 @@
-//! The Hotkeys panel and the dialog that records a new shortcut.
-
 use eframe::egui;
 
 use super::{App, error_label, run_idle};
@@ -46,7 +44,6 @@ impl App {
         });
     }
 
-    /// The dialog. The hotkeys thread records the shortcut; this only shows the wait and the result.
     pub(super) fn draw_hotkey_capture(&mut self, ctx: &egui::Context) {
         let Some(action) = self.hotkey_capture else {
             return;

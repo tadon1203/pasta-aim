@@ -1,8 +1,3 @@
-//! The clock: performance-counter timestamps, and a wait that sleeps until a wake-up or a deadline.
-//!
-//! Each Windows call is `unsafe` only to make that call. Handles are kept as addresses, so the
-//! wake-up side is `Send` and `Sync` without an `unsafe impl`.
-
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -24,7 +19,6 @@ use windows::{
     core::PCWSTR,
 };
 
-/// The timer index in `WaitForMultipleObjects`, after the event.
 const TIMER_INDEX: u32 = WAIT_OBJECT_0.0 + 1;
 
 #[derive(Debug, Clone, Copy)]
@@ -54,14 +48,12 @@ impl Clock {
         counter
     }
 
-    /// A clock of another tick rate, such as the GPU timestamp frequency.
     pub fn with_frequency(ticks_per_second: u64) -> Self {
         Self {
             ticks_per_second: ticks_per_second as f64,
         }
     }
 
-    /// The milliseconds from `from` to `to`, two timestamps of `now`.
     pub fn ms(self, from: i64, to: i64) -> f64 {
         (to - from) as f64 * 1000.0 / self.ticks_per_second
     }
@@ -72,7 +64,6 @@ impl Clock {
     }
 }
 
-/// A Windows handle, kept as its value so that its owner is `Send` and `Sync`. It is closed when the last owner drops it.
 #[derive(Debug)]
 struct Handle(isize);
 
@@ -81,12 +72,10 @@ impl Handle {
         HANDLE(self.0)
     }
 
-    /// Consumes the event when it is raised. Never waits.
     fn take(&self) -> bool {
         unsafe { WaitForSingleObject(self.raw(), 0) == WAIT_OBJECT_0 }
     }
 
-    /// Waits up to `time` for the event, rounded up to whole milliseconds. Returns `true` when it is raised.
     fn wait_for(&self, time: Duration) -> bool {
         let millis = u32::try_from(time.as_millis().saturating_add(1)).unwrap_or(u32::MAX - 1);
         unsafe { WaitForSingleObject(self.raw(), millis) == WAIT_OBJECT_0 }
@@ -99,20 +88,18 @@ impl Drop for Handle {
     }
 }
 
-/// Raises the wake-up of one `Wait`. Any thread can hold a clone.
 #[derive(Debug, Clone)]
 pub struct Wake {
     event: Arc<Handle>,
 }
 
 impl Wake {
-    /// The sender sends its message first and calls this second. A wake-up is kept until the next wait.
+    /// Call this after the message is sent. A wake-up is kept until the next wait.
     pub fn wake(&self) {
         let _ = unsafe { SetEvent(self.event.raw()) };
     }
 }
 
-/// Waits for a wake-up or a deadline. One thread owns it.
 #[derive(Debug)]
 pub struct Wait {
     event: Arc<Handle>,
@@ -133,7 +120,6 @@ pub fn wait() -> Result<(Wait, Wake)> {
         )
     };
     if timer.is_err() {
-        // The high-resolution timer is missing on this Windows. A normal timer still works.
         tracing::warn!("high-resolution timer is not available; the FPS limit is less exact");
         timer = unsafe { CreateWaitableTimerExW(None, PCWSTR::null(), 0, TIMER_ALL_ACCESS.0) };
     }
@@ -148,15 +134,11 @@ pub fn wait() -> Result<(Wait, Wake)> {
 }
 
 impl Wait {
-    /// Blocks until woken or `deadline` passes. True when woken, false at the deadline. The last
-    /// `spin` before the deadline is a busy loop that still returns at once on a wake-up.
-    /// `None` waits for a wake-up only.
     pub fn until(&mut self, deadline: Option<Instant>, spin: Duration) -> bool {
         let Some(deadline) = deadline else {
             unsafe { WaitForSingleObject(self.event.raw(), u32::MAX) };
             return true;
         };
-        // The timer sleeps until `spin` before the deadline. A timer that fires early is armed again.
         loop {
             let now = Instant::now();
             let spin_from = deadline.checked_sub(spin).unwrap_or(now);
@@ -165,7 +147,6 @@ impl Wait {
                 break;
             }
             if !self.arm(left) {
-                // Windows refused the timer. The event still ends the wait, so a command is not delayed.
                 if self.event.wait_for(left) {
                     return true;
                 }
@@ -173,13 +154,12 @@ impl Wait {
             }
             let handles = [self.event.raw(), self.timer.raw()];
             match unsafe { WaitForMultipleObjects(&handles, false, u32::MAX) } {
-                // The event is first in the array, so a wake-up wins over a timer that fired too.
+                // The event is first so that a wake-up wins over a timer that fired too.
                 WAIT_OBJECT_0 => {
                     let _ = unsafe { CancelWaitableTimer(self.timer.raw()) };
                     return true;
                 }
                 status if status.0 == TIMER_INDEX => {}
-                // The wait itself failed. The spin below still meets the deadline.
                 _ => break,
             }
         }
@@ -193,7 +173,6 @@ impl Wait {
         }
     }
 
-    /// Sets the timer to fire after `left`. Returns `false` when Windows refuses it.
     fn arm(&mut self, left: Duration) -> bool {
         // A negative due time is relative, in units of 100 ns.
         let units = i64::try_from(left.as_nanos() / 100)

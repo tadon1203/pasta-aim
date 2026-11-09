@@ -1,8 +1,3 @@
-//! The connect to MAKCU: it finds the port, probes the baud rates, and reads the firmware and the
-//! routes. It also holds `exchange`, the one way to send a query and wait for its reply.
-//!
-//! The protocol is in `docs/makcu-protocol.md`. The port is in `port`.
-
 use std::{
     io,
     time::{Duration, Instant},
@@ -20,9 +15,6 @@ pub(super) const LOW_BAUD: u32 = 115_200;
 pub(super) const HIGH_BAUD: u32 = 4_000_000;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Connects to the first port that answers as MAKCU. A chosen port is the only one tried, even when
-/// its chip is not MAKCU's. Else the MAKCU ports are tried in the order of the list.
-/// The error holds the reason for each port that failed.
 pub(super) fn connect(
     connector: &dyn Connector,
     chosen: Option<&str>,
@@ -53,13 +45,12 @@ fn makcu_ports(entries: Vec<Entry>) -> Vec<String> {
 }
 
 fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Serial>, Device)> {
-    // The rate that MAKCU keeps is not known after the app closes, so both rates are probed.
+    // The rate that the device keeps is unknown after the app closes, so both rates are probed.
     let (mut port, mut baud) = probe_first(connector, name, [LOW_BAUD, HIGH_BAUD])?;
     let firmware = firmware_of(port.as_mut())?;
     if baud == LOW_BAUD {
-        // A `SetBaud` that the device accepts has no reply. A refused one leaves the device at 115,200.
+        // A `SetBaud` that the device accepts has no reply.
         write_queries(port.as_mut(), &mut Vec::new(), &[Query::SetBaud(HIGH_BAUD)])?;
-        // Close the port before the reopen: Windows does not open a COM port twice.
         drop(port);
         (port, baud) = probe_first(connector, name, [HIGH_BAUD, LOW_BAUD])?;
     }
@@ -73,7 +64,6 @@ fn connect_port(connector: &dyn Connector, name: &str) -> Result<(Box<dyn Serial
     Ok((port, device))
 }
 
-/// Opens the port at the first of `rates` that the device answers at. Its rate is returned with it.
 fn probe_first(
     connector: &dyn Connector,
     name: &str,
@@ -89,7 +79,6 @@ fn probe_first(
     result
 }
 
-/// Opens the port at `baud` and asks for the routes. The port is kept only when the device answers.
 fn probe(connector: &dyn Connector, name: &str, baud: u32) -> Result<Box<dyn Serial>> {
     let mut port = connector.open(name, baud)?;
     exchange_accepted(port.as_mut(), Query::Device)?;
@@ -118,8 +107,7 @@ fn exchange_accepted(port: &mut dyn Serial, query: Query) -> Result<Packet> {
     Ok(packet)
 }
 
-/// Writes a query and reads until its reply, for at most `REPLY_TIMEOUT`. A reject is a reply
-/// too, so the caller checks it. The port must have no other reader.
+/// A reject is a reply too, so the caller checks it. The port must have no other reader.
 pub(super) fn exchange(port: &mut dyn Serial, query: Query) -> Result<Packet> {
     write_queries(port, &mut Vec::new(), std::slice::from_ref(&query))?;
     let mut decoder = PacketDecoder::default();
@@ -135,8 +123,6 @@ pub(super) fn exchange(port: &mut dyn Serial, query: Query) -> Result<Packet> {
     answer.ok_or_else(|| anyhow!("MAKCU did not answer {query:?} in time"))
 }
 
-/// One read from the port, which hands the packets it completes to `on_packet`. A read that times
-/// out is no packet, not an error.
 fn read_packets(
     port: &mut dyn Serial,
     decoder: &mut PacketDecoder,
@@ -153,7 +139,6 @@ fn read_packets(
     }
 }
 
-/// Encodes the queries into `buffer` and writes them with one port write. `buffer` is kept for the next write.
 pub(super) fn write_queries(
     port: &mut dyn Serial,
     buffer: &mut Vec<u8>,
