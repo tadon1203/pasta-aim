@@ -1,10 +1,9 @@
 use eframe::egui;
 
-use super::{App, controller_line, error_label, makcu_line, percent, warn_label};
+use super::{App, controller_line, error_label, makcu_line, percent};
 use nice_aimassist::{
     engine::{CapturePhase, Command, ModelPhase, Percentiles, Rates, Stages, State, Stats},
     pipeline::{CpuNodes, DisplayInfo},
-    settings::LogLevel,
 };
 
 impl App {
@@ -12,8 +11,6 @@ impl App {
         egui::CollapsingHeader::new("Diagnostics")
             .default_open(false)
             .show(ui, |ui| {
-                self.draw_log_settings(ui);
-                ui.add_space(6.0);
                 self.draw_state_grids(ui, engine, stats);
 
                 if let Some(error) = &engine.capture.error {
@@ -34,39 +31,6 @@ impl App {
             });
     }
 
-    fn draw_log_settings(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.strong("Log level");
-            let mut level = self.settings.log_level;
-            egui::ComboBox::from_id_salt("log_level_selector")
-                .selected_text(level.label())
-                .show_ui(ui, |ui| {
-                    for option in LogLevel::ALL {
-                        ui.selectable_value(&mut level, option, option.label());
-                    }
-                });
-            if level != self.settings.log_level {
-                self.settings.log_level = level;
-                crate::logging::set_level(level);
-                self.persist();
-            }
-        });
-        ui.small("The selected level and more severe logs are written to the log file.");
-
-        let mut gpu_debug = self.settings.gpu_debug;
-        if ui
-            .checkbox(&mut gpu_debug, "D3D12 debug layer (restart required)")
-            .changed()
-        {
-            self.settings.gpu_debug = gpu_debug;
-            self.persist();
-        }
-        ui.small("Slows inference by ~1-2 ms. Turn off when measuring performance.");
-        if self.settings.gpu_debug != self.gpu_debug_at_startup {
-            warn_label(ui, "Restart to apply.");
-        }
-    }
-
     fn draw_state_grids(&self, ui: &mut egui::Ui, engine: &State, stats: &Stats) {
         egui::Grid::new("diagnostics_engine_state")
             .num_columns(2)
@@ -80,14 +44,6 @@ impl App {
     }
 
     fn draw_engine_rows(&self, ui: &mut egui::Ui, engine: &State) {
-        ui.label("GPU debug");
-        ui.label(if self.gpu_debug_at_startup {
-            "On"
-        } else {
-            "Off"
-        });
-        ui.end_row();
-
         ui.label("Model state");
         ui.label(model_phase_label(engine.model.phase));
         ui.end_row();

@@ -17,7 +17,6 @@ use nice_aimassist::{
 
 pub struct App {
     settings: Settings,
-    gpu_debug_at_startup: bool,
     _engine: Engine,
     commands: Sender<Command>,
     models: Vec<String>,
@@ -53,7 +52,6 @@ enum EditField {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, loaded: Loaded) -> Self {
         let settings = loaded.settings;
-        let gpu_debug_at_startup = settings.gpu_debug;
         let settings_warning = loaded.warning;
         let settings_unusable = loaded.unusable;
         tracing::info!(model = ?settings.model, sensitivity_x = settings.sensitivity_x.get(), sensitivity_y = settings.sensitivity_y.get(), fps_limit = settings.fps_limit.get(), "application initialized with settings");
@@ -86,7 +84,6 @@ impl App {
 
         let app = Self {
             settings,
-            gpu_debug_at_startup,
             _engine: engine,
             commands,
             models,

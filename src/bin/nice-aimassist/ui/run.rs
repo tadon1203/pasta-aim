@@ -336,12 +336,6 @@ impl App {
         if stats.stages.sample_count == 0 {
             return;
         }
-        if self.gpu_debug_at_startup {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "GPU debug is on: timings are inflated.",
-            );
-        }
         ui.small(format!(
             "{:.1} FPS / {} cap · pipeline {:.2}/{:.2} ms p50/p95 · inference {:.2}/{:.2} ms p50/p95",
             stats.stages.fps,

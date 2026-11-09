@@ -14,9 +14,8 @@ fn main() -> Result<()> {
     if let Some(warning) = &loaded.warning {
         tracing::warn!(%warning, "settings loaded with a problem");
     }
-    logging::set_level(loaded.settings.log_level);
     tracing::info!("nice-aimassist starting");
-    if let Err(error) = pipeline::init(loaded.settings.gpu_debug) {
+    if let Err(error) = pipeline::init() {
         tracing::error!(error = %format_args!("{error:#}"), "GPU pipeline initialization failed");
         return Err(error);
     }

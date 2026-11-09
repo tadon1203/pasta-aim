@@ -34,9 +34,9 @@ use crate::{
 static INITIALIZED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 static GPU_DEBUG: AtomicBool = AtomicBool::new(false);
 
-pub fn init(gpu_debug: bool) -> Result<()> {
+pub fn init() -> Result<()> {
     let initialized = INITIALIZED.get_or_init(|| {
-        if gpu_debug {
+        if std::env::var_os("NICE_GPU_DEBUG").is_some() {
             gpu::enable_debug_layer().map_err(|error| format!("{error:#}"))?;
             GPU_DEBUG.store(true, Ordering::Relaxed);
         }

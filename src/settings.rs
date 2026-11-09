@@ -131,40 +131,6 @@ pub struct Display {
     pub output: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Off,
-    Error,
-    Warn,
-    #[default]
-    Info,
-    Debug,
-    Trace,
-}
-
-impl LogLevel {
-    pub const ALL: [Self; 6] = [
-        Self::Off,
-        Self::Error,
-        Self::Warn,
-        Self::Info,
-        Self::Debug,
-        Self::Trace,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Off => "Off",
-            Self::Error => "Error",
-            Self::Warn => "Warn",
-            Self::Info => "Info",
-            Self::Debug => "Debug",
-            Self::Trace => "Trace",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -186,9 +152,6 @@ pub struct Settings {
     pub low_latency: bool,
     #[serde(deserialize_with = "deserialize_hotkeys")]
     pub hotkeys: Vec<Hotkey>,
-    pub log_level: LogLevel,
-    /// Applied at startup only.
-    pub gpu_debug: bool,
 }
 
 impl Default for Settings {
@@ -211,8 +174,6 @@ impl Default for Settings {
             makcu_port: None,
             low_latency: false,
             hotkeys: default_hotkeys(),
-            log_level: LogLevel::default(),
-            gpu_debug: false,
         }
     }
 }
@@ -572,11 +533,5 @@ mod tests {
         assert!(model_path("nested/yolo.onnx").is_err());
         assert!(model_path("model.txt").is_err());
         assert!(model_path("no-such-model-for-tests.onnx").is_err());
-    }
-
-    #[test]
-    fn log_level_labels_follow_the_order_of_all() {
-        assert_eq!(LogLevel::ALL[0].label(), "Off");
-        assert_eq!(LogLevel::ALL[5].label(), "Trace");
     }
 }
