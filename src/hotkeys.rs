@@ -1,7 +1,7 @@
 mod keys;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt,
     str::FromStr,
     thread::{self, JoinHandle},
@@ -171,7 +171,7 @@ pub enum Event {
 
 #[derive(Debug)]
 pub enum Command {
-    SetBindings(HashMap<Shortcut, Action>),
+    SetBindings(HashSet<Shortcut>),
     Record,
     CancelRecord,
     Shutdown,
@@ -216,7 +216,7 @@ impl Ignored {
 
 #[derive(Debug, Default)]
 pub(crate) struct Core {
-    bindings: HashMap<Shortcut, Action>,
+    bindings: HashSet<Shortcut>,
     bound_keys: KeySet,
     prev: Reading,
     pads: PadSet,
@@ -225,7 +225,7 @@ pub(crate) struct Core {
 }
 
 impl Core {
-    pub(crate) fn new(bindings: HashMap<Shortcut, Action>) -> Self {
+    pub(crate) fn new(bindings: HashSet<Shortcut>) -> Self {
         Self {
             bound_keys: keys_of(&bindings),
             bindings,
@@ -246,11 +246,8 @@ impl Core {
         match command {
             Command::SetBindings(bindings) => {
                 let before = self.holding();
-                self.held.retain(|input| {
-                    bindings.iter().any(|(shortcut, action)| {
-                        shortcut.input == *input && *action == Action::Hold
-                    })
-                });
+                self.held
+                    .retain(|input| bindings.iter().any(|shortcut| shortcut.input == *input));
                 self.bound_keys = keys_of(&bindings);
                 self.bindings = bindings;
                 self.settle(before, out);
@@ -312,7 +309,7 @@ impl Core {
             if self.recording.is_none() {
                 for pad in pads_now.iter() {
                     let shortcut = Shortcut::new(Input::Pad(pad), Mods::default());
-                    if self.bindings.get(&shortcut) == Some(&Action::Hold) {
+                    if self.bindings.contains(&shortcut) {
                         self.held.insert(Input::Pad(pad));
                     }
                 }
@@ -339,11 +336,8 @@ impl Core {
             }
             return;
         }
-        match self.bindings.get(&shortcut) {
-            Some(Action::Hold) => {
-                self.held.insert(input);
-            }
-            None => {}
+        if self.bindings.contains(&shortcut) {
+            self.held.insert(input);
         }
     }
 
@@ -366,9 +360,9 @@ impl Core {
     }
 }
 
-fn keys_of(bindings: &HashMap<Shortcut, Action>) -> KeySet {
+fn keys_of(bindings: &HashSet<Shortcut>) -> KeySet {
     let mut keys = KeySet::default();
-    for shortcut in bindings.keys() {
+    for shortcut in bindings {
         if let Input::Key(code) = shortcut.input {
             keys.insert(code);
         }
@@ -376,15 +370,11 @@ fn keys_of(bindings: &HashMap<Shortcut, Action>) -> KeySet {
     keys
 }
 
-pub fn bindings(hotkeys: &[Hotkey]) -> Result<HashMap<Shortcut, Action>> {
-    let mut bindings = HashMap::new();
+pub fn bindings(hotkeys: &[Hotkey]) -> Result<HashSet<Shortcut>> {
+    let mut bindings = HashSet::new();
     for hotkey in hotkeys {
-        if let Some(existing) = bindings.insert(hotkey.shortcut, hotkey.action) {
-            bail!(
-                "{} is already assigned to {}",
-                hotkey.shortcut.label(),
-                existing.label()
-            );
+        if !bindings.insert(hotkey.shortcut) {
+            bail!("{} is already assigned", hotkey.shortcut.label());
         }
     }
     Ok(bindings)
@@ -432,7 +422,7 @@ impl Drop for Hotkeys {
 fn run(
     mut wait: clock::Wait,
     inbox: &Receiver<Command>,
-    bindings: HashMap<Shortcut, Action>,
+    bindings: HashSet<Shortcut>,
     ui: &Sender<Message>,
     engine: &Sender<engine::Command>,
 ) {
@@ -602,7 +592,7 @@ mod tests {
         Shortcut::new(Input::Pad(pad), Mods::default())
     }
 
-    fn core(bindings: &[(Shortcut, Action)]) -> Core {
+    fn core(bindings: &[Shortcut]) -> Core {
         Core::new(bindings.iter().copied().collect())
     }
 
@@ -717,7 +707,7 @@ mod tests {
 
     #[test]
     fn button_edges_are_generated_once() {
-        let mut core = core(&[(pad(Pad::A), Action::Hold)]);
+        let mut core = core(&[pad(Pad::A)]);
         step(&mut core, pad_reading(0, 0, 0));
         let pressed = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
         assert_eq!(pressed, vec![Signal::Action(Action::Hold, true)]);
@@ -730,7 +720,7 @@ mod tests {
 
     #[test]
     fn disconnect_releases_held_controls() {
-        let mut core = core(&[(pad(Pad::A), Action::Hold)]);
+        let mut core = core(&[pad(Pad::A)]);
         step(&mut core, pad_reading(0, 0, 0));
         let held = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
         assert!(held.contains(&Signal::Action(Action::Hold, true)));
@@ -750,14 +740,14 @@ mod tests {
 
     #[test]
     fn a_held_controller_at_connect_keeps_a_hold_run_active() {
-        let mut core = core(&[(pad(Pad::A), Action::Hold)]);
+        let mut core = core(&[pad(Pad::A)]);
         let connected = step(&mut core, pad_reading(PAD_A_HELD, 0, 0));
         assert!(connected.contains(&Signal::Action(Action::Hold, true)));
     }
 
     #[test]
     fn a_hold_run_stays_on_while_a_second_hold_shortcut_is_down() {
-        let mut core = core(&[(key(F8), Action::Hold), (pad(Pad::A), Action::Hold)]);
+        let mut core = core(&[key(F8), pad(Pad::A)]);
         step(&mut core, reading(&[], 0));
         assert_eq!(
             step(&mut core, reading(&[F8], 0)),
@@ -769,7 +759,7 @@ mod tests {
 
     #[test]
     fn the_last_hold_release_stops_the_run() {
-        let mut core = core(&[(key(F8), Action::Hold), (pad(Pad::A), Action::Hold)]);
+        let mut core = core(&[key(F8), pad(Pad::A)]);
         step(&mut core, reading(&[], 0));
         step(&mut core, reading(&[F8], 0));
         step(&mut core, reading(&[F8], PAD_A_HELD));
@@ -815,7 +805,7 @@ mod tests {
 
     #[test]
     fn esc_during_recording_cancels_and_starts_no_action() {
-        let mut core = core(&[(key(F8), Action::Hold)]);
+        let mut core = core(&[key(F8)]);
         command(&mut core, Command::Record);
         let escape = Reading {
             escape: true,
@@ -830,7 +820,7 @@ mod tests {
 
     #[test]
     fn no_action_fires_while_recording() {
-        let mut core = core(&[(key(F9), Action::Hold), (key(F8), Action::Hold)]);
+        let mut core = core(&[key(F9), key(F8)]);
         command(&mut core, Command::Record);
         let out = step(&mut core, key_reading(&[F9], Mods::default()));
         assert!(
@@ -842,7 +832,7 @@ mod tests {
 
     #[test]
     fn starting_a_recording_ends_a_running_hold() {
-        let mut core = core(&[(key(F8), Action::Hold)]);
+        let mut core = core(&[key(F8)]);
         step(&mut core, key_reading(&[F8], Mods::default()));
         assert_eq!(
             command(&mut core, Command::Record),
@@ -852,7 +842,7 @@ mod tests {
 
     #[test]
     fn a_pass_reads_only_the_bound_keys_and_a_recording_reads_every_key() {
-        let mut core = core(&[(key(F8), Action::Hold), (pad(Pad::A), Action::Hold)]);
+        let mut core = core(&[key(F8), pad(Pad::A)]);
         let bound = core.keys_to_read().expect("the bound keys");
         assert!(bound.contains(F8));
         assert!(!bound.contains(F9) && !bound.contains(KEY_A));
@@ -865,8 +855,8 @@ mod tests {
 
     #[test]
     fn new_bindings_change_the_keys_that_are_read() {
-        let mut core = core(&[(key(F8), Action::Hold)]);
-        let bindings = [(key(F9), Action::Hold)].into_iter().collect();
+        let mut core = core(&[key(F8)]);
+        let bindings = [key(F9)].into_iter().collect();
         command(&mut core, Command::SetBindings(bindings));
         let bound = core.keys_to_read().expect("the bound keys");
         assert!(bound.contains(F9) && !bound.contains(F8));
@@ -878,7 +868,7 @@ mod tests {
         let mut held = KeySet::default();
         held.insert(F9);
         core.set_down_keys(held);
-        let bindings = [(key(F9), Action::Hold)].into_iter().collect();
+        let bindings = [key(F9)].into_iter().collect();
         command(&mut core, Command::SetBindings(bindings));
         assert_eq!(
             step(&mut core, key_reading(&[F9], Mods::default())),

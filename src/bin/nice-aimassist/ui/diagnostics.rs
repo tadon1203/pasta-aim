@@ -35,7 +35,7 @@ impl App {
         egui::Grid::new("diagnostics_engine_state")
             .num_columns(2)
             .spacing([16.0, 5.0])
-            .show(ui, |ui| self.draw_engine_rows(ui, engine));
+            .show(ui, |ui| Self::draw_engine_rows(ui, engine));
 
         egui::Grid::new("diagnostics_input_state")
             .num_columns(2)
@@ -43,7 +43,7 @@ impl App {
             .show(ui, |ui| draw_input_rows(ui, self, engine, stats));
     }
 
-    fn draw_engine_rows(&self, ui: &mut egui::Ui, engine: &State) {
+    fn draw_engine_rows(ui: &mut egui::Ui, engine: &State) {
         ui.label("Model state");
         ui.label(model_phase_label(engine.model.phase));
         ui.end_row();
