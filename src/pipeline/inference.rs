@@ -26,7 +26,7 @@ use windows::{
     core::Interface,
 };
 
-use super::{CpuNodes, Detection, GpuDeviceContext, Precision, readback::Readback};
+use super::{Detection, GpuDeviceContext, Precision, readback::Readback};
 use crate::{clock::Clock, settings::Confidence};
 
 static NEXT_PREPARE_ID: AtomicU64 = AtomicU64::new(1);
@@ -131,7 +131,6 @@ pub(super) struct OrtDirectMlBackend {
     output_rows: usize,
     output_values: Vec<f32>,
     confidence_threshold: Confidence,
-    cpu_nodes: Option<CpuNodes>,
     graph_capture: bool,
 }
 
@@ -210,11 +209,9 @@ impl OrtDirectMlBackend {
             output_dims,
             output_rows,
         } = read_io(&session)?;
-        let cpu_nodes = read_cpu_nodes(&session, prepare_id)
-            .inspect_err(|error| {
-                tracing::debug!(prepare_id, error = %format_args!("{error:#}"), "cpu_nodes_unavailable");
-            })
-            .ok();
+        if let Err(error) = log_cpu_nodes(&session, prepare_id) {
+            tracing::debug!(prepare_id, error = %format_args!("{error:#}"), "cpu_nodes_unavailable");
+        }
 
         let allocator = Allocator::new(
             &session,
@@ -261,7 +258,6 @@ impl OrtDirectMlBackend {
             output_rows,
             output_values: Vec::with_capacity(output_rows * OUTPUT_COLUMNS),
             confidence_threshold: Confidence::default(),
-            cpu_nodes,
             graph_capture,
         };
         backend.warm_up()?;
@@ -283,20 +279,12 @@ impl OrtDirectMlBackend {
         Ok(())
     }
 
-    pub(super) fn graph_capture(&self) -> bool {
-        self.graph_capture
-    }
-
     pub(super) fn prepare_id(&self) -> &str {
         &self.prepare_id
     }
 
     pub(super) fn input_spec(&self) -> ModelInputSpec {
         self.input_spec
-    }
-
-    pub(super) fn cpu_nodes(&self) -> Option<&CpuNodes> {
-        self.cpu_nodes.as_ref()
     }
 
     pub(super) fn input_resource(&self) -> &ID3D12Resource {
@@ -609,11 +597,11 @@ unsafe fn d3d12_resource_from_dml_tensor<T: PrimitiveTensorElementType + Debug>(
 
 const CPU_PROVIDER: &str = "CPUExecutionProvider";
 
-fn read_cpu_nodes(session: &Session, prepare_id: &str) -> Result<CpuNodes> {
+fn log_cpu_nodes(session: &Session, prepare_id: &str) -> Result<()> {
     let inner = session.inner();
     let mut subgraphs = std::ptr::null();
     let mut subgraph_count = 0_usize;
-    let mut operators = Vec::new();
+    let mut cpu_nodes = 0_usize;
     unsafe {
         ort_call((ort::api().Session_GetEpGraphAssignmentInfo)(
             inner.ptr(),
@@ -645,19 +633,13 @@ fn read_cpu_nodes(session: &Session, prepare_id: &str) -> Result<CpuNodes> {
                 )?;
                 let domain = node_text(node, ort::api().EpAssignedNode_GetDomain, "domain")?;
                 let name = node_text(node, ort::api().EpAssignedNode_GetName, "node name")?;
-                tracing::info!(prepare_id, %domain, %operator, %name, "cpu_fallback_node");
-                operators.push(operator_label(&domain, &operator));
+                tracing::warn!(prepare_id, %domain, %operator, %name, "cpu_fallback_node");
+                cpu_nodes += 1;
             }
         }
     }
-    Ok(CpuNodes::from_operators(operators))
-}
-
-fn operator_label(domain: &str, operator: &str) -> String {
-    match domain {
-        "" | "ai.onnx" => operator.to_owned(),
-        domain => format!("{domain}::{operator}"),
-    }
+    tracing::info!(prepare_id, cpu_nodes, "cpu_fallback_nodes");
+    Ok(())
 }
 
 type NodeTextFn = unsafe extern "system" fn(
@@ -793,16 +775,6 @@ mod tests {
         ];
         let selection = select_nearest(&data, 2, 100, 100, 0.25);
         assert_eq!(selection.nearest.unwrap().class_id, 2);
-    }
-
-    #[test]
-    fn the_default_onnx_domain_is_left_out_of_the_operator_label() {
-        assert_eq!(operator_label("", "Gather"), "Gather");
-        assert_eq!(operator_label("ai.onnx", "Gather"), "Gather");
-        assert_eq!(
-            operator_label("com.microsoft", "FusedConv"),
-            "com.microsoft::FusedConv"
-        );
     }
 
     #[test]

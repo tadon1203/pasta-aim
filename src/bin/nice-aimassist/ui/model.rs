@@ -6,7 +6,6 @@ use eframe::egui;
 use super::{App, error_label, run_idle};
 use nice_aimassist::{
     engine::{ModelPhase, State},
-    pipeline::Precision,
     settings,
 };
 
@@ -62,8 +61,7 @@ impl App {
                 ui.small("No .onnx models found in the models folder.");
             }
             if let Some((width, height)) = engine.model.input_size {
-                let precision = engine.model.precision.map_or("", Precision::label);
-                ui.small(format!("Active input: {width}×{height} {precision}"));
+                ui.small(format!("Active input: {width}×{height}"));
             }
             if let Some(error) = &engine.model.error {
                 error_label(ui, format!("Model: {error}"));

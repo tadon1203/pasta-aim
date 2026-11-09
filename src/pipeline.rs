@@ -136,39 +136,6 @@ impl Precision {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CpuNodes {
-    ops: Vec<(String, usize)>,
-}
-
-impl CpuNodes {
-    pub fn from_operators(operators: impl IntoIterator<Item = String>) -> Self {
-        let mut counts = std::collections::BTreeMap::<String, usize>::new();
-        for operator in operators {
-            *counts.entry(operator).or_default() += 1;
-        }
-        let mut ops: Vec<(String, usize)> = counts.into_iter().collect();
-        ops.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-        Self { ops }
-    }
-
-    pub fn total(&self) -> usize {
-        self.ops.iter().map(|&(_, count)| count).sum()
-    }
-
-    pub fn summary(&self) -> String {
-        if self.ops.is_empty() {
-            return "0".to_owned();
-        }
-        let ops: Vec<String> = self
-            .ops
-            .iter()
-            .map(|(operator, count)| format!("{operator} ×{count}"))
-            .collect();
-        format!("{}: {}", self.total(), ops.join(", "))
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Detection {
     pub center_x: f32,
@@ -249,8 +216,6 @@ struct ModelHalf {
     gpu: GpuDeviceContext,
     prepare_id: String,
     input_size: (usize, usize),
-    precision: Precision,
-    cpu_nodes: Option<CpuNodes>,
 }
 
 impl Drop for ModelHalf {
@@ -372,18 +337,6 @@ impl Pipeline {
         (width as u32, height as u32)
     }
 
-    pub fn precision(&self) -> Precision {
-        self.model.precision
-    }
-
-    pub fn cpu_nodes(&self) -> Option<&CpuNodes> {
-        self.model.cpu_nodes.as_ref()
-    }
-
-    pub fn graph_capture(&self) -> bool {
-        self.model.backend.graph_capture()
-    }
-
     fn check_reuse_fence(&self) -> Result<u64, Fault> {
         let reuse_completed = self.model.frame.reuse_completed();
         if gpu::fence_reports_removal(reuse_completed) {
@@ -461,7 +414,6 @@ fn build_model(
         spec.precision,
     )?;
     let prepare_id = backend.prepare_id().to_owned();
-    let cpu_nodes = backend.cpu_nodes().cloned();
     tracing::info!(
         model = %model.display(),
         input_width = spec.width,
@@ -476,8 +428,6 @@ fn build_model(
         gpu,
         prepare_id,
         input_size: (spec.width, spec.height),
-        precision: spec.precision,
-        cpu_nodes,
     };
     capture.bind_copy_target(&capture_frame, model.input_size)?;
     Ok((model, capture_frame))
@@ -494,35 +444,5 @@ impl Detection {
             confidence: 0.9,
             class_id,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn nodes(operators: &[&str]) -> CpuNodes {
-        CpuNodes::from_operators(operators.iter().map(|&operator| operator.to_owned()))
-    }
-
-    #[test]
-    fn cpu_nodes_are_counted_by_operator_with_the_most_frequent_first() {
-        let cpu = nodes(&["Shape", "Gather", "Shape", "Gather", "Gather", "Cast"]);
-        assert_eq!(cpu.total(), 6);
-        assert_eq!(cpu.summary(), "6: Gather ×3, Shape ×2, Cast ×1");
-    }
-
-    #[test]
-    fn cpu_nodes_with_equal_counts_are_in_name_order() {
-        assert_eq!(
-            nodes(&["Slice", "Add", "Mul"]).summary(),
-            "3: Add ×1, Mul ×1, Slice ×1"
-        );
-    }
-
-    #[test]
-    fn no_cpu_nodes_are_zero() {
-        assert_eq!(CpuNodes::default().total(), 0);
-        assert_eq!(CpuNodes::default().summary(), "0");
     }
 }

@@ -205,18 +205,12 @@ impl Worker {
         };
         let selected = pipeline.display().clone();
         let input_size = pipeline.input_size();
-        let precision = pipeline.precision();
-        let cpu_nodes = pipeline.cpu_nodes().cloned();
-        let graph_capture = pipeline.graph_capture();
         self.edit(|state| {
             state.capture.phase = CapturePhase::Ready;
             state.capture.selected = Some(selected);
             state.capture.error = None;
             state.model.phase = ModelPhase::Ready;
             state.model.input_size = Some(input_size);
-            state.model.precision = Some(precision);
-            state.model.cpu_nodes = cpu_nodes;
-            state.model.graph_capture = Some(graph_capture);
             state.model.error = None;
         });
     }

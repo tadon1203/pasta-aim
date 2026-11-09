@@ -1,6 +1,6 @@
 use crate::{
     output::{Device, Port},
-    pipeline::{CpuNodes, DisplayInfo, Precision},
+    pipeline::DisplayInfo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,10 +16,7 @@ pub struct ModelState {
     pub active_name: Option<String>,
     pub loading_name: Option<String>,
     pub input_size: Option<(u32, u32)>,
-    pub precision: Option<Precision>,
     pub error: Option<String>,
-    pub cpu_nodes: Option<CpuNodes>,
-    pub graph_capture: Option<bool>,
 }
 
 impl Default for ModelState {
@@ -29,10 +26,7 @@ impl Default for ModelState {
             active_name: None,
             loading_name: None,
             input_size: None,
-            precision: None,
             error: None,
-            cpu_nodes: None,
-            graph_capture: None,
         }
     }
 }
