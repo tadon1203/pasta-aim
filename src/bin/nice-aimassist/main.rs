@@ -20,7 +20,6 @@ fn main() -> Result<()> {
         tracing::error!(error = %format_args!("{error:#}"), "GPU pipeline initialization failed");
         return Err(error);
     }
-    process::disable_power_throttling();
     if !process::enable_per_monitor_dpi_awareness() {
         tracing::warn!("failed to set per-monitor-v2 DPI awareness");
     }

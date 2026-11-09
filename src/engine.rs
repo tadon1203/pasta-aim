@@ -1,4 +1,3 @@
-mod boost;
 mod graphics;
 mod link;
 mod state;
@@ -14,7 +13,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use boost::boost_current_thread;
 use stats::{PUBLISH_INTERVAL, Recorder};
 
 use crate::{
@@ -62,7 +60,6 @@ impl Engine {
             .name("nice-aimassist-engine".to_owned())
             .spawn(move || {
                 tracing::info!("engine thread started");
-                let _boost = boost_current_thread("engine");
                 Worker::start(ui, wait, clock, settings).run(&inbox);
             })
             .expect("failed to spawn the engine thread");
