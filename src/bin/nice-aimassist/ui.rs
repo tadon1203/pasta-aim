@@ -153,6 +153,11 @@ impl App {
         self.commands.send(Command::RescanDisplays);
     }
 
+    fn retry_capture(&self) {
+        self.rescan_displays();
+        self.select_display(self.settings.display);
+    }
+
     fn select_display(&self, target: Display) {
         tracing::debug!(?target, "display selected from UI");
         self.commands.send(Command::SelectDisplay(target));

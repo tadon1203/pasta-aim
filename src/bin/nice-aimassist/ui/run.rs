@@ -4,7 +4,7 @@ use eframe::egui;
 
 use super::{App, EditField, error_label, run_idle, warn_label};
 use nice_aimassist::{
-    engine::{CapturePhase, Command, ModelPhase, RunPhase, State, Stats},
+    engine::{CapturePhase, ModelPhase, RunPhase, State, Stats},
     hotkeys::Action,
     settings::{
         Confidence, FpsLimit, Interpolation, InterpolationPercent, MaxDelta, NewFrameWait,
@@ -197,7 +197,7 @@ impl App {
                 if engine.capture.phase == CapturePhase::Failed
                     && ui.small_button("Retry capture").clicked()
                 {
-                    self.commands.send(Command::RetryCapture);
+                    self.retry_capture();
                 }
             });
         }

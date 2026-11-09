@@ -5,7 +5,7 @@ use crate::{
     channel::Receiver,
     clock::Clock,
     pipeline::{Fault, Frame},
-    settings::{self, FpsLimit},
+    settings::FpsLimit,
 };
 
 pub(super) fn next_capture(started: Instant, fps: FpsLimit) -> Instant {
@@ -74,7 +74,6 @@ impl Worker {
         self.recorder
             .frame(frame, &outcome, output_done, Instant::now());
         self.note_output(frame.desktop_size);
-        self.rebuilt = false;
         Flow::Continue
     }
 
@@ -85,39 +84,17 @@ impl Worker {
     fn handle_fault(&mut self, fault: &Fault) {
         self.recorder.frame_dropped();
         let message = format!("{fault}");
-        let rebuild = matches!(fault, Fault::Gpu(_)) && !self.rebuilt;
         self.fail_run(message.clone());
         // Dropping the pipeline waits for its GPU queue before its objects are released.
         self.pipeline = None;
+        tracing::error!(%message, "pipeline dropped; capture failed");
         self.edit(|state| {
             state.model.phase = ModelPhase::Empty;
             state.capture.selected = None;
             state.capture.desktop_size = None;
+            state.capture.phase = CapturePhase::Failed;
+            state.capture.error = Some(message);
         });
-        let result = if rebuild {
-            self.rebuilt = true;
-            self.rebuild_pipeline()
-        } else {
-            Err(anyhow::anyhow!(message))
-        };
-        if let Err(error) = result {
-            let message = format!("{error:#}");
-            tracing::error!(%message, "pipeline is not rebuilt; capture failed");
-            self.edit(|state| {
-                state.capture.phase = CapturePhase::Failed;
-                state.capture.error = Some(message);
-            });
-        }
-    }
-
-    fn rebuild_pipeline(&mut self) -> anyhow::Result<()> {
-        let Some(name) = self.state.model.active_name.clone() else {
-            anyhow::bail!("no model is loaded");
-        };
-        let path = settings::model_path(&name)?;
-        let pipeline = self.build_pipeline(&self.settings.display, &path)?;
-        self.commit_pipeline(pipeline);
-        Ok(())
     }
 
     fn note_output(&mut self, desktop_size: (usize, usize)) {
@@ -140,7 +117,7 @@ mod tests {
         clock::Clock,
         output::fake::FakeMakcu,
         pipeline::{Detection, Times},
-        settings::{Interpolation, InterpolationPercent},
+        settings::{self, Interpolation, InterpolationPercent},
     };
 
     fn moves(fake: &FakeMakcu) -> Vec<Vec<u8>> {

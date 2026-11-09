@@ -35,7 +35,6 @@ pub enum Command {
     Hold(bool),
     ReconnectOutput,
     RescanDisplays,
-    RetryCapture,
     Shutdown,
 }
 
@@ -109,7 +108,6 @@ struct Worker {
     output: Output,
     run: Option<ActiveRun>,
     next_capture: Instant,
-    rebuilt: bool,
     com_ready: bool,
 }
 
@@ -134,7 +132,6 @@ impl Worker {
             output,
             run: None,
             next_capture: Instant::now(),
-            rebuilt: false,
             com_ready: com_error.is_none(),
             settings,
         };
@@ -231,7 +228,6 @@ impl Worker {
                 self.connect_output();
             }
             Command::RescanDisplays => self.refresh_catalog(),
-            Command::RetryCapture => self.retry_capture(),
             Command::Shutdown => {
                 tracing::info!("engine shutdown requested");
                 return Flow::Shutdown;
@@ -385,7 +381,6 @@ mod fixture {
             output,
             run: None,
             next_capture: Instant::now(),
-            rebuilt: false,
             com_ready: false,
             settings,
         };

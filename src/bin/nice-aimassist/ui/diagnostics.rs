@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::{App, controller_line, error_label, makcu_line, percent};
 use nice_aimassist::{
-    engine::{CapturePhase, Command, ModelPhase, Percentiles, Rates, Stages, State, Stats},
+    engine::{CapturePhase, ModelPhase, Percentiles, Rates, Stages, State, Stats},
     pipeline::DisplayInfo,
 };
 
@@ -16,7 +16,7 @@ impl App {
                 if let Some(error) = &engine.capture.error {
                     error_label(ui, format!("Capture: {error}"));
                     if ui.button("Retry capture").clicked() {
-                        self.commands.send(Command::RetryCapture);
+                        self.retry_capture();
                     }
                 }
 

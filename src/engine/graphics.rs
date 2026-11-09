@@ -141,12 +141,6 @@ impl Worker {
         });
     }
 
-    pub(super) fn retry_capture(&mut self) {
-        self.stop_run();
-        self.refresh_catalog();
-        self.select_display(self.settings.display);
-    }
-
     pub(super) fn refresh_catalog(&mut self) {
         if !self.com_ready {
             return;
