@@ -39,6 +39,3 @@ The checks to run are in [CLAUDE.md](./CLAUDE.md#commands).
 - Inference: ONNX Runtime with DirectML
 - Output: MAKCU (USB serial)
 
-## Agent skills
-
-Skills are in `.claude/skills`.
