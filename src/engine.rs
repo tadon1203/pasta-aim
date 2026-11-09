@@ -365,9 +365,6 @@ fn aim_settings(settings: &Settings) -> AimSettings {
         sensitivity_y: settings.sensitivity_y,
         target_y_offset: settings.target_y_offset,
         max_delta: settings.max_delta,
-        lead_mode: settings.lead_mode,
-        lead: settings.lead,
-        lead_extra: settings.lead_extra,
         velocity_smoothing: settings.velocity_smoothing,
     }
 }

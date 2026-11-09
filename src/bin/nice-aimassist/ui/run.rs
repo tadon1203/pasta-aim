@@ -7,8 +7,8 @@ use nice_aimassist::{
     engine::{CapturePhase, Command, ModelPhase, RunPhase, State, Stats},
     hotkeys::Action,
     settings::{
-        Confidence, FpsLimit, Interpolation, InterpolationPercent, Lead, LeadExtra, LeadMode,
-        MaxDelta, NewFrameWait, Sensitivity, Settings, TargetYOffset, VelocitySmoothing,
+        Confidence, FpsLimit, Interpolation, InterpolationPercent, MaxDelta, NewFrameWait,
+        Sensitivity, Settings, TargetYOffset, VelocitySmoothing,
     },
 };
 
@@ -177,47 +177,6 @@ impl App {
     }
 
     fn draw_lead_values(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Lead");
-            let mut auto = self.settings.lead_mode == LeadMode::Auto;
-            if ui.checkbox(&mut auto, "Auto").changed() {
-                self.edit(|settings| {
-                    settings.lead_mode = if auto {
-                        LeadMode::Auto
-                    } else {
-                        LeadMode::Manual
-                    };
-                });
-                self.persist();
-            }
-        });
-        ui.horizontal(|ui| match self.settings.lead_mode {
-            LeadMode::Auto => self.drag_row(
-                ui,
-                "Extra (ms)",
-                EditField::LeadExtra,
-                self.settings.lead_extra.get(),
-                LeadExtra::MIN..=LeadExtra::MAX,
-                |settings, value| settings.lead_extra = LeadExtra::new(value),
-            ),
-            LeadMode::Manual => self.drag_row(
-                ui,
-                "Lead (ms)",
-                EditField::Lead,
-                self.settings.lead.get(),
-                Lead::MIN..=Lead::MAX,
-                |settings, value| settings.lead = Lead::new(value),
-            ),
-        });
-        ui.small(match self.settings.lead_mode {
-            LeadMode::Auto => {
-                "Aims ahead of a moving target by its speed times (measured delay + extra)."
-            }
-            LeadMode::Manual => {
-                "Aims ahead of a moving target by its speed times this time; 0 = off."
-            }
-        });
-
         let edit = percent_row(
             ui,
             "Velocity smoothing",

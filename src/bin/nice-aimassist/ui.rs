@@ -43,8 +43,6 @@ enum EditField {
     Confidence,
     TargetYOffset,
     MaxDelta,
-    Lead,
-    LeadExtra,
     VelocitySmoothing,
     FpsLimit,
 }

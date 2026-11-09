@@ -1,13 +1,13 @@
 use crate::{
     pipeline::Detection,
-    settings::{
-        Lead, LeadExtra, LeadMode, MaxDelta, Sensitivity, TargetYOffset, VelocitySmoothing,
-    },
+    settings::{MaxDelta, Sensitivity, TargetYOffset, VelocitySmoothing},
 };
 
 const DELAY_BLEND: f32 = 0.2;
 
 const MAX_AUTO_LEAD: f32 = 0.2;
+
+const LEAD_EXTRA: f32 = 0.01;
 
 const MIN_OVERLAP: f32 = 0.3;
 
@@ -25,9 +25,6 @@ pub struct AimSettings {
     pub sensitivity_y: Sensitivity,
     pub target_y_offset: TargetYOffset,
     pub max_delta: MaxDelta,
-    pub lead_mode: LeadMode,
-    pub lead: Lead,
-    pub lead_extra: LeadExtra,
     pub velocity_smoothing: VelocitySmoothing,
 }
 
@@ -78,12 +75,7 @@ impl Aim {
     }
 
     fn lead_seconds(&self) -> f32 {
-        match self.settings.lead_mode {
-            LeadMode::Manual => self.settings.lead.seconds(),
-            LeadMode::Auto => {
-                (self.delay.unwrap_or(0.0) + self.settings.lead_extra.seconds()).min(MAX_AUTO_LEAD)
-            }
-        }
+        (self.delay.unwrap_or(0.0) + LEAD_EXTRA).min(MAX_AUTO_LEAD)
     }
 
     pub fn update(
@@ -284,18 +276,18 @@ mod tests {
             sensitivity_y: Sensitivity::new(sensitivity),
             target_y_offset: TargetYOffset::new(target_y_offset),
             max_delta: MaxDelta::default(),
-            lead_mode: LeadMode::Manual,
-            lead: Lead::new(0),
-            lead_extra: LeadExtra::new(0),
             velocity_smoothing: VelocitySmoothing::new(0),
         }
     }
 
-    fn leading(lead_ms: u16) -> AimSettings {
-        AimSettings {
-            lead: Lead::new(lead_ms),
-            ..settings(100, 50)
-        }
+    fn leading(lead_ms: u16) -> Aim {
+        leading_with(settings(100, 50), lead_ms)
+    }
+
+    fn leading_with(settings: AimSettings, lead_ms: u16) -> Aim {
+        let mut aim = Aim::new(settings);
+        aim.delay = Some(f32::from(lead_ms) / 1000.0 - LEAD_EXTRA);
+        aim
     }
 
     fn at(center_x: f32, center_y: f32, box_height: f32) -> Detection {
@@ -427,7 +419,7 @@ mod tests {
 
     #[test]
     fn the_aim_point_leads_a_moving_target_by_its_velocity() {
-        let mut aim = Aim::new(leading(20));
+        let mut aim = leading(20);
         let first = aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
         assert_eq!(first.exact, Some((0.0, 0.0)));
         let moved = aim.update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01);
@@ -445,13 +437,8 @@ mod tests {
     }
 
     #[test]
-    fn the_auto_lead_follows_the_measured_delay_plus_the_extra() {
-        let auto = AimSettings {
-            lead_mode: LeadMode::Auto,
-            lead_extra: LeadExtra::new(10),
-            ..leading(0)
-        };
-        let mut aim = Aim::new(auto);
+    fn the_lead_follows_the_measured_delay_plus_the_extra() {
+        let mut aim = Aim::new(settings(100, 50));
         aim.observe_delay(0.010);
         assert!((x_move_of_second_frame(&mut aim) - 30.0).abs() < 1e-3);
 
@@ -462,33 +449,21 @@ mod tests {
     }
 
     #[test]
-    fn the_auto_lead_without_a_measurement_is_the_extra_and_the_manual_lead_ignores_the_delay() {
-        let auto = AimSettings {
-            lead_mode: LeadMode::Auto,
-            lead_extra: LeadExtra::new(20),
-            ..leading(0)
-        };
-        assert!((x_move_of_second_frame(&mut Aim::new(auto)) - 30.0).abs() < 1e-3);
-
-        let mut manual = Aim::new(leading(20));
-        manual.observe_delay(0.150);
-        assert!((x_move_of_second_frame(&mut manual) - 30.0).abs() < 1e-3);
+    fn the_lead_without_a_measurement_is_the_extra() {
+        let mut aim = Aim::new(settings(100, 50));
+        assert!((x_move_of_second_frame(&mut aim) - 20.0).abs() < 1e-3);
     }
 
     #[test]
-    fn the_auto_lead_is_capped() {
-        let auto = AimSettings {
-            lead_mode: LeadMode::Auto,
-            ..leading(0)
-        };
-        let mut aim = Aim::new(auto);
+    fn the_lead_is_capped() {
+        let mut aim = Aim::new(settings(100, 50));
         aim.observe_delay(5.0);
         assert!((aim.lead_seconds() - MAX_AUTO_LEAD).abs() < 1e-6);
     }
 
     #[test]
     fn the_lead_is_at_most_one_box_size() {
-        let mut aim = Aim::new(leading(200));
+        let mut aim = leading(200);
         aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
         let (x, _) = aim
             .update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01)
@@ -499,7 +474,7 @@ mod tests {
 
     #[test]
     fn the_shift_of_our_own_move_is_not_a_target_velocity() {
-        let mut aim = Aim::new(leading(100));
+        let mut aim = leading(100);
         let first = aim.update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.0);
         assert_eq!(first.rounded, Some(movement(10, 0)));
         let second = aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.01);
@@ -510,9 +485,9 @@ mod tests {
     fn smoothing_blends_the_new_velocity_into_the_estimate() {
         let smooth = AimSettings {
             velocity_smoothing: VelocitySmoothing::new(50),
-            ..leading(20)
+            ..settings(100, 50)
         };
-        let mut aim = Aim::new(smooth);
+        let mut aim = leading_with(smooth, 20);
         aim.update(Some(at(50.0, 50.0, 40.0)), INPUT, 0.0);
         let (x, _) = aim
             .update(Some(at(60.0, 50.0, 40.0)), INPUT, 0.01)
@@ -526,17 +501,17 @@ mod tests {
         let still =
             |aim: &mut Aim, x: f32, at_s: f64| aim.update(Some(at(x, 50.0, 40.0)), INPUT, at_s);
 
-        let mut gap = Aim::new(leading(20));
+        let mut gap = leading(20);
         still(&mut gap, 50.0, 0.0);
         let exact = still(&mut gap, 60.0, 1.0).exact;
         assert_eq!(exact, Some((10.0, 0.0)));
 
-        let mut switched = Aim::new(leading(20));
+        let mut switched = leading(20);
         still(&mut switched, 50.0, 0.0);
         let exact = still(&mut switched, 95.0, 0.01).exact;
         assert_eq!(exact, Some((45.0, 0.0)));
 
-        let mut reset = Aim::new(leading(20));
+        let mut reset = leading(20);
         still(&mut reset, 50.0, 0.0);
         reset.reset();
         let exact = still(&mut reset, 60.0, 0.01).exact;

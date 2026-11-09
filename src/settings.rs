@@ -49,8 +49,6 @@ pub type Sensitivity = Ranged<1, 100, 10_000>;
 pub type Confidence = Ranged<0, 50, 100>;
 pub type TargetYOffset = Ranged<0, 50, 100>;
 pub type MaxDelta = Ranged<0, 512, 32_767>;
-pub type Lead = Ranged<0, 30, 200>;
-pub type LeadExtra = Ranged<0, 10, 100>;
 pub type VelocitySmoothing = Ranged<0, 50, 95>;
 pub type FpsLimit = Ranged<1, 240, 1_000>;
 pub type NewFrameWait = Ranged<1, 2, 20>;
@@ -60,26 +58,6 @@ impl Sensitivity {
     pub fn gain(self) -> f32 {
         f32::from(self.get()) / f32::from(Self::DEFAULT)
     }
-}
-
-impl Lead {
-    pub fn seconds(self) -> f32 {
-        f32::from(self.get()) / 1000.0
-    }
-}
-
-impl LeadExtra {
-    pub fn seconds(self) -> f32 {
-        f32::from(self.get()) / 1000.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LeadMode {
-    #[default]
-    Auto,
-    Manual,
 }
 
 impl VelocitySmoothing {
@@ -141,9 +119,6 @@ pub struct Settings {
     pub confidence: Confidence,
     pub target_y_offset: TargetYOffset,
     pub max_delta: MaxDelta,
-    pub lead_mode: LeadMode,
-    pub lead: Lead,
-    pub lead_extra: LeadExtra,
     pub velocity_smoothing: VelocitySmoothing,
     pub fps_limit: FpsLimit,
     pub new_frame_wait: NewFrameWait,
@@ -164,9 +139,6 @@ impl Default for Settings {
             confidence: Confidence::default(),
             target_y_offset: TargetYOffset::default(),
             max_delta: MaxDelta::default(),
-            lead_mode: LeadMode::default(),
-            lead: Lead::default(),
-            lead_extra: LeadExtra::default(),
             velocity_smoothing: VelocitySmoothing::default(),
             fps_limit: FpsLimit::default(),
             new_frame_wait: NewFrameWait::default(),
