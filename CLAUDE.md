@@ -11,21 +11,14 @@ Read a document only when its trigger applies. Do not read them all up front.
 | `README.md`              | What the project is and how to run it | You need setup or run steps         |
 | `docs/makcu-protocol.md` | The MAKCU wire protocol               | The MAKCU communication changes     |
 
-## Architecture
+## Invariants
 
-One Windows process, two crates: the lib (`src`) and the bin (`src/bin/nice-aimassist`, the UI and process setup). The lib never uses `eframe` or `egui`.
-
-Threads own their resources and talk through channels (`src/channel.rs`): UI, engine (`src/engine`, which owns `src/pipeline`, `src/aim`, and `src/output` with the MAKCU link), and hotkeys (`src/hotkeys`). Input to a thread is a `Command`; output to the UI is a `Message`. `src/aim` knows nothing about MAKCU.
-
-Invariants:
-
+- The lib (`src`) never uses `eframe` or `egui`; only the bin does. `src/aim` knows nothing about MAKCU.
+- Threads (UI, engine, hotkeys) share no data. They talk through channels with `Command` and `Message`.
 - One frame at a time. No capture thread, inference thread, or frame queue. The frame image never goes to the CPU.
-- A pipeline (capture, GPU preprocess, inference, model) is replaced as a unit. On failure, keep the old one.
+- A pipeline is replaced as a unit. On failure, keep the old one.
 - A stop, shutdown, or pipeline replacement during a frame suppresses its output.
-- A capture without a new desktop update does no inference and sends no move.
-- After a model or display change, the run stays stopped.
 - Only the engine thread uses MAKCU. It never sleeps on the frame path.
-- The model is a file name in `models/`. The settings hold no path.
 
 ## Product
 
