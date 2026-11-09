@@ -45,7 +45,6 @@ pub(super) struct ModelInputSpec {
 pub(super) struct InferenceOutput {
     pub selection: Selection,
     pub inference_done_qpc: i64,
-    pub postprocess_done_qpc: i64,
 }
 
 #[derive(Debug)]
@@ -324,7 +323,6 @@ impl OrtDirectMlBackend {
         Ok(InferenceOutput {
             selection,
             inference_done_qpc,
-            postprocess_done_qpc: Clock::now(),
         })
     }
 }

@@ -48,12 +48,6 @@ impl Clock {
         counter
     }
 
-    pub fn with_frequency(ticks_per_second: u64) -> Self {
-        Self {
-            ticks_per_second: ticks_per_second as f64,
-        }
-    }
-
     pub fn ms(self, from: i64, to: i64) -> f64 {
         (to - from) as f64 * 1000.0 / self.ticks_per_second
     }

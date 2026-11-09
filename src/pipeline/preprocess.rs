@@ -1,10 +1,7 @@
 use std::mem::{ManuallyDrop, size_of};
 
 use super::gpu::{GpuDeviceContext, transition};
-use crate::{
-    clock::Clock,
-    pipeline::{GpuFaultStage, Precision},
-};
+use crate::pipeline::{GpuFaultStage, Precision};
 use anyhow::{Context, Result, bail};
 use windows::{
     Win32::Graphics::{
@@ -14,31 +11,26 @@ use windows::{
             D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAG_NONE,
             D3D12_CACHED_PIPELINE_STATE, D3D12_COMMAND_LIST_TYPE_COMPUTE,
             D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
-            D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-            D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_RANGE,
-            D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FEATURE_DATA_FORMAT_SUPPORT,
-            D3D12_FEATURE_FORMAT_SUPPORT, D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
-            D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
-            D3D12_HEAP_TYPE_READBACK, D3D12_MEMORY_POOL_UNKNOWN, D3D12_PIPELINE_STATE_FLAG_NONE,
-            D3D12_QUERY_HEAP_DESC, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, D3D12_QUERY_TYPE_TIMESTAMP,
-            D3D12_RANGE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
-            D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_UAV, D3D12_RESOURCE_DESC,
-            D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON,
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DESCRIPTOR_HEAP_DESC,
+            D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+            D3D12_FEATURE_DATA_FORMAT_SUPPORT, D3D12_FEATURE_FORMAT_SUPPORT,
+            D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE, D3D12_GPU_DESCRIPTOR_HANDLE,
+            D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+            D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_UAV,
+            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE,
             D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
             D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_SHADER_BYTECODE,
             D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
             D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
-            D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_UAV_DIMENSION_BUFFER,
-            D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0,
-            D3D12SerializeRootSignature, ID3D12CommandAllocator, ID3D12CommandList,
-            ID3D12CommandQueue, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence,
-            ID3D12GraphicsCommandList, ID3D12PipelineState, ID3D12QueryHeap, ID3D12Resource,
-            ID3D12RootSignature,
+            D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
+            D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12SerializeRootSignature,
+            ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12DescriptorHeap,
+            ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12PipelineState,
+            ID3D12Resource, ID3D12RootSignature,
         },
         Dxgi::Common::{
             DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32_FLOAT,
@@ -74,8 +66,7 @@ impl std::fmt::Debug for GpuPreprocessor {
 
 /// Field order is drop order: the recorded lists go before everything they refer to.
 pub struct GpuPreprocessor {
-    timed_list: ID3D12CommandList,
-    untimed_list: ID3D12CommandList,
+    list: ID3D12CommandList,
     _allocator: ID3D12CommandAllocator,
     _descriptor_heap: ID3D12DescriptorHeap,
     _pipeline: ID3D12PipelineState,
@@ -84,23 +75,7 @@ pub struct GpuPreprocessor {
     _source: ID3D12Resource,
     queue: ID3D12CommandQueue,
     list_in_flight: Option<u64>,
-    timestamps: PreprocessTimestamps,
     fault_stage: GpuFaultStage,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PreprocessTicket {
-    pub completion_value: u64,
-    pub frame_seq: u64,
-    pub timed: bool,
-}
-
-struct PreprocessTimestamps {
-    heap: ID3D12QueryHeap,
-    readback: ID3D12Resource,
-    mapped: *const u64,
-    frequency: u64,
-    pending: Option<u64>,
 }
 
 impl GpuPreprocessor {
@@ -147,9 +122,6 @@ impl GpuPreprocessor {
         let allocator: ID3D12CommandAllocator =
             unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE) }
                 .context("failed to create preprocess command allocator")?;
-        let frequency = unsafe { gpu.queue().GetTimestampFrequency() }
-            .context("failed to query compute timestamp frequency")?;
-        let timestamps = PreprocessTimestamps::new(device, frequency)?;
 
         let cpu_start = unsafe { descriptor_heap.GetCPUDescriptorHandleForHeapStart() };
         write_descriptors(
@@ -165,32 +137,25 @@ impl GpuPreprocessor {
         let gpu_base = unsafe { descriptor_heap.GetGPUDescriptorHandleForHeapStart() };
         let output_gpu = offset_gpu(gpu_base, descriptor_stride);
         let constants = [width as u32, height as u32, pixels as u32];
-        let record = |timed: bool| -> Result<ID3D12CommandList> {
-            let list = PreprocessRecording {
-                device,
-                allocator: &allocator,
-                pipeline: &pipeline,
-                root_signature: &root_signature,
-                descriptor_heap: &descriptor_heap,
-                source,
-                destination,
-                source_gpu: gpu_base,
-                output_gpu,
-                timestamps: &timestamps,
-                constants,
-                dispatch: (dispatch_x as u32, dispatch_y as u32),
-                timed,
-            }
-            .record()?;
-            list.cast()
-                .context("failed to cast the preprocess command list")
-        };
-        let timed_list = record(true)?;
-        let untimed_list = record(false)?;
+        let list: ID3D12CommandList = PreprocessRecording {
+            device,
+            allocator: &allocator,
+            pipeline: &pipeline,
+            root_signature: &root_signature,
+            descriptor_heap: &descriptor_heap,
+            source,
+            destination,
+            source_gpu: gpu_base,
+            output_gpu,
+            constants,
+            dispatch: (dispatch_x as u32, dispatch_y as u32),
+        }
+        .record()?
+        .cast()
+        .context("failed to cast the preprocess command list")?;
 
         Ok(Self {
-            timed_list,
-            untimed_list,
+            list,
             _allocator: allocator,
             _descriptor_heap: descriptor_heap,
             _pipeline: pipeline,
@@ -199,7 +164,6 @@ impl GpuPreprocessor {
             _source: source.clone(),
             queue: gpu.queue().clone(),
             list_in_flight: None,
-            timestamps,
             fault_stage: GpuFaultStage::PreprocessSubmit,
         })
     }
@@ -210,8 +174,7 @@ impl GpuPreprocessor {
         ready_fence: &ID3D12Fence,
         reuse_fence: &ID3D12Fence,
         reuse_completed: u64,
-        measure: bool,
-    ) -> Result<PreprocessTicket> {
+    ) -> Result<()> {
         self.fault_stage = GpuFaultStage::PreprocessSubmit;
         if super::gpu::fence_reports_removal(reuse_completed) {
             self.fault_stage = GpuFaultStage::DeviceRemoved;
@@ -228,48 +191,13 @@ impl GpuPreprocessor {
             return Err(error).context("D3D12 queue wait on capture fence failed");
         }
         self.fault_stage = GpuFaultStage::PreprocessSubmit;
-        if measure {
-            self.timestamps.pending = Some(frame_seq);
-        }
-        let list = if measure {
-            &self.timed_list
-        } else {
-            &self.untimed_list
-        };
-        unsafe { self.queue.ExecuteCommandLists(&[Some(list.clone())]) };
+        unsafe { self.queue.ExecuteCommandLists(&[Some(self.list.clone())]) };
         self.fault_stage = GpuFaultStage::ReuseSignal;
         if let Err(error) = unsafe { self.queue.Signal(reuse_fence, frame_seq) } {
             return Err(error).context("D3D12 queue signal on reuse fence failed");
         }
         self.list_in_flight = Some(frame_seq);
-        Ok(PreprocessTicket {
-            completion_value: frame_seq,
-            frame_seq,
-            timed: measure,
-        })
-    }
-
-    pub fn collect(
-        &mut self,
-        ticket: PreprocessTicket,
-        reuse_fence: &ID3D12Fence,
-    ) -> Result<Option<f64>> {
-        if !ticket.timed {
-            return Ok(None);
-        }
-        let completed = unsafe { reuse_fence.GetCompletedValue() };
-        if super::gpu::fence_reports_removal(completed) {
-            self.fault_stage = GpuFaultStage::DeviceRemoved;
-            bail!("D3D12 reuse fence reports device removed while collecting preprocess timestamp");
-        }
-        if completed < ticket.completion_value {
-            bail!(
-                "preprocess timestamp contract violation: frame_seq={} required_fence={} completed_fence={completed}",
-                ticket.frame_seq,
-                ticket.completion_value
-            );
-        }
-        self.timestamps.collect(ticket.completion_value).map(Some)
+        Ok(())
     }
 
     pub fn fault_stage(&self) -> GpuFaultStage {
@@ -320,10 +248,8 @@ struct PreprocessRecording<'a> {
     destination: &'a ID3D12Resource,
     source_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
     output_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
-    timestamps: &'a PreprocessTimestamps,
     constants: [u32; PREPROCESS_PARAMETER_COUNT as usize],
     dispatch: (u32, u32),
-    timed: bool,
 }
 
 impl PreprocessRecording<'_> {
@@ -337,7 +263,6 @@ impl PreprocessRecording<'_> {
             )
         }
         .context("failed to create preprocess command list")?;
-        let first_query = 0;
         unsafe {
             list.ResourceBarrier(&[transition(
                 self.source,
@@ -355,29 +280,7 @@ impl PreprocessRecording<'_> {
                 self.constants.as_ptr().cast(),
                 0,
             );
-            if self.timed {
-                list.EndQuery(
-                    &self.timestamps.heap,
-                    D3D12_QUERY_TYPE_TIMESTAMP,
-                    first_query,
-                );
-            }
             list.Dispatch(self.dispatch.0, self.dispatch.1, 1);
-            if self.timed {
-                list.EndQuery(
-                    &self.timestamps.heap,
-                    D3D12_QUERY_TYPE_TIMESTAMP,
-                    first_query + 1,
-                );
-                list.ResolveQueryData(
-                    &self.timestamps.heap,
-                    D3D12_QUERY_TYPE_TIMESTAMP,
-                    first_query,
-                    2,
-                    &self.timestamps.readback,
-                    0,
-                );
-            }
             list.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
                 Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
                 Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
@@ -395,92 +298,6 @@ impl PreprocessRecording<'_> {
         }
         unsafe { list.Close() }.context("failed to close preprocess command list")?;
         Ok(list)
-    }
-}
-
-impl PreprocessTimestamps {
-    fn new(device: &ID3D12Device, frequency: u64) -> Result<Self> {
-        let desc = D3D12_QUERY_HEAP_DESC {
-            Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
-            Count: 2,
-            NodeMask: 0,
-        };
-        let mut heap = None;
-        unsafe { device.CreateQueryHeap(&desc, &mut heap) }
-            .context("failed to create preprocess timestamp query heap")?;
-        let heap = heap.context("timestamp query heap creation returned no heap")?;
-        let properties = D3D12_HEAP_PROPERTIES {
-            Type: D3D12_HEAP_TYPE_READBACK,
-            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 1,
-            VisibleNodeMask: 1,
-        };
-        let resource_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-            Alignment: 0,
-            Width: (2 * std::mem::size_of::<u64>()) as u64,
-            Height: 1,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN,
-            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
-        };
-        let mut readback = None;
-        unsafe {
-            device.CreateCommittedResource(
-                &properties,
-                D3D12_HEAP_FLAG_NONE,
-                &resource_desc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                None,
-                &mut readback,
-            )
-        }
-        .context("failed to create timestamp readback buffer")?;
-        let readback: ID3D12Resource =
-            readback.context("timestamp readback creation returned no resource")?;
-        let range = D3D12_RANGE {
-            Begin: 0,
-            End: 2 * std::mem::size_of::<u64>(),
-        };
-        let mut mapped = std::ptr::null_mut();
-        unsafe { readback.Map(0, Some(&range), Some(&mut mapped)) }
-            .context("failed to map timestamp readback buffer")?;
-        Ok(Self {
-            heap,
-            readback,
-            mapped: mapped.cast(),
-            frequency,
-            pending: None,
-        })
-    }
-
-    fn collect(&mut self, completion_value: u64) -> Result<f64> {
-        if self.pending != Some(completion_value) {
-            bail!("preprocess timestamp ticket does not match its submission");
-        }
-        // The same compute queue has completed this fence value, so timestamp
-        // readback is ready without a CPU wait.
-        let values = unsafe { std::slice::from_raw_parts(self.mapped, 2) };
-        if values[1] < values[0] || self.frequency == 0 {
-            bail!("invalid preprocess timestamp pair");
-        }
-        self.pending = None;
-        Ok(Clock::with_frequency(self.frequency)
-            .ms(values[0].cast_signed(), values[1].cast_signed()))
-    }
-}
-
-impl Drop for PreprocessTimestamps {
-    fn drop(&mut self) {
-        let empty = D3D12_RANGE { Begin: 0, End: 0 };
-        unsafe { self.readback.Unmap(0, Some(&empty)) };
     }
 }
 
@@ -693,8 +510,11 @@ mod tests {
     };
     use crate::sync::MutexExt;
     use windows::Win32::Graphics::Direct3D12::{
-        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+        D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
     };
 
     /// The GPU tests open the same desktop output, so they run one at a time.
@@ -856,25 +676,14 @@ mod tests {
                         completed != u64::MAX && completed >= seq - 1,
                         "shared texture reused before preprocess completion"
                     );
-                    let measure = seq % 2 == 0;
-                    capture.copy_to_target(&image, seq, measure)?;
-                    let ticket = preprocess.submit(
+                    capture.copy_to_target(&image, seq)?;
+                    preprocess.submit(
                         seq,
                         &inference_frame.capture_ready_fence,
                         &inference_frame.reuse_fence,
                         completed,
-                        measure,
                     )?;
                     gpu.wait_idle()?;
-                    let timing = preprocess.collect(ticket, &inference_frame.reuse_fence)?;
-                    if ticket.timed {
-                        anyhow::ensure!(
-                            timing.is_some_and(|ms| ms.is_finite() && ms >= 0.0),
-                            "invalid GPU timing"
-                        );
-                    } else {
-                        anyhow::ensure!(timing.is_none(), "untimed frame produced a timing");
-                    }
                 }
                 Ok(())
             })();
@@ -926,15 +735,13 @@ mod tests {
                 precision,
             )?;
             let result = (|| -> Result<Vec<f32>> {
-                let ticket = preprocess.submit(
+                preprocess.submit(
                     1,
                     &inference_frame.capture_ready_fence,
                     &inference_frame.reuse_fence,
                     inference_frame.reuse_completed(),
-                    false,
                 )?;
                 gpu.wait_idle()?;
-                preprocess.collect(ticket, &inference_frame.reuse_fence)?;
                 let bytes =
                     read_back(&mut gpu, &destination, elements * precision.element_bytes())?;
                 Ok(match precision {

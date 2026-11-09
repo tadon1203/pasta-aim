@@ -73,7 +73,7 @@ impl Worker {
         }
         let output_done = Clock::now();
         self.recorder
-            .frame(frame, &outcome, output_start, output_done, Instant::now());
+            .frame(frame, &outcome, output_done, Instant::now());
         self.note_output(frame.desktop_size);
         self.rebuilt = false;
         if self.state.run.phase == RunPhase::OneShot {
@@ -159,16 +159,9 @@ mod tests {
             desktop_size: (100, 100),
             times: Times {
                 present: present_qpc,
-                attempt_start: present_qpc,
-                acquired: present_qpc,
-                copy_submitted: present_qpc,
-                ready: present_qpc,
                 inference_start: present_qpc,
                 inference_done: present_qpc,
-                postprocess_done: present_qpc,
             },
-            gpu_preprocess_ms: None,
-            gpu_copy_ms: None,
             selected: Some(Detection::for_test(70.0, 50.0, 0)),
         }
     }

@@ -2,10 +2,8 @@ use anyhow::{Context, Result, bail};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_1},
     Direct3D11::{
-        D3D11_ASYNC_GETDATA_DONOTFLUSH, D3D11_BOX, D3D11_CREATE_DEVICE_FLAG, D3D11_QUERY,
-        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
-        D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11CreateDevice,
-        ID3D11Device, ID3D11Device4, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Query,
+        D3D11_BOX, D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+        D3D11CreateDevice, ID3D11Device, ID3D11Device4, ID3D11DeviceContext, ID3D11DeviceContext4,
         ID3D11Resource, ID3D11Texture2D,
     },
     Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -19,12 +17,7 @@ use windows::Win32::Graphics::{
 use windows::core::Interface;
 
 use super::gpu::{CaptureFrame, select_output};
-use crate::{
-    clock::Clock,
-    pipeline::{DisplayInfo, GpuFaultStage},
-};
-
-const GPU_QUERY_RING_SIZE: usize = 16;
+use crate::pipeline::{DisplayInfo, GpuFaultStage};
 
 pub(crate) enum CapturePoll {
     Fresh(AcquiredDesktopFrame),
@@ -38,12 +31,6 @@ pub(crate) struct AcquiredDesktopFrame {
     source_box: D3D11_BOX,
     desktop_size: (usize, usize),
     present_qpc: i64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CopyTimes {
-    pub copy_submitted_qpc: i64,
-    pub ready_qpc: i64,
 }
 
 impl AcquiredDesktopFrame {
@@ -68,137 +55,6 @@ struct FrameLayout {
     source_box: D3D11_BOX,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct GpuCopySample {
-    pub gpu_copy_ms: f64,
-}
-
-struct GpuQuerySlot {
-    disjoint: ID3D11Query,
-    before: ID3D11Query,
-    after: ID3D11Query,
-    in_flight: bool,
-}
-
-struct D3d11GpuProfiler {
-    slots: Vec<GpuQuerySlot>,
-    next_slot: usize,
-}
-
-impl D3d11GpuProfiler {
-    fn new(device: &ID3D11Device4) -> Result<Self> {
-        let mut slots = Vec::with_capacity(GPU_QUERY_RING_SIZE);
-        for _ in 0..GPU_QUERY_RING_SIZE {
-            slots.push(GpuQuerySlot {
-                disjoint: create_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT)?,
-                before: create_query(device, D3D11_QUERY_TIMESTAMP)?,
-                after: create_query(device, D3D11_QUERY_TIMESTAMP)?,
-                in_flight: false,
-            });
-        }
-        Ok(Self {
-            slots,
-            next_slot: 0,
-        })
-    }
-
-    fn reset(&mut self) {
-        for slot in &mut self.slots {
-            slot.in_flight = false;
-        }
-        self.next_slot = 0;
-    }
-
-    fn begin(&mut self, context: &ID3D11DeviceContext4) -> Option<usize> {
-        let slot_count = self.slots.len();
-        for offset in 0..slot_count {
-            let index = (self.next_slot + offset) % slot_count;
-            if !self.slots[index].in_flight {
-                let slot = &mut self.slots[index];
-                slot.in_flight = true;
-                self.next_slot = (index + 1) % slot_count;
-                // SAFETY: queries belong to this immediate context's device.
-                unsafe {
-                    context.Begin(&slot.disjoint);
-                    context.End(&slot.before);
-                }
-                return Some(index);
-            }
-        }
-        None
-    }
-
-    fn end(&mut self, context: &ID3D11DeviceContext4, index: usize) {
-        let slot = &self.slots[index];
-        // SAFETY: the query sequence is disjoint -> before -> copy -> after -> disjoint.
-        unsafe {
-            context.End(&slot.after);
-            context.End(&slot.disjoint);
-        }
-    }
-
-    fn try_take(&mut self, context: &ID3D11DeviceContext4) -> Option<GpuCopySample> {
-        for slot in &mut self.slots {
-            if !slot.in_flight {
-                continue;
-            }
-            // The disjoint query ends last, so the timestamps are finished when it is. A finished
-            // disjoint query always has a frequency, so zero means the GPU is not done: keep the slot.
-            let Some(disjoint) =
-                query_data::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>(context, &slot.disjoint)
-            else {
-                continue;
-            };
-            if disjoint.Frequency == 0 {
-                continue;
-            }
-            let (Some(before), Some(after)) = (
-                query_data::<u64>(context, &slot.before),
-                query_data::<u64>(context, &slot.after),
-            ) else {
-                continue;
-            };
-            slot.in_flight = false;
-            if disjoint.Disjoint.as_bool() || after < before {
-                continue;
-            }
-            return Some(GpuCopySample {
-                gpu_copy_ms: Clock::with_frequency(disjoint.Frequency)
-                    .ms(before.cast_signed(), after.cast_signed()),
-            });
-        }
-        None
-    }
-}
-
-/// `GetData` reports success while the GPU is not done and leaves `data` at its default.
-fn query_data<T: Default>(context: &ID3D11DeviceContext4, query: &ID3D11Query) -> Option<T> {
-    let mut data = T::default();
-    // SAFETY: `data` is writable storage of `size_of::<T>()` bytes, the size of this query's result.
-    unsafe {
-        context.GetData(
-            query,
-            Some(std::ptr::from_mut::<T>(&mut data).cast()),
-            std::mem::size_of::<T>() as u32,
-            D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
-        )
-    }
-    .ok()?;
-    Some(data)
-}
-
-fn create_query(device: &ID3D11Device4, query: D3D11_QUERY) -> Result<ID3D11Query> {
-    let desc = D3D11_QUERY_DESC {
-        Query: query,
-        MiscFlags: 0,
-    };
-    let mut result = None;
-    // SAFETY: descriptor and output pointer are valid for CreateQuery.
-    unsafe { device.CreateQuery(&desc, Some(&mut result)) }
-        .context("failed to create D3D11 query")?;
-    result.context("D3D11 returned no query")
-}
-
 impl std::fmt::Debug for DxgiCapture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DxgiCapture").finish_non_exhaustive()
@@ -212,7 +68,6 @@ pub struct DxgiCapture {
     device: ID3D11Device4,
     context: ID3D11DeviceContext4,
     info: DisplayInfo,
-    gpu_profiler: D3d11GpuProfiler,
     copy_target: Option<CopyTarget>,
     layout: Option<FrameLayout>,
     first_signal_logged: bool,
@@ -242,7 +97,6 @@ impl DxgiCapture {
         );
         let duplication = create_duplication(&selected.output, &device)?;
         let info = selected.info;
-        let gpu_profiler = D3d11GpuProfiler::new(&device)?;
         tracing::info!(adapter_index, output_index, width = info.width, height = info.height, display = %info.display_name, "DXGI capture initialized");
         Ok(Self {
             output: selected.output,
@@ -251,7 +105,6 @@ impl DxgiCapture {
             device,
             context,
             info,
-            gpu_profiler,
             copy_target: None,
             layout: None,
             first_signal_logged: false,
@@ -397,18 +250,12 @@ impl DxgiCapture {
         &mut self,
         frame: &AcquiredDesktopFrame,
         ready_value: u64,
-        measure: bool,
-    ) -> Result<CopyTimes> {
+    ) -> Result<()> {
         let target = self
             .copy_target
             .as_ref()
             .context("no copy target is bound")?;
         self.last_fault_stage = GpuFaultStage::CaptureCopy;
-        let query_slot = if measure {
-            self.gpu_profiler.begin(&self.context)
-        } else {
-            None
-        };
         // SAFETY: both resources share this device, and the source box lies inside the desktop image.
         unsafe {
             self.context.CopySubresourceRegion(
@@ -421,10 +268,6 @@ impl DxgiCapture {
                 0,
                 Some(std::ptr::from_ref::<D3D11_BOX>(&frame.source_box)),
             );
-        }
-        let copy_submitted_qpc = Clock::now();
-        if let Some(index) = query_slot {
-            self.gpu_profiler.end(&self.context, index);
         }
         self.last_fault_stage = GpuFaultStage::CaptureReadySignal;
         if !self.first_signal_logged {
@@ -442,18 +285,7 @@ impl DxgiCapture {
             tracing::info!(value = ready_value, "capture_fence_first_signal_ok");
             self.first_signal_logged = true;
         }
-        Ok(CopyTimes {
-            copy_submitted_qpc,
-            ready_qpc: Clock::now(),
-        })
-    }
-
-    pub(crate) fn try_take_gpu_copy_sample(&mut self) -> Option<GpuCopySample> {
-        self.gpu_profiler.try_take(&self.context)
-    }
-
-    pub(crate) fn reset_gpu_profiler(&mut self) {
-        self.gpu_profiler.reset();
+        Ok(())
     }
 
     fn recreate_duplication(&mut self) -> Result<()> {

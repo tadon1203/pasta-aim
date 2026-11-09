@@ -32,17 +32,7 @@ pub struct Rates {
 pub struct Stages {
     pub sample_count: usize,
     pub fps: f64,
-    pub cadence: Percentiles,
-    pub present_to_gpu_submit: Percentiles,
-    pub present_to_inference_start: Percentiles,
-    pub acquire_wait: Percentiles,
-    pub capture: Percentiles,
-    pub copy_submit: Percentiles,
-    pub gpu_copy: Percentiles,
-    pub preprocess: Percentiles,
     pub inference: Percentiles,
-    pub postprocess: Percentiles,
-    pub output_write: Percentiles,
     pub total: Percentiles,
 }
 
@@ -54,15 +44,7 @@ pub struct Percentiles {
 
 #[derive(Debug, Clone, Copy)]
 struct Sample {
-    present_to_gpu_submit: f64,
-    present_to_inference_start: f64,
-    acquire_wait: f64,
-    capture: f64,
-    copy_submit: f64,
-    preprocess: Option<f64>,
     inference: f64,
-    postprocess: f64,
-    output_write: f64,
     total: f64,
     cadence: Option<f64>,
 }
@@ -77,7 +59,6 @@ struct RateWindow {
 pub(super) struct Recorder {
     clock: Clock,
     samples: VecDeque<Sample>,
-    gpu_copy: VecDeque<f64>,
     skip_next: bool,
     previous_started: Option<i64>,
     frames: u64,
@@ -95,7 +76,6 @@ impl Recorder {
         Self {
             clock,
             samples: VecDeque::with_capacity(MAX_SAMPLES),
-            gpu_copy: VecDeque::with_capacity(MAX_SAMPLES),
             skip_next: true,
             previous_started: None,
             frames: 0,
@@ -130,7 +110,6 @@ impl Recorder {
     pub(super) fn pipeline_changed(&mut self) {
         self.skip_next = true;
         self.samples.clear();
-        self.gpu_copy.clear();
         self.previous_started = None;
         self.rates = Rates::default();
         self.changed = true;
@@ -153,7 +132,6 @@ impl Recorder {
         &mut self,
         frame: &Frame,
         outcome: &Outcome,
-        output_start: i64,
         output_done: i64,
         now: Instant,
     ) {
@@ -180,22 +158,11 @@ impl Recorder {
             push_bounded(
                 &mut self.samples,
                 Sample {
-                    present_to_gpu_submit: clock.ms(times.present, times.ready),
-                    present_to_inference_start: clock.ms(times.present, times.inference_start),
-                    acquire_wait: clock.ms(times.attempt_start, times.acquired),
-                    capture: clock.ms(times.acquired, times.ready),
-                    copy_submit: clock.ms(times.acquired, times.copy_submitted),
-                    preprocess: frame.gpu_preprocess_ms,
                     inference: clock.ms(times.inference_start, times.inference_done),
-                    postprocess: clock.ms(times.inference_done, times.postprocess_done),
-                    output_write: clock.ms(output_start, output_done),
                     total,
                     cadence,
                 },
             );
-            if let Some(gpu_copy_ms) = frame.gpu_copy_ms {
-                push_bounded(&mut self.gpu_copy, gpu_copy_ms);
-            }
         }
         self.update_rates(now);
     }
@@ -244,17 +211,7 @@ impl Recorder {
             fps: mean_cadence
                 .filter(|value| *value > 0.0)
                 .map_or(0.0, |value| 1000.0 / value),
-            cadence: of(|sample| sample.cadence),
-            present_to_gpu_submit: of(|sample| Some(sample.present_to_gpu_submit)),
-            present_to_inference_start: of(|sample| Some(sample.present_to_inference_start)),
-            acquire_wait: of(|sample| Some(sample.acquire_wait)),
-            capture: of(|sample| Some(sample.capture)),
-            copy_submit: of(|sample| Some(sample.copy_submit)),
-            gpu_copy: percentiles(self.gpu_copy.iter().copied().collect()),
-            preprocess: of(|sample| sample.preprocess),
             inference: of(|sample| Some(sample.inference)),
-            postprocess: of(|sample| Some(sample.postprocess)),
-            output_write: of(|sample| Some(sample.output_write)),
             total: of(|sample| Some(sample.total)),
         }
     }
@@ -294,16 +251,9 @@ mod tests {
             desktop_size: (100, 100),
             times: Times {
                 present,
-                attempt_start: present + 10,
-                acquired: present + 12,
-                copy_submitted: present + 13,
-                ready: present + 16,
                 inference_start: present + 17,
                 inference_done: present + 22,
-                postprocess_done: present + 24,
             },
-            gpu_preprocess_ms: None,
-            gpu_copy_ms: None,
             selected: None,
         }
     }
@@ -316,13 +266,7 @@ mod tests {
     }
 
     fn record(recorder: &mut Recorder, present: i64, total: i64, now: Instant) {
-        recorder.frame(
-            &frame(present),
-            &outcome(),
-            present + total - 2,
-            present + total,
-            now,
-        );
+        recorder.frame(&frame(present), &outcome(), present + total, now);
     }
 
     #[test]
@@ -353,8 +297,6 @@ mod tests {
         assert_eq!(stages.sample_count, 20);
         assert_eq!(stages.total.p50, 11.0);
         assert_eq!(stages.total.p95, 19.0);
-        assert_eq!(stages.cadence.p50, 10.0);
-        assert_eq!(stages.cadence.p95, 10.0);
         assert_eq!(stages.fps, 100.0);
     }
 

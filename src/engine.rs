@@ -304,9 +304,6 @@ impl Worker {
         let now = Instant::now();
         self.next_capture = now;
         self.recorder.run_started(now);
-        if let Some(pipeline) = self.pipeline.as_mut() {
-            pipeline.reset_timing();
-        }
         self.run = Some(ActiveRun { started: now });
         if mode == RunPhase::Continuous {
             tracing::info!(

@@ -3,7 +3,7 @@ use eframe::egui;
 use super::{App, controller_line, error_label, makcu_line, percent};
 use nice_aimassist::{
     engine::{CapturePhase, Command, ModelPhase, Percentiles, Rates, Stages, State, Stats},
-    pipeline::{CpuNodes, DisplayInfo},
+    pipeline::DisplayInfo,
 };
 
 impl App {
@@ -75,14 +75,6 @@ impl App {
         ));
         ui.end_row();
 
-        ui.label("CPU fallback nodes");
-        ui.add(egui::Label::new(cpu_fallback_value(engine)).wrap());
-        ui.end_row();
-
-        ui.label("DML graph capture");
-        ui.label(graph_capture_value(engine));
-        ui.end_row();
-
         if let Some((width, height)) = engine.capture.desktop_size {
             ui.label("Desktop frame");
             ui.label(format!("{width}×{height} BGRA8"));
@@ -101,13 +93,6 @@ impl App {
             .active_name
             .clone()
             .unwrap_or_else(|| "None".to_owned());
-        let input = engine.model.input_size.map_or_else(
-            || "Unknown".to_owned(),
-            |(w, h)| match engine.model.precision {
-                Some(precision) => format!("{w}x{h} {}", precision.label()),
-                None => format!("{w}x{h}"),
-            },
-        );
         let mouse_route = engine
             .output
             .device
@@ -117,15 +102,26 @@ impl App {
         let warning = self.settings_warning.as_deref().unwrap_or("none");
         let save_error = self.settings_save_error.as_deref().unwrap_or("none");
         format!(
-            "nice-aimassist {}\nmodel: {model}\ninput: {input}\ninference adapter: {}\n{}\nDML graph capture: {}\ncapture: {display}\nmakcu: {}\nmakcu routes: {makcu_routes}\nxinput hotkey controller: {}\nfps limit: {}\nfresh/processed FPS: {:.1}/{:.1}\nperformance samples: {}\npipeline p50/p95: {:.2}/{:.2} ms\nacquire wait p50/p95: {:.2}/{:.2} ms\ncapture p50/p95: {:.2}/{:.2} ms\ncopy submit p50/p95: {:.2}/{:.2} ms\nGPU copy p50/p95: {:.2}/{:.2} ms\nGPU preprocess p50/p95: {:.2}/{:.2} ms\ninference p50/p95: {:.2}/{:.2} ms\nsettings warning: {warning}\nsettings save error: {save_error}",
+            "nice-aimassist {}
+model: {model}
+inference adapter: {}
+capture: {display}
+makcu: {}
+makcu routes: {makcu_routes}
+xinput hotkey controller: {}
+fps limit: {}
+fresh/processed FPS: {:.1}/{:.1}
+performance samples: {}
+pipeline p50/p95: {:.2}/{:.2} ms
+inference p50/p95: {:.2}/{:.2} ms
+settings warning: {warning}
+settings save error: {save_error}",
             env!("CARGO_PKG_VERSION"),
             engine
                 .capture
                 .selected
                 .as_ref()
                 .map_or("Unavailable", |display| display.adapter_name.as_str()),
-            cpu_fallback_line(engine),
-            graph_capture_value(engine),
             makcu_line(engine.output.phase, engine.output.device.as_ref()),
             controller_line(self.controller_slot),
             self.settings.fps_limit.get(),
@@ -134,16 +130,6 @@ impl App {
             stats.stages.sample_count,
             stats.stages.total.p50,
             stats.stages.total.p95,
-            stats.stages.acquire_wait.p50,
-            stats.stages.acquire_wait.p95,
-            stats.stages.capture.p50,
-            stats.stages.capture.p95,
-            stats.stages.copy_submit.p50,
-            stats.stages.copy_submit.p95,
-            stats.stages.gpu_copy.p50,
-            stats.stages.gpu_copy.p95,
-            stats.stages.preprocess.p50,
-            stats.stages.preprocess.p95,
             stats.stages.inference.p50,
             stats.stages.inference.p95,
         )
@@ -193,26 +179,6 @@ fn draw_input_rows(ui: &mut egui::Ui, app: &App, engine: &State, stats: &Stats) 
     }
 }
 
-fn cpu_fallback_value(engine: &State) -> String {
-    engine
-        .model
-        .cpu_nodes
-        .as_ref()
-        .map_or_else(|| "unknown".to_owned(), CpuNodes::summary)
-}
-
-fn graph_capture_value(engine: &State) -> &'static str {
-    match engine.model.graph_capture {
-        Some(true) => "On",
-        Some(false) => "Off",
-        None => "unknown",
-    }
-}
-
-fn cpu_fallback_line(engine: &State) -> String {
-    format!("CPU fallback nodes: {}", cpu_fallback_value(engine))
-}
-
 fn draw_performance(ui: &mut egui::Ui, performance: &Stages, rates: &Rates) {
     ui.label(format!(
         "Fresh FPS {:.1} · Processed FPS {:.1}",
@@ -241,25 +207,7 @@ fn draw_stage_grid(ui: &mut egui::Ui, performance: &Stages) {
             ui.strong("p95");
             ui.end_row();
             metric_row(ui, "pipeline", performance.total);
-            metric_row(
-                ui,
-                "Present → GPU submit",
-                performance.present_to_gpu_submit,
-            );
-            metric_row(
-                ui,
-                "Present → inference",
-                performance.present_to_inference_start,
-            );
-            metric_row(ui, "DXGI acquire wait", performance.acquire_wait);
-            metric_row(ui, "Capture", performance.capture);
-            metric_row(ui, "GPU copy submit", performance.copy_submit);
-            metric_row(ui, "GPU copy", performance.gpu_copy);
-            metric_row(ui, "GPU preprocess", performance.preprocess);
             metric_row(ui, "Inference", performance.inference);
-            metric_row(ui, "Postprocess", performance.postprocess);
-            metric_row(ui, "MAKCU write", performance.output_write);
-            metric_row(ui, "Cadence", performance.cadence);
         });
 }
 

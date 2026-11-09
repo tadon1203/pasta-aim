@@ -21,7 +21,6 @@ pub(crate) use self::capture::CapturePoll;
 pub use self::capture::DxgiCapture;
 pub(crate) use self::gpu::GpuDeviceContext;
 use self::{
-    capture::CopyTimes,
     gpu::{CaptureFrame, InferenceFrame},
     inference::{InferenceOutput, ModelInputSpec, OrtDirectMlBackend},
     preprocess::GpuPreprocessor,
@@ -183,13 +182,8 @@ pub struct Detection {
 #[derive(Debug, Clone, Copy)]
 pub struct Times {
     pub present: i64,
-    pub attempt_start: i64,
-    pub acquired: i64,
-    pub copy_submitted: i64,
-    pub ready: i64,
     pub inference_start: i64,
     pub inference_done: i64,
-    pub postprocess_done: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +193,6 @@ pub(crate) enum GpuFaultStage {
     CaptureReadySignal,
     D3D12ReadyWait,
     PreprocessSubmit,
-    PreprocessCollect,
     BackendRun,
     ReuseSignal,
     DeviceRemoved,
@@ -213,7 +206,6 @@ impl GpuFaultStage {
             Self::CaptureReadySignal => "capture_ready_signal",
             Self::D3D12ReadyWait => "d3d12_ready_wait",
             Self::PreprocessSubmit => "preprocess_submit",
-            Self::PreprocessCollect => "preprocess_collect",
             Self::BackendRun => "backend_run",
             Self::ReuseSignal => "reuse_signal",
             Self::DeviceRemoved => "device_removed",
@@ -231,8 +223,6 @@ pub struct Options {
 pub struct Frame {
     pub desktop_size: (usize, usize),
     pub times: Times,
-    pub gpu_preprocess_ms: Option<f64>,
-    pub gpu_copy_ms: Option<f64>,
     pub selected: Option<Detection>,
 }
 
@@ -246,7 +236,6 @@ pub enum Fault {
 
 struct Inferred {
     start: i64,
-    gpu_preprocess_ms: Option<f64>,
     output: InferenceOutput,
 }
 
@@ -281,7 +270,6 @@ pub(crate) struct Pipeline {
     id: u64,
     frame_seq: u64,
     last_submitted: u64,
-    sampler: ProfileSampler,
 }
 
 impl Pipeline {
@@ -299,7 +287,6 @@ impl Pipeline {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             frame_seq: 0,
             last_submitted: 0,
-            sampler: ProfileSampler::default(),
         })
     }
 
@@ -318,68 +305,46 @@ impl Pipeline {
     pub fn process_next(&mut self, wait_ms: u32) -> Result<Option<Frame>, Fault> {
         let reuse_completed = self.check_reuse_fence()?;
 
-        let attempt_start = Clock::now();
         let frame = match self.capture.acquire(wait_ms) {
             Ok(CapturePoll::Fresh(frame)) => frame,
             Ok(CapturePoll::NoDesktopUpdate) => return Ok(None),
             Err(error) => return Err(self.capture_fault(&error)),
         };
-        let acquired_qpc = Clock::now();
-        let measure = self.sampler.should_measure();
-        let (copy, gpu_copy_ms) = self.copy_stage(&frame, measure)?;
-        let inferred = self.infer_stage(reuse_completed, measure)?;
+        self.copy_stage(&frame)?;
+        let inferred = self.infer_stage(reuse_completed)?;
 
         Ok(Some(Frame {
             desktop_size: frame.desktop_size(),
             times: Times {
                 present: frame.present_qpc(),
-                attempt_start,
-                acquired: acquired_qpc,
-                copy_submitted: copy.copy_submitted_qpc,
-                ready: copy.ready_qpc,
                 inference_start: inferred.start,
                 inference_done: inferred.output.inference_done_qpc,
-                postprocess_done: inferred.output.postprocess_done_qpc,
             },
-            gpu_preprocess_ms: inferred.gpu_preprocess_ms,
-            gpu_copy_ms,
             selected: inferred.output.selection.nearest,
         }))
     }
 
-    fn copy_stage(
-        &mut self,
-        frame: &AcquiredDesktopFrame,
-        measure: bool,
-    ) -> Result<(CopyTimes, Option<f64>), Fault> {
+    fn copy_stage(&mut self, frame: &AcquiredDesktopFrame) -> Result<(), Fault> {
         let frame_seq = self
             .frame_seq
             .checked_add(1)
             .expect("frame sequence exhausted");
         self.frame_seq = frame_seq;
-        let copy = self
-            .capture
-            .copy_to_target(frame, frame_seq, measure)
-            .map_err(|error| self.copy_fault(&error))?;
-        let gpu_copy_ms = self
-            .capture
-            .try_take_gpu_copy_sample()
-            .map(|sample| sample.gpu_copy_ms);
-        Ok((copy, gpu_copy_ms))
+        self.capture
+            .copy_to_target(frame, frame_seq)
+            .map_err(|error| self.copy_fault(&error))
     }
 
-    fn infer_stage(&mut self, reuse_completed: u64, measure: bool) -> Result<Inferred, Fault> {
+    fn infer_stage(&mut self, reuse_completed: u64) -> Result<Inferred, Fault> {
         let frame_seq = self.frame_seq;
         let start = Clock::now();
-        let ticket = self
-            .model
+        self.model
             .preprocess
             .submit(
                 frame_seq,
                 &self.model.frame.capture_ready_fence,
                 &self.model.frame.reuse_fence,
                 reuse_completed,
-                measure,
             )
             .map_err(|error| {
                 let stage = self.model.preprocess.fault_stage();
@@ -387,35 +352,15 @@ impl Pipeline {
             })?;
         self.last_submitted = frame_seq;
 
-        // The ONNX Runtime run is checked after the collect, so that the GPU work of the frame is complete.
-        let run = self.model.backend.run();
-        let gpu_preprocess_ms = self
-            .model
-            .preprocess
-            .collect(ticket, &self.model.frame.reuse_fence)
-            .map_err(|error| {
-                self.fault(
-                    GpuFaultStage::PreprocessCollect,
-                    "GPU pipeline failed",
-                    &error,
-                )
-            })?;
         let output =
-            run.map_err(|error| self.fault(GpuFaultStage::BackendRun, "inference failed", &error))?;
-        Ok(Inferred {
-            start,
-            gpu_preprocess_ms,
-            output,
-        })
+            self.model.backend.run().map_err(|error| {
+                self.fault(GpuFaultStage::BackendRun, "inference failed", &error)
+            })?;
+        Ok(Inferred { start, output })
     }
 
     pub fn set_confidence(&mut self, value: Confidence) {
         self.model.backend.set_confidence_threshold(value);
-    }
-
-    pub fn reset_timing(&mut self) {
-        self.sampler.reset();
-        self.capture.reset_gpu_profiler();
     }
 
     pub fn display(&self) -> &DisplayInfo {
@@ -536,26 +481,6 @@ fn build_model(
     };
     capture.bind_copy_target(&capture_frame, model.input_size)?;
     Ok((model, capture_frame))
-}
-
-#[derive(Debug, Default)]
-struct ProfileSampler {
-    frames: u64,
-}
-
-const COLD_FRAMES: u64 = 16;
-const STEADY_STRIDE: u64 = 16;
-
-impl ProfileSampler {
-    fn reset(&mut self) {
-        self.frames = 0;
-    }
-
-    fn should_measure(&mut self) -> bool {
-        let frame = self.frames;
-        self.frames = self.frames.saturating_add(1);
-        frame < COLD_FRAMES || (frame - COLD_FRAMES).is_multiple_of(STEADY_STRIDE)
-    }
 }
 
 #[cfg(test)]
