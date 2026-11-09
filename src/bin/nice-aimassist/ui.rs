@@ -12,7 +12,7 @@ use nice_aimassist::{
     engine::{Command, Engine, OutputPhase, RunPhase, State, Stats},
     hotkeys::{self as hotkey_thread, Action, Event, Hotkey, Hotkeys, Shortcut},
     output::Device,
-    settings::{self, Display, Loaded, Settings},
+    settings::{self, Display, Settings},
 };
 
 pub struct App {
@@ -30,7 +30,6 @@ pub struct App {
     hotkey_error: Option<String>,
     model_catalog_error: Option<String>,
     settings_warning: Option<String>,
-    settings_unusable: bool,
     settings_save_error: Option<String>,
     dirty: HashSet<EditField>,
 }
@@ -48,10 +47,11 @@ enum EditField {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, loaded: Loaded) -> Self {
-        let settings = loaded.settings;
-        let settings_warning = loaded.warning;
-        let settings_unusable = loaded.unusable;
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        settings_warning: Option<String>,
+    ) -> Self {
         tracing::info!(model = ?settings.model, sensitivity_x = settings.sensitivity_x.get(), sensitivity_y = settings.sensitivity_y.get(), fps_limit = settings.fps_limit.get(), "application initialized with settings");
         let (models, model_catalog_error) = match settings::models() {
             Ok(names) => (names, None),
@@ -95,7 +95,6 @@ impl App {
             hotkey_error,
             model_catalog_error,
             settings_warning,
-            settings_unusable,
             settings_save_error: None,
             dirty: HashSet::new(),
         };
@@ -108,12 +107,11 @@ impl App {
     }
 
     fn persist(&mut self) {
-        match self.settings.save(self.settings_unusable) {
+        match self.settings.save() {
             Ok(()) => {
                 tracing::debug!("settings persistence succeeded");
                 self.settings_save_error = None;
                 self.settings_warning = None;
-                self.settings_unusable = false;
             }
             Err(error) => {
                 tracing::error!(error = %format_args!("{error:#}"), "settings persistence failed");

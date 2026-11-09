@@ -10,8 +10,8 @@ use nice_aimassist::{pipeline, settings::Settings};
 fn main() -> Result<()> {
     // The logs folder is found first, so a missing install folder is reported before any settings file is read.
     let _logging = logging::init()?;
-    let loaded = Settings::load();
-    if let Some(warning) = &loaded.warning {
+    let (settings, warning) = Settings::load();
+    if let Some(warning) = &warning {
         tracing::warn!(%warning, "settings loaded with a problem");
     }
     tracing::info!("nice-aimassist starting");
@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     let result = eframe::run_native(
         "nice-aimassist",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, loaded)))),
+        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, settings, warning)))),
     );
     tracing::info!(?result, "nice-aimassist exiting");
     result.map_err(|error| anyhow::anyhow!("{error}"))

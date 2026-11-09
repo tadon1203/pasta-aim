@@ -150,84 +150,58 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug)]
-pub struct Loaded {
-    pub settings: Settings,
-    pub warning: Option<String>,
-    pub unusable: bool,
-}
-
 impl Settings {
-    pub fn load() -> Loaded {
-        let path = match settings_path() {
-            Ok(path) => path,
-            Err(error) => {
-                return Loaded {
-                    settings: Self::default(),
-                    warning: Some(format!("Settings could not be read: {error:#}")),
-                    unusable: true,
-                };
-            }
-        };
+    /// A file that cannot be parsed is copied to `settings.json.bak` before the defaults replace it.
+    pub fn load() -> (Self, Option<String>) {
+        match settings_path() {
+            Ok(path) => Self::load_from(&path),
+            Err(error) => (
+                Self::default(),
+                Some(format!("Settings could not be read: {error:#}")),
+            ),
+        }
+    }
+
+    fn load_from(path: &Path) -> (Self, Option<String>) {
         tracing::debug!(path = %path.display(), "loading settings");
-        match fs::read(&path) {
-            Ok(bytes) => Self::from_json(&bytes),
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(path = %path.display(), "settings file not found; using defaults");
-                Loaded {
-                    settings: Self::default(),
-                    warning: None,
-                    unusable: false,
-                }
+                return (Self::default(), None);
             }
             Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "settings file could not be read; using defaults");
-                Loaded {
-                    settings: Self::default(),
-                    warning: Some(format!("Settings could not be read: {error}")),
-                    unusable: true,
-                }
+                return (
+                    Self::default(),
+                    Some(format!("Settings could not be read: {error}")),
+                );
             }
-        }
-    }
-
-    pub fn from_json(bytes: &[u8]) -> Loaded {
-        let raw: Value = match serde_json::from_slice(bytes) {
-            Ok(raw) => raw,
-            Err(error) => return unusable(&error),
         };
-        let listed = raw
-            .get("hotkeys")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        match serde_json::from_value::<Self>(raw) {
-            Ok(settings) => {
-                let dropped = listed.saturating_sub(settings.hotkeys.len());
-                let warning = (dropped > 0).then(|| {
-                    format!(
-                        "Settings: {dropped} hotkey {} could not be read and {} removed",
-                        if dropped == 1 { "entry" } else { "entries" },
-                        if dropped == 1 { "was" } else { "were" },
-                    )
-                });
-                Loaded {
-                    settings,
-                    warning,
-                    unusable: false,
-                }
+        match Self::from_json(&bytes) {
+            Ok(settings) => (settings, None),
+            Err(error) => {
+                let backup = back_up(path).map_or_else(
+                    |backup_error| format!(" ({backup_error:#})"),
+                    |()| String::new(),
+                );
+                (
+                    Self::default(),
+                    Some(format!(
+                        "Settings could not be loaded. Using defaults; the old file is kept as settings.json.bak{backup}: {error}"
+                    )),
+                )
             }
-            Err(error) => unusable(&error),
         }
     }
 
-    pub fn save(&self, unusable: bool) -> Result<()> {
-        self.save_at(&settings_path()?, unusable)
+    pub fn from_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
     }
 
-    fn save_at(&self, path: &Path, unusable: bool) -> Result<()> {
-        if unusable && path.exists() {
-            back_up(path)?;
-        }
+    pub fn save(&self) -> Result<()> {
+        self.save_at(&settings_path()?)
+    }
+
+    fn save_at(&self, path: &Path) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(self)?;
         fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
         tracing::debug!(path = %path.display(), "settings saved");
@@ -247,17 +221,6 @@ impl Settings {
     pub fn remove_binding(&mut self, action: Action, shortcut: Shortcut) {
         self.hotkeys
             .retain(|binding| !(binding.action == action && binding.shortcut == shortcut));
-    }
-}
-
-fn unusable(error: &impl std::fmt::Display) -> Loaded {
-    tracing::warn!(error = %error, "settings file could not be parsed; using defaults");
-    Loaded {
-        settings: Settings::default(),
-        warning: Some(format!(
-            "Settings could not be loaded. Using defaults until the next settings change: {error}"
-        )),
-        unusable: true,
     }
 }
 
@@ -364,23 +327,21 @@ mod tests {
 
     #[test]
     fn a_missing_field_gets_its_default_and_the_others_keep_their_values() {
-        let loaded = Settings::from_json(br#"{"sensitivity_x": 250, "low_latency": true}"#);
-        assert!(!loaded.unusable);
-        assert!(loaded.warning.is_none());
-        assert_eq!(loaded.settings.sensitivity_x.get(), 250);
-        assert_eq!(loaded.settings.sensitivity_y, Sensitivity::default());
-        assert!(loaded.settings.low_latency);
-        assert_eq!(loaded.settings.confidence, Confidence::default());
-        assert_eq!(loaded.settings.hotkeys, default_hotkeys());
+        let settings =
+            Settings::from_json(br#"{"sensitivity_x": 250, "low_latency": true}"#).unwrap();
+        assert_eq!(settings.sensitivity_x.get(), 250);
+        assert_eq!(settings.sensitivity_y, Sensitivity::default());
+        assert!(settings.low_latency);
+        assert_eq!(settings.confidence, Confidence::default());
+        assert_eq!(settings.hotkeys, default_hotkeys());
     }
 
     #[test]
     fn an_unknown_field_is_dropped_on_the_next_save() {
-        let loaded = Settings::from_json(br#"{"fps_limit": 120, "version": 2}"#);
-        assert!(loaded.warning.is_none());
+        let settings = Settings::from_json(br#"{"fps_limit": 120, "version": 2}"#).unwrap();
         let dir = temp_dir("unknown");
         let path = dir.join("settings.json");
-        loaded.settings.save_at(&path, false).unwrap();
+        settings.save_at(&path).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
         assert!(!saved.contains("version"));
         assert!(saved.contains("fps_limit"));
@@ -388,46 +349,34 @@ mod tests {
 
     #[test]
     fn a_value_out_of_range_is_clamped() {
-        let loaded = Settings::from_json(
+        let settings = Settings::from_json(
             br#"{"sensitivity_x": 20000, "new_frame_wait": 0, "target_y_offset": 101}"#,
-        );
-        assert!(!loaded.unusable);
-        assert_eq!(loaded.settings.sensitivity_x.get(), Sensitivity::MAX);
-        assert_eq!(loaded.settings.new_frame_wait.get(), NewFrameWait::MIN);
-        assert_eq!(loaded.settings.target_y_offset.get(), TargetYOffset::MAX);
+        )
+        .unwrap();
+        assert_eq!(settings.sensitivity_x.get(), Sensitivity::MAX);
+        assert_eq!(settings.new_frame_wait.get(), NewFrameWait::MIN);
+        assert_eq!(settings.target_y_offset.get(), TargetYOffset::MAX);
     }
 
     #[test]
-    fn a_value_of_the_wrong_type_resets_all_fields_and_is_unusable() {
-        let loaded = Settings::from_json(br#"{"sensitivity": 150, "fps_limit": "fast"}"#);
-        assert!(loaded.unusable);
-        assert!(loaded.warning.is_some());
-        assert_eq!(loaded.settings, Settings::default());
+    fn a_value_of_the_wrong_type_and_invalid_json_are_errors() {
+        assert!(Settings::from_json(br#"{"fps_limit": "fast"}"#).is_err());
+        assert!(Settings::from_json(br#"{"sensitivity": 150"#).is_err());
+        assert!(Settings::from_json(b"[1, 2]").is_err());
     }
 
     #[test]
-    fn invalid_json_resets_all_fields_and_is_unusable() {
-        let loaded = Settings::from_json(br#"{"sensitivity": 150"#);
-        assert!(loaded.unusable);
-        assert!(loaded.warning.is_some());
-        assert_eq!(loaded.settings, Settings::default());
-        assert!(Settings::from_json(b"[1, 2]").unusable);
-    }
-
-    #[test]
-    fn an_invalid_hotkey_entry_is_dropped_with_a_warning_and_the_others_stay() {
-        let loaded = Settings::from_json(
+    fn an_invalid_hotkey_entry_is_dropped_and_the_others_stay() {
+        let settings = Settings::from_json(
             br#"{"hotkeys": [
                 {"action": "run_once", "shortcut": "F9"},
-                {"action": "run_once", "shortcut": " "},
+                {"action": "continuous_hold", "shortcut": " "},
                 {"action": "continuous_hold", "shortcut": "F8"}
             ]}"#,
-        );
-        assert!(!loaded.unusable);
-        assert_eq!(loaded.settings.hotkeys.len(), 2);
-        assert_eq!(loaded.settings.hotkeys[0].shortcut.to_string(), "F9");
-        assert_eq!(loaded.settings.hotkeys[1].shortcut.to_string(), "F8");
-        assert!(loaded.warning.unwrap().contains("1 hotkey entry"));
+        )
+        .unwrap();
+        assert_eq!(settings.hotkeys.len(), 1);
+        assert_eq!(settings.hotkeys[0].shortcut.to_string(), "F8");
     }
 
     #[test]
@@ -435,41 +384,35 @@ mod tests {
         let settings = Settings {
             makcu_port: Some("COM4".to_owned()),
             hotkeys: vec![Hotkey {
-                action: Action::RunOnce,
+                action: Action::Hold,
                 shortcut: "xinput:a".parse().unwrap(),
             }],
             ..Settings::default()
         };
-        let restored = Settings::from_json(&serde_json::to_vec(&settings).unwrap());
-        assert!(restored.warning.is_none());
-        assert_eq!(restored.settings, settings);
+        let restored = Settings::from_json(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
     }
 
     #[test]
-    fn two_invalid_hotkey_entries_give_a_plural_warning() {
-        let loaded = Settings::from_json(
-            br#"{"hotkeys": [
-                {"action": "run_once", "shortcut": " "},
-                {"action": "run_once", "shortcut": ""}
-            ]}"#,
-        );
-        assert_eq!(loaded.settings.hotkeys, Vec::new());
-        let warning = loaded.warning.unwrap();
-        assert!(warning.contains("2 hotkey entries"));
-        assert!(warning.contains("were removed"));
-    }
-
-    #[test]
-    fn save_of_an_unusable_file_copies_it_to_bak_first() {
+    fn loading_an_unparsable_file_gives_the_defaults_and_keeps_a_backup() {
         let dir = temp_dir("backup");
         let path = dir.join("settings.json");
         fs::write(&path, "{ broken").unwrap();
-        Settings::default().save_at(&path, true).unwrap();
+        let (settings, warning) = Settings::load_from(&path);
+        assert_eq!(settings, Settings::default());
+        assert!(warning.is_some());
         assert_eq!(
             fs::read_to_string(dir.join("settings.json.bak")).unwrap(),
             "{ broken"
         );
-        assert!(serde_json::from_str::<Value>(&fs::read_to_string(&path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn a_missing_file_gives_the_defaults_without_a_warning() {
+        let dir = temp_dir("missing");
+        let (settings, warning) = Settings::load_from(&dir.join("settings.json"));
+        assert_eq!(settings, Settings::default());
+        assert!(warning.is_none());
     }
 
     #[test]
