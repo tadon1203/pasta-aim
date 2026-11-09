@@ -4,9 +4,7 @@ A Windows app that captures the center of a display, finds targets with a YOLO m
 
 ## Documentation
 
-- [CLAUDE.md](./CLAUDE.md): the list of documents
-- [Requirements](./docs/requirements.md): how the app behaves, with every setting
-- [Architecture](./ARCHITECTURE.md): system map and engineering rules
+- [CLAUDE.md](./CLAUDE.md): architecture, rules, and the list of documents
 
 ## Run
 
@@ -20,7 +18,7 @@ models/
 logs/
 ```
 
-Put at least one `.onnx` model in `models/`. The model requirements are in [requirements.md](./docs/requirements.md#model).
+Put at least one `.onnx` model in `models/`. The model requirements are in [CLAUDE.md](./CLAUDE.md#product).
 
 ## Development
 

@@ -6,14 +6,44 @@ Respond and communicate with the user in the language they are using.
 
 Read a document only when its trigger applies. Do not read them all up front.
 
-| Document                   | What it is                                              | Read when                                                      |
-| -------------------------- | ------------------------------------------------------- | -------------------------------------------------------------- |
-| `README.md`                | What the project is and how to run it                   | You need setup or run steps                                    |
-| `ARCHITECTURE.md`          | System map, code map, and rules that must not break     | You change structure, add a module, or cross a thread boundary |
-| `docs/requirements.md`     | How the product behaves                                 | A task changes or depends on user-visible behavior             |
-| `docs/makcu-protocol.md`   | The MAKCU wire protocol                                 | The MAKCU communication changes                                |
-| `docs/coding-standards.md` | Rules for code and documentation that lint cannot check | You write or review code or docs                               |
-| `docs/git-workflow.md`     | Commit branch and commit message rules                  | You commit or prepare a commit                                 |
+| Document                 | What it is                            | Read when                           |
+| ------------------------ | ------------------------------------- | ----------------------------------- |
+| `README.md`              | What the project is and how to run it | You need setup or run steps         |
+| `docs/makcu-protocol.md` | The MAKCU wire protocol               | The MAKCU communication changes     |
+
+## Architecture
+
+One Windows process, two crates: the lib (`src`) and the bin (`src/bin/nice-aimassist`, the UI and process setup). The lib never uses `eframe` or `egui`.
+
+Threads own their resources and talk through channels (`src/channel.rs`): UI, engine (`src/engine`, which owns `src/pipeline`, `src/aim`, and `src/output` with the MAKCU link), and hotkeys (`src/hotkeys`). Input to a thread is a `Command`; output to the UI is a `Message`. `src/aim` knows nothing about MAKCU.
+
+Invariants:
+
+- One frame at a time. No capture thread, inference thread, or frame queue. The frame image never goes to the CPU.
+- A pipeline (capture, GPU preprocess, inference, model) is replaced as a unit. On failure, keep the old one.
+- A stop, shutdown, or pipeline replacement during a frame suppresses its output.
+- A capture without a new desktop update does no inference and sends no move.
+- After a model or display change, the run stays stopped.
+- Only the engine thread uses MAKCU. It never sleeps on the frame path.
+- The model is a file name in `models/`. The settings hold no path.
+
+## Product
+
+Captures the center of a display (the model input size), finds targets with an end-to-end YOLO model (output `[1, N, 6]`: `x1, y1, x2, y2, score, class`, static shape), and moves the mouse through MAKCU. Latency comes before features. Settings, hotkeys, and defaults are in the code. `settings.json`, `models/`, and `logs/` are next to the executable.
+
+## Rules
+
+- Write comments and docs in English.
+- Errors: `thiserror` only when a caller branches on the kind; otherwise `anyhow` with `.context`.
+- `unsafe` only for Windows, Direct3D, DirectML, or ONNX Runtime API calls.
+- A setting with a range is its own type: it clamps on creation, and the settings file is validated against the same range.
+- No `mod.rs`.
+- Tests need no hardware; a test that does has `#[ignore]` with the reason. Fake only MAKCU (`FakeMakcu` at the `Connector` seam). Keep logic out of code that calls the GPU or the OS. Keep a test only if it protects a requirement or an invariant.
+
+## Git
+
+- Commit to `main`; branch for a large or risky change.
+- Message: `<type>(<scope>): <description>` (Conventional Commits), imperative, lowercase, no period. Mark a breaking change with `!`.
 
 ## Tool usage
 
