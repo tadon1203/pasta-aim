@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Runtime.InteropServices;
 using NiceAimassist.Pipeline;
 
@@ -8,6 +9,7 @@ public class DetectionDecoderTests
     // Input is 100x100, so the center is (50, 50).
     private const int Width = 100;
     private const int Height = 100;
+    private static readonly Size Input = new(Width, Height);
 
     [Fact]
     public void NearestDetectionToTheCenterWins()
@@ -18,7 +20,7 @@ public class DetectionDecoderTests
             45f, 45f, 55f, 55f, 0.80f, 2f,
         ];
 
-        Detection? target = DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp32, 2, Width, Height, 0.25f);
+        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0.25f).Nearest;
 
         Assert.Equal(new Detection(45f, 45f, 55f, 55f, 0.80f, 2), target);
     }
@@ -32,7 +34,7 @@ public class DetectionDecoderTests
             45f, 40f, 55f, 60f, 0.9f, 2f,
         ];
 
-        Detection? target = DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp32, 2, Width, Height, 0f);
+        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0f).Nearest;
 
         Assert.Equal(1, target!.Value.Class);
     }
@@ -46,7 +48,7 @@ public class DetectionDecoderTests
             0f, 0f, 20f, 20f, 0.25f, 2f,
         ];
 
-        Detection? target = DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp32, 2, Width, Height, 0.25f);
+        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0.25f).Nearest;
 
         Assert.Equal(2, target!.Value.Class);
     }
@@ -56,7 +58,7 @@ public class DetectionDecoderTests
     {
         float[] rows = [45f, 45f, 55f, 55f, 0.10f, 1f];
 
-        Assert.Null(DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp32, 1, Width, Height, 0.25f));
+        Assert.Null(DetectionDecoder.Decode(Bytes(rows), Output(1), Input, 0.25f).Nearest);
     }
 
     [Fact]
@@ -70,7 +72,7 @@ public class DetectionDecoderTests
             0f, 0f, 20f, 20f, 0.5f, 2f,
         ];
 
-        Detection? target = DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp32, 4, Width, Height, 0.25f);
+        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(4), Input, 0.25f).Nearest;
 
         Assert.Equal(2, target!.Value.Class);
     }
@@ -84,7 +86,7 @@ public class DetectionDecoderTests
             0f, 0f, 20f, 20f, 0.5f, 2f,
         ];
 
-        Detection? target = DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp32, 2, Width, Height, 0.25f);
+        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0.25f).Nearest;
 
         Assert.Equal(2, target!.Value.Class);
     }
@@ -101,7 +103,7 @@ public class DetectionDecoderTests
             },
             value => (Half)value);
 
-        Detection? target = DetectionDecoder.SelectNearest(Bytes(rows), TensorPrecision.Fp16, 2, Width, Height, 0.25f);
+        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(2, TensorPrecision.Fp16), Input, 0.25f).Nearest;
 
         Assert.Equal(new Detection(45f, 45f, 55f, 55f, 0.5f, 2), target);
     }
@@ -120,7 +122,7 @@ public class DetectionDecoderTests
             0x00, 0x3C, // class = 1
         ];
 
-        Detection? target = DetectionDecoder.SelectNearest(row, TensorPrecision.Fp16, 1, 2, 2, 0f);
+        Detection? target = DetectionDecoder.Decode(row, Output(1, TensorPrecision.Fp16), new Size(2, 2), 0f).Nearest;
 
         Assert.Equal(new Detection(1f, 1f, 10f, 10f, 1f, 1), target);
     }
@@ -131,7 +133,7 @@ public class DetectionDecoderTests
         byte[] rows = new byte[23];
 
         Assert.Throws<ArgumentException>(() =>
-            DetectionDecoder.SelectNearest(rows, TensorPrecision.Fp32, 1, Width, Height, 0f));
+            DetectionDecoder.Decode(rows, Output(1), Input, 0f));
     }
 
     [Fact]
@@ -144,9 +146,25 @@ public class DetectionDecoderTests
             0f, 0f, 10f, 10f, 0.1f, 0f,
         ];
 
-        Assert.Equal(0.4f, DetectionDecoder.MaxScore(Bytes(rows), TensorPrecision.Fp32, 3));
-        Assert.Equal(0f, DetectionDecoder.MaxScore([], TensorPrecision.Fp32, 3));
+        Assert.Equal(0.4f, DetectionDecoder.Decode(Bytes(rows), Output(3), Input, 0f).MaxScore);
     }
+
+    [Fact]
+    public void MaxScoreCountsRowsThatFailTheConfidenceFilter()
+    {
+        float[] rows =
+        [
+            0f, 0f, 20f, 20f, 0.2f, 1f,
+            45f, 45f, 55f, 55f, 0.1f, 2f,
+        ];
+
+        DecodeResult result = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0.25f);
+
+        Assert.Null(result.Nearest);
+        Assert.Equal(0.2f, result.MaxScore);
+    }
+
+    private static ModelOutput Output(int rows, TensorPrecision precision = TensorPrecision.Fp32) => new(rows, precision);
 
     private static byte[] Bytes<T>(T[] values) where T : unmanaged =>
         MemoryMarshal.AsBytes(values.AsSpan()).ToArray();

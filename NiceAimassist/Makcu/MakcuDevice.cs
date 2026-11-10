@@ -8,7 +8,6 @@ public sealed class MakcuDevice : IDisposable
 {
     private const int HighBaud = 4_000_000;
     private const int LowBaud = 115_200;
-    private const byte AutoInterpolation = 255;
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromMilliseconds(100);
 
     private readonly IMakcuPort _port;
@@ -70,7 +69,7 @@ public sealed class MakcuDevice : IDisposable
     public void SetInterpolation(Interpolation interpolation)
     {
         ThrowIfClosed();
-        byte value = interpolation.FixedPercent is { } percent ? (byte)percent : AutoInterpolation;
+        byte value = interpolation.FixedPercent is { } percent ? (byte)percent : Protocol.InterpolateAuto;
         int length = Protocol.EncodeInterpolate(_request, value);
 
         Packet? reply;
@@ -108,21 +107,20 @@ public sealed class MakcuDevice : IDisposable
         {
             port = open(name, HighBaud);
             int baud = HighBaud;
-            byte? kinds = QueryKinds(port);
+            byte? kinds = QueryDeviceKinds(port);
             if (kinds is null)
             {
                 port.Dispose();
                 port = null;
                 port = open(name, LowBaud);
-                kinds = QueryKinds(port)
+                kinds = QueryDeviceKinds(port)
                     ?? throw new InvalidOperationException("MAKCU did not answer at either baud rate");
 
                 Span<byte> request = stackalloc byte[Protocol.MaxRequestLength];
                 int length = Protocol.EncodeSetBaud(request, HighBaud);
                 port.Write(request[..length]);
                 port.SetBaudRate(HighBaud);
-                baud = HighBaud;
-                kinds = QueryKinds(port)
+                kinds = QueryDeviceKinds(port)
                     ?? throw new InvalidOperationException(
                         $"MAKCU did not answer at {HighBaud} baud after the baud switch");
             }
@@ -144,7 +142,7 @@ public sealed class MakcuDevice : IDisposable
     }
 
     /// <summary>Null when the device does not answer. A reject is an error, not an answer.</summary>
-    private static byte? QueryKinds(IMakcuPort port)
+    private static byte? QueryDeviceKinds(IMakcuPort port)
     {
         Span<byte> request = stackalloc byte[Protocol.MaxRequestLength];
         int length = Protocol.EncodeDevice(request);

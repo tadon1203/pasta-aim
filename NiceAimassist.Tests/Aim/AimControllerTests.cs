@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing;
 using NiceAimassist.Aim;
 using NiceAimassist.Pipeline;
 
@@ -8,6 +9,7 @@ public class AimControllerTests
 {
     private const int InputWidth = 100;
     private const int InputHeight = 100;
+    private static readonly Size Input = new(InputWidth, InputHeight);
 
     private static long Ticks(double seconds) => (long)Math.Round(seconds * Stopwatch.Frequency);
 
@@ -23,8 +25,8 @@ public class AimControllerTests
     private static (bool Sent, int X, int Y) Step(AimController aim, Detection? target, double seconds, AimParameters p, double delay = 0)
     {
         long capture = Ticks(seconds);
-        bool sent = aim.TryUpdate(target, capture, capture + Ticks(delay), InputWidth, InputHeight, p, out short x, out short y);
-        return (sent, x, y);
+        AimResult result = aim.Update(target, capture, capture + Ticks(delay), Input, p);
+        return (result.Outcome == AimOutcome.Move, result.Dx, result.Dy);
     }
 
     private static (bool Sent, int X, int Y) Single(Detection target, AimParameters p) =>
@@ -57,6 +59,14 @@ public class AimControllerTests
     {
         Assert.Equal((true, 10, 0), Single(At(60, 50), Params()));
         Assert.Equal((false, 0, 0), Single(At(50, 50), Params()));
+    }
+
+    [Fact]
+    public void OutcomeSeparatesNoTargetFromOnTarget()
+    {
+        var aim = new AimController();
+        Assert.Equal(AimOutcome.NoTarget, aim.Update(null, 0, 0, Input, Params()).Outcome);
+        Assert.Equal(AimOutcome.OnTarget, aim.Update(At(50, 50), 0, 0, Input, Params()).Outcome);
     }
 
     [Fact]

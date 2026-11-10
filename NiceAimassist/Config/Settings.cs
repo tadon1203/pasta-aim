@@ -5,7 +5,7 @@ namespace NiceAimassist.Config;
 
 /// <summary>
 /// The settings file. Missing fields take their defaults, unknown fields are ignored,
-/// and out-of-range values are clamped by <see cref="Validated"/>.
+/// and out-of-range values are clamped by <see cref="WithClampedRanges"/>.
 /// </summary>
 public sealed record Settings
 {
@@ -14,6 +14,14 @@ public sealed record Settings
     public const int MinCollectSize = 64;
     public const int MaxCollectSize = 4096;
     public const int MaxCollectRate = 2;
+    public const int MinCollectRate = 1;
+
+    public const int MinSensitivity = 1;
+    public const int MaxSensitivity = 10_000;
+    public const int MaxConfidence = 100;
+    public const int MaxTargetYOffset = 100;
+    public const int MaxDeltaLimit = 32_767;
+    public const int MaxVelocitySmoothing = 95;
 
     private static readonly string[] DefaultHoldKeys = [DefaultHoldKey];
 
@@ -82,31 +90,31 @@ public sealed record Settings
     {
         Settings settings = JsonSerializer.Deserialize<Settings>(json)
             ?? throw new JsonException("the settings file is empty or null");
-        return settings.Validated();
+        return settings.WithClampedRanges();
     }
 
     /// <summary>Clamps every ranged value into its range and replaces an empty key or model name.</summary>
-    public Settings Validated() => this with
+    public Settings WithClampedRanges() => this with
     {
-        SensitivityX = Math.Clamp(SensitivityX, 1, 10_000),
-        SensitivityY = Math.Clamp(SensitivityY, 1, 10_000),
-        Confidence = Math.Clamp(Confidence, 0, 100),
-        TargetYOffset = Math.Clamp(TargetYOffset, 0, 100),
-        MaxDelta = Math.Clamp(MaxDelta, 0, 32_767),
-        VelocitySmoothing = Math.Clamp(VelocitySmoothing, 0, 95),
+        SensitivityX = Math.Clamp(SensitivityX, MinSensitivity, MaxSensitivity),
+        SensitivityY = Math.Clamp(SensitivityY, MinSensitivity, MaxSensitivity),
+        Confidence = Math.Clamp(Confidence, 0, MaxConfidence),
+        TargetYOffset = Math.Clamp(TargetYOffset, 0, MaxTargetYOffset),
+        MaxDelta = Math.Clamp(MaxDelta, 0, MaxDeltaLimit),
+        VelocitySmoothing = Math.Clamp(VelocitySmoothing, 0, MaxVelocitySmoothing),
         Model = string.IsNullOrWhiteSpace(Model) ? null : Model,
-        HoldKeys = NormalizedKeys(HoldKeys, DefaultHoldKeys),
+        HoldKeys = NormalizedKeys(HoldKeys),
         CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
-        CollectRate = Math.Clamp(CollectRate, 1, MaxCollectRate),
+        CollectRate = Math.Clamp(CollectRate, MinCollectRate, MaxCollectRate),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
     };
 
-    private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names, string[] fallback)
+    private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)
     {
         string[] kept = [.. (names ?? []).Where(name => !string.IsNullOrWhiteSpace(name))
             .Select(name => name.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)];
-        return kept.Length == 0 ? fallback : kept;
+        return kept.Length == 0 ? DefaultHoldKeys : kept;
     }
 
     // The list property would make the generated comparison use references.

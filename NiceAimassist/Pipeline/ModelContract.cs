@@ -6,9 +6,17 @@ internal enum TensorPrecision
     Fp32,
 }
 
-internal readonly record struct ModelInput(int Width, int Height, TensorPrecision Precision);
+internal readonly record struct ModelInput(int Width, int Height, TensorPrecision Precision)
+{
+    /// <summary>The size of the NCHW input tensor, with three channels.</summary>
+    internal long ByteLength => 3L * Width * Height * ModelContract.ElementBytes(Precision);
+}
 
-internal readonly record struct ModelOutput(int Rows, TensorPrecision Precision);
+internal readonly record struct ModelOutput(int Rows, TensorPrecision Precision)
+{
+    /// <summary>The size of the output tensor, [1, Rows, OutputColumns].</summary>
+    internal long ByteLength => (long)Rows * ModelContract.OutputColumns * ModelContract.ElementBytes(Precision);
+}
 
 internal static class ModelContract
 {

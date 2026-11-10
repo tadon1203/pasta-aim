@@ -102,12 +102,12 @@ internal sealed class SettingsForm : Form
         keys.Controls.Add(_holdKeys);
         keys.Controls.Add(keyButtons);
 
-        ConfigureNumber(_sensitivityX, 1, 10_000);
-        ConfigureNumber(_sensitivityY, 1, 10_000);
-        ConfigureNumber(_confidence, 0, 100);
-        ConfigureNumber(_targetYOffset, 0, 100);
-        ConfigureNumber(_maxDelta, 0, 32_767);
-        ConfigureNumber(_velocitySmoothing, 0, 95);
+        ConfigureNumber(_sensitivityX, Settings.MinSensitivity, Settings.MaxSensitivity);
+        ConfigureNumber(_sensitivityY, Settings.MinSensitivity, Settings.MaxSensitivity);
+        ConfigureNumber(_confidence, 0, Settings.MaxConfidence);
+        ConfigureNumber(_targetYOffset, 0, Settings.MaxTargetYOffset);
+        ConfigureNumber(_maxDelta, 0, Settings.MaxDeltaLimit);
+        ConfigureNumber(_velocitySmoothing, 0, Settings.MaxVelocitySmoothing);
         ConfigureNumber(_interpolationPercent, 0, 100);
         _interpolationAuto.Text = "Auto";
         _interpolationAuto.AutoSize = true;
@@ -130,7 +130,7 @@ internal sealed class SettingsForm : Form
         AddRow("Log level", _logLevel);
 
         ConfigureNumber(_collectSize, Settings.MinCollectSize, Settings.MaxCollectSize);
-        ConfigureNumber(_collectRate, 1, Settings.MaxCollectRate);
+        ConfigureNumber(_collectRate, Settings.MinCollectRate, Settings.MaxCollectRate);
         _collectEnabled.Text = "Enabled (while hold key is down)";
         _collectEnabled.AutoSize = true;
         AddRow("Collect", _collectEnabled);
@@ -337,9 +337,7 @@ internal sealed class SettingsForm : Form
         string collect = _stats.CollectError is { } error
             ? $"   collect error: {error}"
             : _stats.Collecting ? $"   collecting, saved {_stats.Saved}" : string.Empty;
-        _status.Text = $"fps {fps:F1}   latency {FrameTimings.ToMs(latency.Total):F2} ms "
-            + $"(capture {FrameTimings.ToMs(latency.Capture):F2}, infer {FrameTimings.ToMs(latency.Infer):F2}, "
-            + $"aim {FrameTimings.ToMs(latency.Aim):F2}, send {FrameTimings.ToMs(latency.Send):F2})   "
+        _status.Text = $"fps {fps:F1}   latency {latency.FormatMs()}   "
             + $"{(_stats.Held ? "held" : "idle")}{collect}";
     }
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using NiceAimassist.Aim;
 using NiceAimassist.Engine;
 using NiceAimassist.Pipeline;
 
@@ -34,17 +35,18 @@ public class EngineDiagnosticsTests
         EngineStats stats = new();
         EngineDiagnostics diagnostics = new(() => clock, stats);
         FrameResult frame = new(0, 0, 0, null, 0f);
+        AimResult move = new(AimOutcome.Move, 0, 0);
 
-        diagnostics.Frame(frame, new FrameTimings(0, 1, 2, 3, 4), true, true, 0, 0);
+        diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
         Assert.Same(LatencySnapshot.Empty, stats.Latency);
 
         clock = Stopwatch.Frequency;
-        diagnostics.Frame(frame, new FrameTimings(0, 1, 2, 3, 4), true, true, 0, 0);
+        diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
         Assert.Equal(4, stats.Latency.Average.Total);
 
         // A window with only timeouts keeps the last published value.
         clock += Stopwatch.Frequency;
-        diagnostics.Timeout();
+        diagnostics.RecordTimeout();
         Assert.Equal(4, stats.Latency.Average.Total);
     }
 }

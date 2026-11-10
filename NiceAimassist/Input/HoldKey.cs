@@ -101,7 +101,7 @@ public readonly struct HoldKey
 
         foreach ((string name, int code) in Table)
         {
-            if ((NativeMethods.GetAsyncKeyState(code) & 0x8000) != 0)
+            if (IsPressed(code))
             {
                 return name;
             }
@@ -111,7 +111,7 @@ public readonly struct HoldKey
     }
 
     /// Whether Escape is down now.
-    public static bool IsEscapeDown() => (NativeMethods.GetAsyncKeyState(0x1B) & 0x8000) != 0;
+    public static bool IsEscapeDown() => IsPressed(0x1B);
 
     /// Whether the key is down now. The high bit of the result is the down state; the low bit
     /// only records a press since the last call and is not read.
@@ -119,12 +119,14 @@ public readonly struct HoldKey
     {
         if (_padMask == 0)
         {
-            return (NativeMethods.GetAsyncKeyState(VirtualKey) & 0x8000) != 0;
+            return IsPressed(VirtualKey);
         }
 
         return XInput.TryRead(out ushort buttons, out byte left, out byte right)
             && PadIsDown(_padMask, buttons, left, right);
     }
+
+    private static bool IsPressed(int virtualKey) => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
     private static bool PadIsDown(int mask, ushort buttons, byte left, byte right) => mask switch
     {

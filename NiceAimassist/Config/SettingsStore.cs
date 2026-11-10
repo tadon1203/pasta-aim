@@ -49,7 +49,7 @@ public sealed class SettingsStore : IDisposable
     {
         try
         {
-            File.WriteAllText(_path, settings.Validated().ToJson());
+            File.WriteAllText(_path, settings.WithClampedRanges().ToJson());
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

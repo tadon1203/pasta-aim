@@ -1,14 +1,15 @@
+using System.Drawing;
 using NiceAimassist.Aim;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
+using NiceAimassist.Gpu;
 using NiceAimassist.Pipeline;
 
 namespace NiceAimassist.Engine;
 
 /// <summary>Runs the aim loop on one dedicated thread.</summary>
-public sealed class Engine
+public sealed class AimLoop
 {
-    private const int FrameTimeoutMs = 100;
     private const int IdleSleepMs = 1;
 
     private readonly IFramePipeline _pipeline;
@@ -29,7 +30,7 @@ public sealed class Engine
 
     /// <param name="now">Stopwatch timestamp source, normally <c>Stopwatch.GetTimestamp</c>.</param>
     /// <param name="onFault">Called on the engine thread when the pipeline or the sink throws. The loop ends after it.</param>
-    public Engine(
+    public AimLoop(
         IFramePipeline pipeline,
         IMoveSink sink,
         Func<bool> isHeld,
@@ -58,7 +59,7 @@ public sealed class Engine
         }
 
         _running = true;
-        _thread = new Thread(Run) { Name = "engine", IsBackground = true };
+        _thread = new Thread(ThreadMain) { Name = "engine", IsBackground = true };
         _thread.Start();
     }
 
@@ -73,7 +74,7 @@ public sealed class Engine
         }
     }
 
-    private void Run()
+    private void ThreadMain()
     {
         try
         {
@@ -116,9 +117,16 @@ public sealed class Engine
 
             _stats.SetHeld(true);
             SendInterpolation(settings.Interpolation);
-            if (!_pipeline.TryRun(FrameTimeoutMs, settings.Confidence / 100f, out FrameResult frame))
+            AcquireResult status = _pipeline.TryRun(settings.Confidence / 100f, out FrameResult frame);
+            if (status == AcquireResult.Timeout)
             {
-                _diagnostics.Timeout();
+                _diagnostics.RecordTimeout();
+                continue;
+            }
+
+            if (status != AcquireResult.Frame)
+            {
+                _diagnostics.RecordNoFrame();
                 continue;
             }
 
@@ -128,19 +136,24 @@ public sealed class Engine
                 settings.TargetYOffset,
                 settings.MaxDelta,
                 settings.VelocitySmoothing);
-            // The flag is read after the aim so that a stop during the frame suppresses its move.
-            bool aimed = _aim.TryUpdate(frame.Target, frame.PresentQpc, _now(), _pipeline.InputWidth, _pipeline.InputHeight, parameters, out short dx, out short dy);
+            AimResult aim = _aim.Update(
+                frame.Target,
+                frame.PresentTimestamp,
+                _now(),
+                new Size(_pipeline.InputWidth, _pipeline.InputHeight),
+                parameters);
             long aimedAt = _now();
-            bool sent = aimed && _running;
+            // The flag is read after the aim so that a stop during the frame suppresses its move.
+            bool sent = aim.Outcome == AimOutcome.Move && _running;
             if (sent)
             {
-                _sink.Move(dx, dy);
+                _sink.Move(aim.Dx, aim.Dy);
             }
 
             long sentAt = sent ? _now() : aimedAt;
-            FrameTimings timings = new(frame.PresentQpc, frame.AcquiredQpc, frame.InferredQpc, aimedAt, sentAt);
+            FrameTimings timings = new(frame.PresentTimestamp, frame.AcquiredTimestamp, frame.InferredTimestamp, aimedAt, sentAt);
             _stats.RecordFrame();
-            _diagnostics.Frame(frame, timings, aimed, sent, dx, dy);
+            _diagnostics.RecordFrame(frame, timings, aim, sent);
         }
     }
 
@@ -152,9 +165,9 @@ public sealed class Engine
             return;
         }
 
-        _collector.Update(held && settings.CollectEnabled);
+        _collector.SetEnabled(held && settings.CollectEnabled);
         _collector.Configure(settings.CollectSize, settings.CollectRate);
-        _collector.Poll();
+        _collector.CollectFinishedCopy();
         _stats.SetCollect(_collector.Active, _collector.Saved, _collector.LastError);
     }
 

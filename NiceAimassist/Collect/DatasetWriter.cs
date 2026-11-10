@@ -23,14 +23,14 @@ public sealed class DatasetWriter
         _originalDirectory = Path.Combine(root, "original");
     }
 
-    public static string Stem(DateTime local) => local.ToString("yyyyMMdd-HHmmss-fff");
+    public static string FileNameFor(DateTime local) => local.ToString("yyyyMMdd-HHmmss-fff");
 
-    public void Write(string stem, BgraImage crop, BgraImage original)
+    public void Write(string fileNameWithoutExtension, BgraImage crop, BgraImage original)
     {
         Directory.CreateDirectory(_cropDirectory);
         Directory.CreateDirectory(_originalDirectory);
-        Save(crop, Path.Combine(_cropDirectory, stem + ".jpg"));
-        Save(original, Path.Combine(_originalDirectory, stem + ".jpg"));
+        Save(crop, Path.Combine(_cropDirectory, fileNameWithoutExtension + ".jpg"));
+        Save(original, Path.Combine(_originalDirectory, fileNameWithoutExtension + ".jpg"));
     }
 
     // A half-written file must never appear under its final name.

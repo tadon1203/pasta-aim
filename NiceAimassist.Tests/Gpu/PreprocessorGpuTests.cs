@@ -36,17 +36,18 @@ public unsafe class PreprocessorGpuTests
             "CreateCommittedResource");
         try
         {
-            using Preprocessor preprocessor = new(gpu, frames, fp16: false);
+            using Preprocessor preprocessor = new(gpu, frames, TensorPrecision.Fp32);
             using Readback readback = new(gpu, tensor, bytes);
 
+            FrameTicket ticket = default;
             bool acquired = false;
             for (int attempt = 0; attempt < 100 && !acquired; attempt++)
             {
-                acquired = frames.TryAcquire(50, out _);
+                acquired = frames.TryAcquire(50, out ticket) == AcquireResult.Frame;
             }
 
             Assert.True(acquired, "no desktop frame");
-            preprocessor.Submit(tensor);
+            preprocessor.Submit(ticket, tensor);
             float[] values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(readback.Read()).ToArray();
 
             // A desktop is never all black, so every channel needs some non-zero value.

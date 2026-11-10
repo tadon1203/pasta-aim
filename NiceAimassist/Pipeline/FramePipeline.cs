@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using NiceAimassist.Collect;
+using System.Drawing;
 using NiceAimassist.Gpu;
 using Silk.NET.Direct3D12;
 
@@ -8,11 +8,11 @@ namespace NiceAimassist.Pipeline;
 public sealed unsafe class FramePipeline : IFramePipeline
 {
     private const int WarmUpRuns = 3;
+    private const int AcquireTimeoutMs = 100;
 
     private readonly GpuContext _gpu;
-    private readonly TensorPrecision _outputPrecision;
-    private readonly int _outputRows;
-    private readonly Collector? _collector;
+    private readonly ModelOutput _output;
+    private readonly IFrameTap? _tap;
 
     private nint _env;
     private void* _dmlDevice;
@@ -28,11 +28,11 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private FrameSource? _frames;
     private bool _disposed;
 
-    public FramePipeline(GpuContext gpu, string modelPath, Collector? collector = null)
+    public FramePipeline(GpuContext gpu, string modelPath, IFrameTap? tap = null)
     {
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(modelPath);
-        _collector = collector;
+        _tap = tap;
         if (!File.Exists(modelPath))
         {
             throw new FileNotFoundException("The ONNX model does not exist.", modelPath);
@@ -61,24 +61,20 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
             InputWidth = inputSpec.Width;
             InputHeight = inputSpec.Height;
-            _outputRows = outputSpec.Rows;
-            _outputPrecision = outputSpec.Precision;
+            _output = outputSpec;
 
-            int inputElementBytes = ModelContract.ElementBytes(inputSpec.Precision);
-            int outputElementBytes = ModelContract.ElementBytes(outputSpec.Precision);
             long[] inputShape = [1, 3, InputHeight, InputWidth];
-            long[] outputShape = [1, _outputRows, ModelContract.OutputColumns];
+            long[] outputShape = [1, _output.Rows, ModelContract.OutputColumns];
 
             _allocator = OrtNative.CreateDirectMlAllocator(_session);
             _inputValue = OrtNative.CreateTensor(_allocator, inputShape, input.ElementType);
-            _inputResource = DirectMlBuffer(_inputValue, 3L * InputWidth * InputHeight * inputElementBytes, "input");
+            _inputResource = DirectMlBuffer(_inputValue, inputSpec.ByteLength, "input");
             _outputValue = OrtNative.CreateTensor(_allocator, outputShape, output.ElementType);
-            _outputResource = DirectMlBuffer(
-                _outputValue, (long)_outputRows * ModelContract.OutputColumns * outputElementBytes, "output");
+            _outputResource = DirectMlBuffer(_outputValue, _output.ByteLength, "output");
 
             _frames = new FrameSource(gpu, InputWidth, InputHeight);
-            _preprocessor = new Preprocessor(gpu, _frames, inputSpec.Precision == TensorPrecision.Fp16);
-            _readback = new Readback(gpu, _outputResource, _outputRows * ModelContract.OutputColumns * outputElementBytes);
+            _preprocessor = new Preprocessor(gpu, _frames, inputSpec.Precision);
+            _readback = new Readback(gpu, _outputResource, checked((int)_output.ByteLength));
 
             _binding = OrtNative.CreateIoBinding(_session);
             OrtNative.BindInput(_binding, input.Name, _inputValue);
@@ -86,11 +82,11 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
             Log.Info(
                 $"model {Path.GetFileName(modelPath)}: input {InputWidth}x{InputHeight} {inputSpec.Precision}, "
-                + $"output {_outputRows} rows {_outputPrecision}");
+                + $"output {_output.Rows} rows {_output.Precision}");
 
             for (int run = 0; run < WarmUpRuns; run++)
             {
-                RunAndRead();
+                InferAndRead();
             }
         }
         catch
@@ -104,34 +100,40 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
     public int InputHeight { get; }
 
-    public bool TryRun(int timeoutMs, float confidence, out FrameResult result)
+    public AcquireResult TryRun(float confidence, out FrameResult result)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         result = default;
-        if (!_frames!.TryAcquire(timeoutMs, out long presentQpc))
+        AcquireResult status = _frames!.TryAcquire(AcquireTimeoutMs, out FrameTicket ticket);
+        if (status != AcquireResult.Frame)
         {
-            return false;
+            return status;
         }
 
-        long acquiredQpc = Stopwatch.GetTimestamp();
-        _preprocessor!.Submit(_inputResource);
+        long acquiredTimestamp = Stopwatch.GetTimestamp();
+        _preprocessor!.Submit(ticket, _inputResource);
         CollectHeldFrame();
-        ReadOnlySpan<byte> output = RunAndRead();
-        Detection? target = DetectionDecoder.SelectNearest(output, _outputPrecision, _outputRows, InputWidth, InputHeight, confidence);
-        long inferredQpc = Stopwatch.GetTimestamp();
-        float modelBestScore = Log.IsEnabled(LogLevel.Debug)
-            ? DetectionDecoder.MaxScore(output, _outputPrecision, _outputRows)
-            : 0f;
-        result = new FrameResult(presentQpc, acquiredQpc, inferredQpc, target, modelBestScore);
-        return true;
+        ReadOnlySpan<byte> output = InferAndRead();
+        DecodeResult decoded = DetectionDecoder.Decode(output, _output, new Size(InputWidth, InputHeight), confidence);
+        long inferredTimestamp = Stopwatch.GetTimestamp();
+        result = new FrameResult(ticket.PresentTimestamp, acquiredTimestamp, inferredTimestamp, decoded.Nearest, decoded.MaxScore);
+        return AcquireResult.Frame;
     }
 
     private void CollectHeldFrame()
     {
-        if (_collector is { Due: true } && _frames!.DesktopTexture is var desktop && desktop != null)
+        if (_tap is null || !_tap.IsDue)
         {
-            _collector.Capture(desktop);
+            return;
         }
+
+        var desktop = _frames!.DesktopTexture;
+        if (desktop == null)
+        {
+            return;
+        }
+
+        _tap.Capture(desktop);
     }
 
     public void Dispose()
@@ -145,7 +147,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
         ReleaseAll();
     }
 
-    private ReadOnlySpan<byte> RunAndRead()
+    private ReadOnlySpan<byte> InferAndRead()
     {
         OrtNative.RunWithBinding(_session, _binding);
         return _readback!.Read();
@@ -210,35 +212,11 @@ public sealed unsafe class FramePipeline : IFramePipeline
     {
         _gpu.WaitIdle();
 
-        if (_binding != 0)
-        {
-            OrtNative.ReleaseIoBinding(_binding);
-            _binding = 0;
-        }
-
-        if (_inputValue != 0)
-        {
-            OrtNative.ReleaseValue(_inputValue);
-            _inputValue = 0;
-        }
-
-        if (_outputValue != 0)
-        {
-            OrtNative.ReleaseValue(_outputValue);
-            _outputValue = 0;
-        }
-
-        if (_allocator != 0)
-        {
-            OrtNative.ReleaseAllocator(_allocator);
-            _allocator = 0;
-        }
-
-        if (_session != 0)
-        {
-            OrtNative.ReleaseSession(_session);
-            _session = 0;
-        }
+        ReleaseOnce(ref _binding, OrtNative.ReleaseIoBinding);
+        ReleaseOnce(ref _inputValue, OrtNative.ReleaseValue);
+        ReleaseOnce(ref _outputValue, OrtNative.ReleaseValue);
+        ReleaseOnce(ref _allocator, OrtNative.ReleaseAllocator);
+        ReleaseOnce(ref _session, OrtNative.ReleaseSession);
 
         if (_dmlDevice != null)
         {
@@ -246,11 +224,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
             _dmlDevice = null;
         }
 
-        if (_env != 0)
-        {
-            OrtNative.ReleaseEnv(_env);
-            _env = 0;
-        }
+        ReleaseOnce(ref _env, OrtNative.ReleaseEnv);
 
         _readback?.Dispose();
         _readback = null;
@@ -260,5 +234,14 @@ public sealed unsafe class FramePipeline : IFramePipeline
         _preprocessor = null;
         _frames?.Dispose();
         _frames = null;
+    }
+
+    private static void ReleaseOnce(ref nint handle, Action<nint> release)
+    {
+        if (handle != 0)
+        {
+            release(handle);
+            handle = 0;
+        }
     }
 }

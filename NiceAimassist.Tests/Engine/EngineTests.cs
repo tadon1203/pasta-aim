@@ -2,8 +2,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using NiceAimassist.Config;
 using NiceAimassist.Engine;
+using NiceAimassist.Gpu;
 using NiceAimassist.Pipeline;
-using EngineLoop = NiceAimassist.Engine.Engine;
 
 namespace NiceAimassist.Tests.Engine;
 
@@ -20,7 +20,7 @@ public class EngineTests
         FakePipeline pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMoveSink sink = new();
-        EngineLoop engine = Start(pipeline, sink, () => true);
+        AimLoop engine = Start(pipeline, sink, () => true);
 
         WaitUntil(() => sink.Moves.Count >= 1);
         engine.Stop();
@@ -37,7 +37,7 @@ public class EngineTests
         pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMoveSink sink = new();
         FakeHoldKey hold = new(false);
-        EngineLoop engine = Start(pipeline, sink, hold.IsHeld);
+        AimLoop engine = Start(pipeline, sink, hold.IsHeld);
 
         WaitUntil(() => hold.Polls >= 3);
         engine.Stop();
@@ -56,7 +56,7 @@ public class EngineTests
         pipeline.Enqueue(first + Stopwatch.Frequency / 20, Centered);
         FakeMoveSink sink = new();
         FakeHoldKey hold = new(true, false, true);
-        EngineLoop engine = Start(pipeline, sink, hold.IsHeld);
+        AimLoop engine = Start(pipeline, sink, hold.IsHeld);
 
         WaitUntil(() => sink.Moves.Count >= 2);
         engine.Stop();
@@ -72,7 +72,7 @@ public class EngineTests
         FakePipeline pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
         FakeMoveSink sink = new();
-        EngineLoop engine = Start(pipeline, sink, () => true);
+        AimLoop engine = Start(pipeline, sink, () => true);
 
         WaitUntil(() => engine.Stats.Frames >= 1);
         engine.Stop();
@@ -87,7 +87,7 @@ public class EngineTests
         FakePipeline pipeline = new();
         FakeMoveSink sink = new();
         Holder<Settings> settings = new(Snapshot(Interpolation.Percent(30)));
-        EngineLoop engine = new(pipeline, sink, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
+        AimLoop engine = new(pipeline, sink, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
         engine.Start();
 
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
@@ -110,7 +110,7 @@ public class EngineTests
     {
         FakePipeline pipeline = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
-        EngineLoop engine = new(pipeline, new FakeMoveSink(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
+        AimLoop engine = new(pipeline, new FakeMoveSink(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
         engine.Start();
 
         WaitUntil(() => faults.Count >= 1);
@@ -124,7 +124,7 @@ public class EngineTests
     public void StopReturnsPromptlyWhileWaitingForFrames()
     {
         FakePipeline pipeline = new();
-        EngineLoop engine = Start(pipeline, new FakeMoveSink(), () => true);
+        AimLoop engine = Start(pipeline, new FakeMoveSink(), () => true);
 
         WaitUntil(() => pipeline.RunCalls >= 3);
         Stopwatch clock = Stopwatch.StartNew();
@@ -133,9 +133,9 @@ public class EngineTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(1), $"Stop took {clock.Elapsed}");
     }
 
-    private static EngineLoop Start(FakePipeline pipeline, FakeMoveSink sink, Func<bool> isHeld)
+    private static AimLoop Start(FakePipeline pipeline, FakeMoveSink sink, Func<bool> isHeld)
     {
-        EngineLoop engine = new(pipeline, sink, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
+        AimLoop engine = new(pipeline, sink, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
         engine.Start();
         return engine;
     }
@@ -178,7 +178,7 @@ public class EngineTests
 
         public void Enqueue(long presentQpc, Detection? target) => _frames.Enqueue((presentQpc, target));
 
-        public bool TryRun(int timeoutMs, float confidence, out FrameResult result)
+        public AcquireResult TryRun(float confidence, out FrameResult result)
         {
             Interlocked.Increment(ref _runCalls);
             if (Fault is { } fault)
@@ -189,12 +189,12 @@ public class EngineTests
             if (_frames.TryDequeue(out var frame))
             {
                 result = new FrameResult(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f);
-                return true;
+                return AcquireResult.Frame;
             }
 
             Thread.Sleep(1);
             result = default;
-            return false;
+            return AcquireResult.Timeout;
         }
 
         public void Dispose()

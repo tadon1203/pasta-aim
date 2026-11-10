@@ -55,4 +55,4 @@ public sealed class ShotWriter : IDisposable
     }
 }
 
-public sealed record Shot(string Stem, BgraImage Crop, BgraImage Original);
+public sealed record Shot(string FileNameWithoutExtension, BgraImage Crop, BgraImage Original);

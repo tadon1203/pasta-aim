@@ -7,8 +7,6 @@ namespace NiceAimassist.Pipeline;
 // The copy is recorded on the compute queue, so it runs after any model run submitted to that queue.
 internal sealed unsafe class Readback : IDisposable
 {
-    private const uint AllSubresources = uint.MaxValue;
-
     private readonly ID3D12CommandQueue* _queue;
     private readonly byte* _mapped;
     private readonly int _length;
@@ -72,10 +70,10 @@ internal sealed unsafe class Readback : IDisposable
                 "CreateCommandList (readback)");
             _list = list;
 
-            ResourceBarrier toCopy = Transition(source, ResourceStates.UnorderedAccess, ResourceStates.CopySource);
+            ResourceBarrier toCopy = D3D12Helpers.Transition(source, ResourceStates.UnorderedAccess, ResourceStates.CopySource);
             _list->ResourceBarrier(1, &toCopy);
             _list->CopyBufferRegion(_buffer, 0, source, 0, (ulong)length);
-            ResourceBarrier toUnordered = Transition(source, ResourceStates.CopySource, ResourceStates.UnorderedAccess);
+            ResourceBarrier toUnordered = D3D12Helpers.Transition(source, ResourceStates.CopySource, ResourceStates.UnorderedAccess);
             _list->ResourceBarrier(1, &toUnordered);
             Com.Check(_list->Close(), "Close the readback command list");
 
@@ -125,18 +123,5 @@ internal sealed unsafe class Readback : IDisposable
         Com.Release(ref _list);
         Com.Release(ref _allocator);
         Com.Release(ref _buffer);
-    }
-
-    private static ResourceBarrier Transition(ID3D12Resource* resource, ResourceStates before, ResourceStates after)
-    {
-        ResourceBarrier barrier = new() { Type = ResourceBarrierType.Transition, Flags = ResourceBarrierFlags.None };
-        barrier.Anonymous.Transition = new ResourceTransitionBarrier
-        {
-            PResource = resource,
-            Subresource = AllSubresources,
-            StateBefore = before,
-            StateAfter = after,
-        };
-        return barrier;
     }
 }

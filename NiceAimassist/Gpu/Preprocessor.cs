@@ -1,4 +1,5 @@
 using System.Text;
+using NiceAimassist.Pipeline;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D.Compilers;
 using Silk.NET.Direct3D12;
@@ -26,7 +27,6 @@ public sealed unsafe class Preprocessor : IDisposable
 
     // D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING: identity RGBA swizzle.
     private const uint DefaultComponentMapping = 0x1688;
-    private const uint AllSubresources = uint.MaxValue;
     private const int ThreadsPerGroup = 8;
 
     private static readonly D3D12 D3D12Api = D3D12.GetApi();
@@ -54,7 +54,7 @@ public sealed unsafe class Preprocessor : IDisposable
     private ID3D12Resource* _destination;
     private bool _disposed;
 
-    public Preprocessor(GpuContext gpu, FrameSource frames, bool fp16)
+    internal Preprocessor(GpuContext gpu, FrameSource frames, TensorPrecision precision)
     {
         _gpu = gpu;
         _frames = frames;
@@ -64,8 +64,8 @@ public sealed unsafe class Preprocessor : IDisposable
 
         int width = frames.InputWidth;
         int height = frames.InputHeight;
-        _format = fp16 ? Format.FormatR16Float : Format.FormatR32Float;
-        _elementBytes = fp16 ? 2u : 4u;
+        _format = precision == TensorPrecision.Fp16 ? Format.FormatR16Float : Format.FormatR32Float;
+        _elementBytes = (uint)ModelContract.ElementBytes(precision);
         _elementCount = (uint)(width * height * 3);
         _dispatchX = (uint)((width + ThreadsPerGroup - 1) / ThreadsPerGroup);
         _dispatchY = (uint)((height + ThreadsPerGroup - 1) / ThreadsPerGroup);
@@ -125,13 +125,15 @@ public sealed unsafe class Preprocessor : IDisposable
         }
     }
 
-    public void Submit(ID3D12Resource* destination)
+    // The guard catches a stale ticket: only the newest captured frame, and only once, may be submitted.
+    internal void Submit(FrameTicket ticket, ID3D12Resource* destination)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        ulong sequence = _frames.Sequence;
-        if (sequence == 0 || sequence == _frames.SubmittedSequence)
+        ulong sequence = ticket.Sequence;
+        if (sequence != _frames.Sequence || sequence <= _frames.SubmittedSequence)
         {
-            throw new InvalidOperationException("No captured frame is waiting for preprocessing. Call TryAcquire first.");
+            throw new InvalidOperationException(
+                $"The frame {sequence} cannot be submitted: the newest captured frame is {_frames.Sequence} and the last submitted is {_frames.SubmittedSequence}.");
         }
 
         if (_destination == null || destination != _destination)
@@ -194,7 +196,7 @@ public sealed unsafe class Preprocessor : IDisposable
         _device->CreateUnorderedAccessView(destination, null, &uav, _uavCpu);
 
         Com.Check(_list->Reset(_allocator, _pipeline), "Reset the preprocess command list");
-        ResourceBarrier toRead = Transition(_source, ResourceStates.Common, ResourceStates.NonPixelShaderResource);
+        ResourceBarrier toRead = D3D12Helpers.Transition(_source, ResourceStates.Common, ResourceStates.NonPixelShaderResource);
         _list->ResourceBarrier(1, &toRead);
         _list->SetComputeRootSignature(_rootSignature);
         ID3D12DescriptorHeap* heap = _heap;
@@ -210,24 +212,11 @@ public sealed unsafe class Preprocessor : IDisposable
         ResourceBarrier written = new() { Type = ResourceBarrierType.Uav, Flags = ResourceBarrierFlags.None };
         written.Anonymous.UAV = new ResourceUavBarrier { PResource = destination };
         _list->ResourceBarrier(1, &written);
-        ResourceBarrier toCommon = Transition(_source, ResourceStates.NonPixelShaderResource, ResourceStates.Common);
+        ResourceBarrier toCommon = D3D12Helpers.Transition(_source, ResourceStates.NonPixelShaderResource, ResourceStates.Common);
         _list->ResourceBarrier(1, &toCommon);
         Com.Check(_list->Close(), "Close the preprocess command list");
 
         _destination = destination;
-    }
-
-    private static ResourceBarrier Transition(ID3D12Resource* resource, ResourceStates before, ResourceStates after)
-    {
-        ResourceBarrier barrier = new() { Type = ResourceBarrierType.Transition, Flags = ResourceBarrierFlags.None };
-        barrier.Anonymous.Transition = new ResourceTransitionBarrier
-        {
-            PResource = resource,
-            Subresource = AllSubresources,
-            StateBefore = before,
-            StateAfter = after,
-        };
-        return barrier;
     }
 
     private ID3D12RootSignature* CreateRootSignature()
@@ -271,7 +260,7 @@ public sealed unsafe class Preprocessor : IDisposable
         int result = D3D12Api.SerializeRootSignature(&description, D3DRootSignatureVersion.Version1, &serialized, &errors);
         if (result < 0)
         {
-            string message = errors == null ? string.Empty : Encoding.UTF8.GetString((byte*)errors->GetBufferPointer(), (int)errors->GetBufferSize());
+            string message = D3D12Helpers.BlobToString(errors);
             Com.Release(ref errors);
             throw new InvalidOperationException($"SerializeRootSignature failed (0x{result:X8}): {message}");
         }
@@ -305,7 +294,7 @@ public sealed unsafe class Preprocessor : IDisposable
 
         if (result < 0)
         {
-            string message = errors == null ? string.Empty : Encoding.UTF8.GetString((byte*)errors->GetBufferPointer(), (int)errors->GetBufferSize());
+            string message = D3D12Helpers.BlobToString(errors);
             Com.Release(ref errors);
             throw new InvalidOperationException($"Compiling the preprocess shader failed (0x{result:X8}): {message}");
         }

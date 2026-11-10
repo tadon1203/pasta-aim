@@ -1,38 +1,60 @@
-using System.Buffers.Binary;
+using System.Drawing;
+using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace NiceAimassist.Pipeline;
 
+/// <summary>The output of one decode pass: the nearest accepted detection, and the highest finite score of any row.</summary>
+internal readonly record struct DecodeResult(Detection? Nearest, float MaxScore);
+
 internal static class DetectionDecoder
 {
-    internal static Detection? SelectNearest(
-        ReadOnlySpan<byte> rows,
-        TensorPrecision precision,
-        int rowCount,
-        int inputWidth,
-        int inputHeight,
-        float confidence)
+    /// <summary>
+    /// Decodes the model output in one pass. The typed view reads the buffer in native order, which is
+    /// little-endian on the Windows x64 targets.
+    /// </summary>
+    internal static DecodeResult Decode(ReadOnlySpan<byte> rows, ModelOutput output, Size input, float confidence)
     {
-        int rowBytes = ModelContract.OutputColumns * ModelContract.ElementBytes(precision);
-        if (rowCount < 0 || rows.Length < rowCount * rowBytes)
+        if (output.Rows < 0 || rows.Length < output.ByteLength)
         {
             throw new ArgumentException("The output holds fewer rows than declared.", nameof(rows));
         }
 
-        float centerX = inputWidth * 0.5f;
-        float centerY = inputHeight * 0.5f;
+        return output.Precision == TensorPrecision.Fp16
+            ? DecodeCells(MemoryMarshal.Cast<byte, Half>(rows), output.Rows, input, confidence)
+            : DecodeCells(MemoryMarshal.Cast<byte, float>(rows), output.Rows, input, confidence);
+    }
+
+    // The conversion to float is resolved per element type at JIT time, so the loop has no precision branch.
+    private static DecodeResult DecodeCells<TElement>(
+        ReadOnlySpan<TElement> cells,
+        int rowCount,
+        Size input,
+        float confidence)
+        where TElement : unmanaged, INumberBase<TElement>
+    {
+        float centerX = input.Width * 0.5f;
+        float centerY = input.Height * 0.5f;
         bool found = false;
         float bestDistance = 0f;
+        float maxScore = 0f;
         Detection best = default;
 
         for (int row = 0; row < rowCount; row++)
         {
-            ReadOnlySpan<byte> cells = rows.Slice(row * rowBytes, rowBytes);
-            float x1 = Read(cells, 0, precision);
-            float y1 = Read(cells, 1, precision);
-            float x2 = Read(cells, 2, precision);
-            float y2 = Read(cells, 3, precision);
-            float score = Read(cells, 4, precision);
-            float classId = Read(cells, 5, precision);
+            int cell = row * ModelContract.OutputColumns;
+            float x1 = float.CreateTruncating(cells[cell]);
+            float y1 = float.CreateTruncating(cells[cell + 1]);
+            float x2 = float.CreateTruncating(cells[cell + 2]);
+            float y2 = float.CreateTruncating(cells[cell + 3]);
+            float score = float.CreateTruncating(cells[cell + 4]);
+            float classId = float.CreateTruncating(cells[cell + 5]);
+
+            // The max score ignores the box and the confidence filter, so it is taken before them.
+            if (float.IsFinite(score) && score > maxScore)
+            {
+                maxScore = score;
+            }
 
             if (!float.IsFinite(x1) || !float.IsFinite(y1) || !float.IsFinite(x2)
                 || !float.IsFinite(y2) || !float.IsFinite(score) || !float.IsFinite(classId))
@@ -45,8 +67,9 @@ internal static class DetectionDecoder
                 continue;
             }
 
-            float dx = (x1 + x2) * 0.5f - centerX;
-            float dy = (y1 + y2) * 0.5f - centerY;
+            Detection candidate = new(x1, y1, x2, y2, score, (int)MathF.Round(classId));
+            float dx = candidate.CenterX - centerX;
+            float dy = candidate.CenterY - centerY;
             float distance = dx * dx + dy * dy;
             if (found && distance >= bestDistance)
             {
@@ -55,31 +78,9 @@ internal static class DetectionDecoder
 
             found = true;
             bestDistance = distance;
-            best = new Detection(x1, y1, x2, y2, score, (int)MathF.Round(classId));
+            best = candidate;
         }
 
-        return found ? best : null;
+        return new DecodeResult(found ? best : null, maxScore);
     }
-
-    /// <summary>The highest finite score of any row, whatever its box. Zero when there is none.</summary>
-    internal static float MaxScore(ReadOnlySpan<byte> rows, TensorPrecision precision, int rowCount)
-    {
-        int rowBytes = ModelContract.OutputColumns * ModelContract.ElementBytes(precision);
-        float best = 0f;
-        for (int row = 0; row < rowCount && (row + 1) * rowBytes <= rows.Length; row++)
-        {
-            float score = Read(rows.Slice(row * rowBytes, rowBytes), 4, precision);
-            if (float.IsFinite(score) && score > best)
-            {
-                best = score;
-            }
-        }
-
-        return best;
-    }
-
-    private static float Read(ReadOnlySpan<byte> cells, int column, TensorPrecision precision) =>
-        precision == TensorPrecision.Fp16
-            ? (float)BinaryPrimitives.ReadHalfLittleEndian(cells.Slice(column * 2))
-            : BinaryPrimitives.ReadSingleLittleEndian(cells.Slice(column * 4));
 }

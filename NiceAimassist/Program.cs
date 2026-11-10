@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Runtime;
+using System.Windows.Forms;
 using NiceAimassist;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
@@ -41,33 +42,41 @@ internal static class Program
         Collector? collector = null;
         IFramePipeline? pipeline = null;
         MakcuDevice? device = null;
-        Engine? engine = null;
+        AimLoop? engine = null;
+        ConsoleCancelEventHandler? onCancel = null;
         try
         {
             Settings startup = store.Current;
             Log.Level = startup.LogLevel;
             Log.Info($"log level {startup.LogLevel}; file {Log.FilePath ?? "(none)"}");
-            string modelPath = ResolveModel(startup.Model);
-            HoldKeySource holdKey = new(store.Current.HoldKeys, "hold");
+            ModelLocation model = ResolveModel(startup.Model);
+            HoldKeySource holdKey = new(startup.HoldKeys);
 
             gpu = new GpuContext(startup.DisplayAdapter, startup.DisplayOutput);
             collector = new Collector(
                 gpu, Path.Combine(AppContext.BaseDirectory, "dataset"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
-            pipeline = new FramePipeline(gpu, modelPath, collector);
+            pipeline = new FramePipeline(gpu, model.FilePath, collector);
             device = MakcuDevice.Connect();
             Log.Info($"MAKCU on {device.PortName} at {device.BaudRate} baud");
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            engine = new Engine(
+            // Read only on the engine thread. A new snapshot from the store is applied once, not on every loop.
+            Settings? applied = null;
+            engine = new AimLoop(
                 pipeline,
                 new MakcuSink(device),
                 holdKey.IsHeld,
                 () =>
                 {
                     Settings settings = store.Current;
-                    Log.Level = settings.LogLevel;
-                    holdKey.Follow(settings.HoldKeys);
+                    if (!ReferenceEquals(settings, applied))
+                    {
+                        applied = settings;
+                        Log.Level = settings.LogLevel;
+                        holdKey.Update(settings.HoldKeys);
+                    }
+
                     return settings;
                 },
                 Stopwatch.GetTimestamp,
@@ -78,20 +87,21 @@ internal static class Program
                 },
                 collector);
 
-            ConsoleCancelEventHandler onCancel = (_, args) =>
+            onCancel = (_, args) =>
             {
                 args.Cancel = true;
                 stopped.Set();
             };
             Console.CancelKeyPress += onCancel;
             engine.Start();
-            using (SettingsForm form = new(store, engine.Stats, stopped, Path.GetDirectoryName(modelPath)!))
+            // The visual styles and DPI mode must be set before the first window is created.
+            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            using (SettingsForm form = new(store, engine.Stats, stopped, model.Directory))
             {
-                Application.EnableVisualStyles();
                 Application.Run(form);
             }
-
-            Console.CancelKeyPress -= onCancel;
 
             if (fault is not null)
             {
@@ -102,6 +112,11 @@ internal static class Program
         }
         finally
         {
+            if (onCancel is not null)
+            {
+                Console.CancelKeyPress -= onCancel;
+            }
+
             engine?.Stop();
             pipeline?.Dispose();
             collector?.Dispose();
@@ -111,7 +126,10 @@ internal static class Program
         }
     }
 
-    private static string ResolveModel(string? model)
+    /// <summary>The model file and the folder that holds it. The settings window lists models from that folder.</summary>
+    private sealed record ModelLocation(string Directory, string FilePath);
+
+    private static ModelLocation ResolveModel(string? model)
     {
         string directory = Path.Combine(AppContext.BaseDirectory, "models");
         Directory.CreateDirectory(directory);
@@ -127,7 +145,7 @@ internal static class Program
             throw new InvalidOperationException($"model file not found: {path}");
         }
 
-        return path;
+        return new ModelLocation(Path.GetDirectoryName(path) ?? directory, path);
     }
 
     private sealed record HoldBinding(IReadOnlyList<string> Names, HoldKey[] Keys);
@@ -137,16 +155,13 @@ internal static class Program
     {
         private HoldBinding _binding;
 
-        private readonly string _role;
-
-        public HoldKeySource(IReadOnlyList<string> names, string role)
+        public HoldKeySource(IReadOnlyList<string> names)
         {
-            _role = role;
             foreach (string name in names)
             {
                 if (!HoldKey.TryParse(name, out _))
                 {
-                    throw new InvalidOperationException($"unknown {role} key \"{name}\" in settings.json");
+                    throw new InvalidOperationException($"unknown hold key \"{name}\" in settings.json");
                 }
             }
 
@@ -166,7 +181,7 @@ internal static class Program
             return false;
         }
 
-        public void Follow(IReadOnlyList<string> names)
+        public void Update(IReadOnlyList<string> names)
         {
             HoldBinding current = Volatile.Read(ref _binding);
             if (current.Names.SequenceEqual(names))
@@ -178,13 +193,13 @@ internal static class Program
             if (keys.Length == 0)
             {
                 Volatile.Write(ref _binding, current with { Names = names });
-                Log.Warn($"no known {_role} key; keeping the previous keys");
+                Log.Warn("no known hold key; keeping the previous keys");
                 return;
             }
 
             if (keys.Length < names.Count)
             {
-                Log.Warn($"unknown {_role} keys are ignored");
+                Log.Warn("unknown hold keys are ignored");
             }
 
             Volatile.Write(ref _binding, new HoldBinding(names, keys));
@@ -195,10 +210,10 @@ internal static class Program
                 .OfType<HoldKey>()];
     }
 
-    private sealed class MakcuSink(MakcuDevice link) : IMoveSink
+    private sealed class MakcuSink(MakcuDevice device) : IMoveSink
     {
-        public void Move(short dx, short dy) => link.Move(dx, dy);
+        public void Move(short dx, short dy) => device.Move(dx, dy);
 
-        public void SetInterpolation(Interpolation interpolation) => link.SetInterpolation(interpolation);
+        public void SetInterpolation(Interpolation interpolation) => device.SetInterpolation(interpolation);
     }
 }

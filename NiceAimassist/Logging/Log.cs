@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace NiceAimassist;
 
 /// <summary>Ordered from the most to the least severe; a level enables itself and every level before it.</summary>
@@ -62,6 +64,115 @@ public static class Log
     public static void Debug(string message) => Write(LogLevel.Debug, message);
 
     public static void Trace(string message) => Write(LogLevel.Trace, message);
+
+    // An interpolated message is formatted only when its level is enabled. Its holes are still evaluated,
+    // so guard the call when a hole does real work.
+    public static void Error(ref LogHandler<ErrorLevel> handler) => Write(ref handler);
+
+    public static void Warn(ref LogHandler<WarnLevel> handler) => Write(ref handler);
+
+    public static void Info(ref LogHandler<InfoLevel> handler) => Write(ref handler);
+
+    public static void Debug(ref LogHandler<DebugLevel> handler) => Write(ref handler);
+
+    public static void Trace(ref LogHandler<TraceLevel> handler) => Write(ref handler);
+
+    /// <summary>Names the level that a <see cref="LogHandler{TLevel}"/> writes at.</summary>
+    public interface ILevel
+    {
+        static abstract LogLevel Value { get; }
+    }
+
+    public readonly struct ErrorLevel : ILevel
+    {
+        public static LogLevel Value => LogLevel.Error;
+    }
+
+    public readonly struct WarnLevel : ILevel
+    {
+        public static LogLevel Value => LogLevel.Warn;
+    }
+
+    public readonly struct InfoLevel : ILevel
+    {
+        public static LogLevel Value => LogLevel.Info;
+    }
+
+    public readonly struct DebugLevel : ILevel
+    {
+        public static LogLevel Value => LogLevel.Debug;
+    }
+
+    public readonly struct TraceLevel : ILevel
+    {
+        public static LogLevel Value => LogLevel.Trace;
+    }
+
+    /// <summary>The handler for an interpolated message at level <typeparamref name="TLevel"/>.</summary>
+    [InterpolatedStringHandler]
+    public ref struct LogHandler<TLevel> where TLevel : ILevel
+    {
+        // Used only while IsEnabled is true; the default value is never written to.
+        private DefaultInterpolatedStringHandler _text;
+
+        public LogHandler(int literalLength, int formattedCount)
+        {
+            IsEnabled = Log.IsEnabled(TLevel.Value);
+            _text = IsEnabled ? new DefaultInterpolatedStringHandler(literalLength, formattedCount) : default;
+        }
+
+        public bool IsEnabled { get; }
+
+        public void AppendLiteral(string value)
+        {
+            if (IsEnabled)
+            {
+                _text.AppendLiteral(value);
+            }
+        }
+
+        public void AppendFormatted<T>(T value)
+        {
+            if (IsEnabled)
+            {
+                _text.AppendFormatted(value);
+            }
+        }
+
+        public void AppendFormatted<T>(T value, string? format)
+        {
+            if (IsEnabled)
+            {
+                _text.AppendFormatted(value, format);
+            }
+        }
+
+        public void AppendFormatted<T>(T value, int alignment)
+        {
+            if (IsEnabled)
+            {
+                _text.AppendFormatted(value, alignment);
+            }
+        }
+
+        public void AppendFormatted<T>(T value, int alignment, string? format)
+        {
+            if (IsEnabled)
+            {
+                _text.AppendFormatted(value, alignment, format);
+            }
+        }
+
+        internal string ToStringAndClear() => _text.ToStringAndClear();
+    }
+
+    private static void Write<TLevel>(ref LogHandler<TLevel> handler) where TLevel : ILevel
+    {
+        if (handler.IsEnabled)
+        {
+            Write(TLevel.Value, handler.ToStringAndClear());
+        }
+    }
 
     private static void Write(LogLevel level, string message)
     {

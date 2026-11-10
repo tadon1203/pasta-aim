@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using NiceAimassist.Aim;
 using NiceAimassist.Pipeline;
 
 namespace NiceAimassist.Engine;
@@ -13,19 +14,27 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
     private long _windowStart = now();
     private int _frames;
     private int _timeouts;
+    private int _noFrames;
     private int _targets;
     private int _aimed;
     private int _sent;
     private float _bestScore;
     private float _modelBestScore;
 
-    public void Timeout()
+    public void RecordTimeout()
     {
         _timeouts++;
         Tick();
     }
 
-    public void Frame(in FrameResult frame, in FrameTimings timings, bool aimed, bool sent, short dx, short dy)
+    /// <summary>Counts a wait that returned a frame without a new image, or a lost duplication.</summary>
+    public void RecordNoFrame()
+    {
+        _noFrames++;
+        Tick();
+    }
+
+    public void RecordFrame(in FrameResult frame, in FrameTimings timings, AimResult aim, bool sent)
     {
         _frames++;
         _latency.Add(timings);
@@ -36,6 +45,7 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
             _bestScore = MathF.Max(_bestScore, detection.Score);
         }
 
+        bool aimed = aim.Outcome == AimOutcome.Move;
         _aimed += aimed ? 1 : 0;
         _sent += sent ? 1 : 0;
 
@@ -44,7 +54,7 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
             string box = frame.Target is { } t
                 ? $"box=({t.X1:F1},{t.Y1:F1},{t.X2:F1},{t.Y2:F1}) score={t.Score:F3}"
                 : "no target";
-            Log.Trace($"frame {box} move=({dx},{dy}) aimed={aimed} sent={sent}");
+            Log.Trace($"frame {box} aim={aim.Outcome} move=({aim.Dx},{aim.Dy}) sent={sent}");
         }
 
         Tick();
@@ -54,7 +64,7 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
     public void Restart()
     {
         _windowStart = now();
-        _frames = _timeouts = _targets = _aimed = _sent = 0;
+        _frames = _timeouts = _noFrames = _targets = _aimed = _sent = 0;
         _bestScore = 0;
         _modelBestScore = 0;
         _latency.Reset();
@@ -80,14 +90,14 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
             StageTicks avg = latency.Average;
             StageTicks max = latency.Max;
             Log.Debug(
-                $"engine {seconds:F1}s: frames={_frames} timeouts={_timeouts} with_target={_targets} "
+                $"engine {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
                 + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} best_score_any_row={_modelBestScore:F3}");
             Log.Debug(
-                $"latency avg/max ms: capture={FrameTimings.ToMs(avg.Capture):F2}/{FrameTimings.ToMs(max.Capture):F2} "
-                + $"infer={FrameTimings.ToMs(avg.Infer):F2}/{FrameTimings.ToMs(max.Infer):F2} "
-                + $"aim={FrameTimings.ToMs(avg.Aim):F2}/{FrameTimings.ToMs(max.Aim):F2} "
-                + $"send={FrameTimings.ToMs(avg.Send):F2}/{FrameTimings.ToMs(max.Send):F2} "
-                + $"total={FrameTimings.ToMs(avg.Total):F2}/{FrameTimings.ToMs(max.Total):F2}");
+                $"latency avg/max ms: capture={StageTicks.PairMs(avg.Capture, max.Capture)} "
+                + $"infer={StageTicks.PairMs(avg.Infer, max.Infer)} "
+                + $"aim={StageTicks.PairMs(avg.Aim, max.Aim)} "
+                + $"send={StageTicks.PairMs(avg.Send, max.Send)} "
+                + $"total={StageTicks.PairMs(avg.Total, max.Total)}");
         }
 
         Restart();

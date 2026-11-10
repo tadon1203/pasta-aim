@@ -118,10 +118,10 @@ public sealed unsafe class FrameSource : IDisposable
 
     internal void MarkSubmitted(ulong sequence) => _submittedSequence = sequence;
 
-    public bool TryAcquire(int timeoutMs, out long presentQpc)
+    internal AcquireResult TryAcquire(int timeoutMs, out FrameTicket ticket)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        presentQpc = 0;
+        ticket = default;
 
         if (_frameHeld)
         {
@@ -132,7 +132,7 @@ public sealed unsafe class FrameSource : IDisposable
             if (release == Com.DxgiAccessLost)
             {
                 RecreateDuplication();
-                return false;
+                return AcquireResult.DeviceLost;
             }
 
             Com.Check(release, "ReleaseFrame");
@@ -143,13 +143,13 @@ public sealed unsafe class FrameSource : IDisposable
         int acquire = _duplication->AcquireNextFrame((uint)timeoutMs, &frameInfo, &resource);
         if (acquire == Com.DxgiWaitTimeout)
         {
-            return false;
+            return AcquireResult.Timeout;
         }
 
         if (acquire == Com.DxgiAccessLost)
         {
             RecreateDuplication();
-            return false;
+            return AcquireResult.DeviceLost;
         }
 
         Com.Check(acquire, "AcquireNextFrame");
@@ -158,7 +158,7 @@ public sealed unsafe class FrameSource : IDisposable
         if (frameInfo.LastPresentTime == 0)
         {
             Com.Release(ref resource);
-            return false;
+            return AcquireResult.NoNewImage;
         }
 
         _desktopResource = resource;
@@ -182,8 +182,8 @@ public sealed unsafe class FrameSource : IDisposable
         // Without a flush, the copy and the signal may not reach the GPU while the compute queue already waits on them.
         ((ID3D11DeviceContext*)context)->Flush();
 
-        presentQpc = frameInfo.LastPresentTime;
-        return true;
+        ticket = new FrameTicket(_sequence, frameInfo.LastPresentTime);
+        return AcquireResult.Frame;
     }
 
     public void Dispose()
@@ -273,16 +273,7 @@ public sealed unsafe class FrameSource : IDisposable
                 $"The desktop image format is {desc.Format}; only B8G8R8A8_UNorm can be captured. Turn off HDR and 10-bit color for this display.");
         }
 
-        (int left, int top) = CenterCrop.Origin((int)desc.Width, (int)desc.Height, InputWidth, InputHeight);
-        _sourceBox = new D3D11Box
-        {
-            Left = (uint)left,
-            Top = (uint)top,
-            Front = 0,
-            Right = (uint)(left + InputWidth),
-            Bottom = (uint)(top + InputHeight),
-            Back = 1,
-        };
+        _sourceBox = CenterCrop.Box((int)desc.Width, (int)desc.Height, InputWidth, InputHeight);
         _layoutValid = true;
     }
 

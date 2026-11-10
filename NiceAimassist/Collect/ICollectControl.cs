@@ -10,10 +10,10 @@ public interface ICollectControl
     string? LastError { get; }
 
     /// <summary>Starts or stops collection. Stopping drops a copy that has not been read yet.</summary>
-    void Update(bool wanted);
+    void SetEnabled(bool enabled);
 
     void Configure(int size, int perSecond);
 
     /// <summary>Moves a finished GPU copy to the writer thread. Never waits for the GPU.</summary>
-    void Poll();
+    void CollectFinishedCopy();
 }

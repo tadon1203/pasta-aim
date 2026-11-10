@@ -1,3 +1,5 @@
+using NiceAimassist.Gpu;
+
 namespace NiceAimassist.Pipeline;
 
 public interface IFramePipeline : IDisposable
@@ -7,9 +9,10 @@ public interface IFramePipeline : IDisposable
     int InputHeight { get; }
 
     /// <summary>
-    /// Waits up to <paramref name="timeoutMs"/> for a new desktop frame and runs the model on it.
-    /// Returns false on timeout. <see cref="FrameResult.Target"/> is the detection nearest to the input
-    /// center whose score is at least <paramref name="confidence"/> (0..1), or null.
+    /// Waits a bounded time for a new desktop frame and, when there is one, runs the model on it.
+    /// <see cref="FrameResult.Target"/> is the detection nearest to the input center whose score is at
+    /// least <paramref name="confidence"/> (0..1), or null. The result is <see cref="AcquireResult.Frame"/>
+    /// only when <paramref name="result"/> is filled.
     /// </summary>
-    bool TryRun(int timeoutMs, float confidence, out FrameResult result);
+    AcquireResult TryRun(float confidence, out FrameResult result);
 }
