@@ -1,6 +1,3 @@
-# Rust
-/target/
-
 # Local application state
 /settings.json
 
@@ -15,3 +12,6 @@ Thumbs.db
 
 # Other IDEs
 .idea/
+bin/
+obj/
+/publish/

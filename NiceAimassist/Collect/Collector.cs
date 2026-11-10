@@ -1,0 +1,256 @@
+using System.Buffers;
+using NiceAimassist.Gpu;
+using Silk.NET.Direct3D11;
+using Silk.NET.DXGI;
+using D3D11Box = Silk.NET.Direct3D11.Box;
+
+namespace NiceAimassist.Collect;
+
+/// <summary>
+/// Copies the desktop into staging textures and reads them back later, so the engine thread never waits on the GPU.
+/// Every method except the readers runs on the engine thread, which owns the immediate context.
+/// </summary>
+public sealed unsafe class Collector : ICollectControl, IDisposable
+{
+    private const uint DoNotWait = 0x100000;
+
+    private readonly GpuContext _gpu;
+    private readonly CollectSchedule _schedule;
+    private readonly ShotWriter _writer;
+    private readonly DatasetWriter _dataset;
+    private volatile bool _active;
+    private volatile string? _lastError;
+    private int _size = 640;
+    private ID3D11Texture2D* _stagingCrop;
+    private ID3D11Texture2D* _stagingFull;
+    private bool _pending;
+    private string _pendingStem = string.Empty;
+    private bool _disposed;
+
+    public Collector(GpuContext gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
+    {
+        _gpu = gpu;
+        _dataset = new DatasetWriter(datasetRoot);
+        _schedule = new CollectSchedule(now, ticksPerSecond);
+        _writer = new ShotWriter(Write, error => _lastError = error.Message);
+    }
+
+    public bool Active => _active;
+
+    public long Saved => _writer.Saved;
+
+    public string? LastError => _lastError;
+
+    /// <summary>True when the next frame should be passed to <see cref="Capture"/>.</summary>
+    public bool Due => _active && !_pending && _schedule.IsDue;
+
+    public void Toggle()
+    {
+        if (_active)
+        {
+            _active = false;
+            _pending = false;
+            return;
+        }
+
+        _lastError = null;
+        _schedule.Restart();
+        _active = true;
+    }
+
+    public void Configure(int size, int perSecond)
+    {
+        _size = size;
+        _schedule.SetRate(perSecond);
+    }
+
+    /// <summary>Queues the GPU copies of the crop and the full desktop. <paramref name="desktop"/> must stay valid until this returns.</summary>
+    internal void Capture(ID3D11Texture2D* desktop)
+    {
+        try
+        {
+            Texture2DDesc desc;
+            desktop->GetDesc(&desc);
+            (int left, int top, int side) = CollectRoi.Square((int)desc.Width, (int)desc.Height, _size);
+            EnsureStaging(desc, side);
+
+            ID3D11DeviceContext* context = _gpu.CaptureContext;
+            D3D11Box box = new()
+            {
+                Left = (uint)left,
+                Top = (uint)top,
+                Front = 0,
+                Right = (uint)(left + side),
+                Bottom = (uint)(top + side),
+                Back = 1,
+            };
+            context->CopySubresourceRegion((ID3D11Resource*)_stagingCrop, 0, 0, 0, 0, (ID3D11Resource*)desktop, 0, &box);
+            // The full copy goes last: once it is readable, the crop copy is too.
+            context->CopyResource((ID3D11Resource*)_stagingFull, (ID3D11Resource*)desktop);
+            // Without a flush, a DoNotWait map may report "still drawing" until the driver flushes by itself.
+            context->Flush();
+            _pendingStem = DatasetWriter.Stem(DateTime.Now);
+            _pending = true;
+            _schedule.MarkTaken();
+        }
+        catch (Exception error)
+        {
+            Fail(error);
+        }
+    }
+
+    public void Poll()
+    {
+        if (!_pending)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!TryRead(_stagingFull, wait: false, out BgraImage original))
+            {
+                return;
+            }
+
+            _pending = false;
+            TryRead(_stagingCrop, wait: true, out BgraImage crop);
+            if (!_writer.TrySubmit(new Shot(_pendingStem, crop, original)))
+            {
+                Release(crop);
+                Release(original);
+            }
+        }
+        catch (Exception error)
+        {
+            Fail(error);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _active = false;
+        _writer.Dispose();
+        DisposeStaging();
+    }
+
+    private static void Release(BgraImage image) => ArrayPool<byte>.Shared.Return(image.Pixels);
+
+    private void Write(Shot shot)
+    {
+        try
+        {
+            _dataset.Write(shot.Stem, shot.Crop, shot.Original);
+        }
+        finally
+        {
+            Release(shot.Crop);
+            Release(shot.Original);
+        }
+    }
+
+    private void Fail(Exception error)
+    {
+        _lastError = error.Message;
+        _active = false;
+        _pending = false;
+    }
+
+    private bool TryRead(ID3D11Texture2D* staging, bool wait, out BgraImage image)
+    {
+        image = default;
+        ID3D11DeviceContext* context = _gpu.CaptureContext;
+        MappedSubresource mapped;
+        int result = context->Map((ID3D11Resource*)staging, 0, Map.Read, wait ? 0 : DoNotWait, &mapped);
+        if (result == Gpu.Com.DxgiWasStillDrawing)
+        {
+            return false;
+        }
+
+        Gpu.Com.Check(result, "Map the staging texture");
+        try
+        {
+            Texture2DDesc desc;
+            staging->GetDesc(&desc);
+            int width = (int)desc.Width;
+            int height = (int)desc.Height;
+            int rowBytes = width * 4;
+            byte[] pixels = ArrayPool<byte>.Shared.Rent(rowBytes * height);
+            for (int row = 0; row < height; row++)
+            {
+                new ReadOnlySpan<byte>((byte*)mapped.PData + (long)row * mapped.RowPitch, rowBytes).CopyTo(pixels.AsSpan(row * rowBytes));
+            }
+
+            image = new BgraImage(pixels, width, height);
+            return true;
+        }
+        finally
+        {
+            context->Unmap((ID3D11Resource*)staging, 0);
+        }
+    }
+
+    // A failed rebuild keeps the old textures, which still match the old sizes.
+    private void EnsureStaging(Texture2DDesc desktop, int side)
+    {
+        if (_stagingFull != null && _stagingCrop != null)
+        {
+            Texture2DDesc full;
+            Texture2DDesc crop;
+            _stagingFull->GetDesc(&full);
+            _stagingCrop->GetDesc(&crop);
+            if (full.Width == desktop.Width && full.Height == desktop.Height && crop.Width == (uint)side)
+            {
+                return;
+            }
+        }
+
+        ID3D11Texture2D* newFull = CreateStaging(desktop.Width, desktop.Height, desktop.Format);
+        ID3D11Texture2D* newCrop;
+        try
+        {
+            newCrop = CreateStaging((uint)side, (uint)side, desktop.Format);
+        }
+        catch
+        {
+            Gpu.Com.Release(ref newFull);
+            throw;
+        }
+
+        DisposeStaging();
+        _stagingFull = newFull;
+        _stagingCrop = newCrop;
+    }
+
+    private ID3D11Texture2D* CreateStaging(uint width, uint height, Format format)
+    {
+        Texture2DDesc desc = new()
+        {
+            Width = width,
+            Height = height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = format,
+            SampleDesc = new SampleDesc(1, 0),
+            Usage = Usage.Staging,
+            BindFlags = 0,
+            CPUAccessFlags = (uint)CpuAccessFlag.Read,
+            MiscFlags = 0,
+        };
+        ID3D11Texture2D* texture;
+        Gpu.Com.Check(_gpu.CaptureDevice->CreateTexture2D(&desc, null, &texture), "CreateTexture2D (staging)");
+        return texture;
+    }
+
+    private void DisposeStaging()
+    {
+        Gpu.Com.Release(ref _stagingCrop);
+        Gpu.Com.Release(ref _stagingFull);
+    }
+}

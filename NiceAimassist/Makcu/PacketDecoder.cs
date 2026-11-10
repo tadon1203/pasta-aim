@@ -1,0 +1,55 @@
+using System.Buffers.Binary;
+
+namespace NiceAimassist.Makcu;
+
+internal readonly record struct Packet(byte Command, byte[] Payload);
+
+internal sealed class PacketDecoder
+{
+    private static readonly byte[] Header = [0xDE, 0xAD];
+
+    private byte[] _pending = [];
+
+    public void Feed(ReadOnlySpan<byte> bytes, List<Packet> packets)
+    {
+        byte[] data = _pending.Length == 0 ? bytes.ToArray() : [.. _pending, .. bytes];
+        int start = 0;
+        while (true)
+        {
+            ReadOnlySpan<byte> rest = data.AsSpan(start);
+            int header = rest.IndexOf(Header.AsSpan());
+            if (header < 0)
+            {
+                // A lone first header byte at the end is completed by the next feed.
+                start = data.Length - (rest.Length > 0 && rest[^1] == Header[0] ? 1 : 0);
+                break;
+            }
+
+            start += header;
+            rest = data.AsSpan(start);
+            if (rest.Length < 4)
+            {
+                break;
+            }
+
+            int length = BinaryPrimitives.ReadUInt16LittleEndian(rest[2..]);
+            if (length > Protocol.MaxPayload)
+            {
+                // Skip only the header so that garbage cannot stall the stream.
+                start += Header.Length;
+                continue;
+            }
+
+            int total = 5 + length;
+            if (rest.Length < total)
+            {
+                break;
+            }
+
+            packets.Add(new Packet(rest[4], rest[5..total].ToArray()));
+            start += total;
+        }
+
+        _pending = data[start..];
+    }
+}
