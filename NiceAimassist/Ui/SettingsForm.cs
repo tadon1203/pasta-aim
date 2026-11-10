@@ -40,7 +40,6 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _interpolationAuto = new();
     private readonly NumericUpDown _collectSize = new();
     private readonly NumericUpDown _collectRate = new();
-    private readonly Button _collectKey = new();
     private readonly CheckBox _collectEnabled = new();
     private readonly Label _status = new();
     private readonly Timer _saveTimer = new();
@@ -48,7 +47,6 @@ internal sealed class SettingsForm : Form
     private readonly Timer _statusTimer = new();
 
     private bool _armed;
-    private bool _capturingCollectKey;
     private long _lastFrames;
     private long _lastTicks = Stopwatch.GetTimestamp();
 
@@ -133,11 +131,9 @@ internal sealed class SettingsForm : Form
 
         ConfigureNumber(_collectSize, Settings.MinCollectSize, Settings.MaxCollectSize);
         ConfigureNumber(_collectRate, 1, Settings.MaxCollectRate);
-        _collectKey.AutoSize = true;
-        _collectEnabled.Text = "Enabled";
+        _collectEnabled.Text = "Enabled (while hold key is down)";
         _collectEnabled.AutoSize = true;
         AddRow("Collect", _collectEnabled);
-        AddRow("Collect key (toggle)", _collectKey);
         AddRow("Collect size px", _collectSize);
         AddRow("Collect images/s", _collectRate);
 
@@ -189,7 +185,6 @@ internal sealed class SettingsForm : Form
         _interpolationPercent.Enabled = !_interpolationAuto.Checked;
         _collectSize.Value = settings.CollectSize;
         _collectRate.Value = settings.CollectRate;
-        _collectKey.Text = settings.CollectKeys[0];
         _collectEnabled.Checked = settings.CollectEnabled;
         SetCollectInputsEnabled();
         _logLevel.SelectedItem = settings.LogLevel;
@@ -220,8 +215,7 @@ internal sealed class SettingsForm : Form
             SettingChanged();
         };
         _holdKeys.SelectedIndexChanged += (_, _) => UpdateKeyButtons();
-        _addKey.Click += (_, _) => BeginCapture(collectKey: false);
-        _collectKey.Click += (_, _) => BeginCapture(collectKey: true);
+        _addKey.Click += (_, _) => BeginCapture();
         _removeKey.Click += (_, _) => RemoveSelectedKey();
         _saveTimer.Tick += (_, _) => Flush();
         _captureTimer.Tick += (_, _) => PollCapture();
@@ -244,7 +238,6 @@ internal sealed class SettingsForm : Form
             : Interpolation.Percent((int)_interpolationPercent.Value),
         CollectSize = (int)_collectSize.Value,
         CollectRate = (int)_collectRate.Value,
-        CollectKeys = [_collectKey.Text],
         CollectEnabled = _collectEnabled.Checked,
         LogLevel = _logLevel.SelectedItem is LogLevel level ? level : _store.Current.LogLevel,
     };
@@ -269,7 +262,6 @@ internal sealed class SettingsForm : Form
     private void SetCollectInputsEnabled()
     {
         bool enabled = _collectEnabled.Checked;
-        _collectKey.Enabled = enabled;
         _collectSize.Enabled = enabled;
         _collectRate.Enabled = enabled;
     }
@@ -287,14 +279,11 @@ internal sealed class SettingsForm : Form
         }
     }
 
-    private void BeginCapture(bool collectKey)
+    private void BeginCapture()
     {
         _armed = false;
-        _capturingCollectKey = collectKey;
-        Button button = collectKey ? _collectKey : _addKey;
         _addKey.Enabled = false;
-        _collectKey.Enabled = false;
-        button.Text = "Press… (Esc)";
+        _addKey.Text = "Press… (Esc)";
         _captureTimer.Start();
     }
 
@@ -323,18 +312,6 @@ internal sealed class SettingsForm : Form
         _captureTimer.Stop();
         _addKey.Enabled = true;
         _addKey.Text = AddKeyText;
-        _collectKey.Enabled = true;
-        if (_capturingCollectKey)
-        {
-            _collectKey.Text = name ?? _store.Current.CollectKeys[0];
-            if (name is not null)
-            {
-                SettingChanged();
-            }
-
-            return;
-        }
-
         if (name is not null && !_holdKeys.Items.Cast<string>().Contains(name, StringComparer.OrdinalIgnoreCase))
         {
             _holdKeys.Items.Add(name);
@@ -354,12 +331,15 @@ internal sealed class SettingsForm : Form
         long frames = _stats.Frames;
         long ticks = Stopwatch.GetTimestamp();
         double fps = (frames - _lastFrames) * (double)Stopwatch.Frequency / (ticks - _lastTicks);
-        double latencyMs = _stats.LastLatencyTicks * 1000.0 / Stopwatch.Frequency;
+        StageTicks latency = _stats.Latency.Average;
         _lastFrames = frames;
         _lastTicks = ticks;
         string collect = _stats.CollectError is { } error
             ? $"   collect error: {error}"
             : _stats.Collecting ? $"   collecting, saved {_stats.Saved}" : string.Empty;
-        _status.Text = $"fps {fps:F1}   latency {latencyMs:F2} ms   {(_stats.Held ? "held" : "idle")}{collect}";
+        _status.Text = $"fps {fps:F1}   latency {FrameTimings.ToMs(latency.Total):F2} ms "
+            + $"(capture {FrameTimings.ToMs(latency.Capture):F2}, infer {FrameTimings.ToMs(latency.Infer):F2}, "
+            + $"aim {FrameTimings.ToMs(latency.Aim):F2}, send {FrameTimings.ToMs(latency.Send):F2})   "
+            + $"{(_stats.Held ? "held" : "idle")}{collect}";
     }
 }

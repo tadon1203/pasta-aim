@@ -27,9 +27,6 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private Preprocessor? _preprocessor;
     private FrameSource? _frames;
     private bool _disposed;
-    private long _modelWindowStart = Stopwatch.GetTimestamp();
-    private int _modelFrames;
-    private float _modelBestScore;
 
     public FramePipeline(GpuContext gpu, string modelPath, Collector? collector = null)
     {
@@ -107,52 +104,25 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
     public int InputHeight { get; }
 
-    public bool TryRun(int timeoutMs, float confidence, out long presentQpc, out Detection? target)
+    public bool TryRun(int timeoutMs, float confidence, out FrameResult result)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        target = null;
-        if (!_frames!.TryAcquire(timeoutMs, out presentQpc))
+        result = default;
+        if (!_frames!.TryAcquire(timeoutMs, out long presentQpc))
         {
             return false;
         }
 
+        long acquiredQpc = Stopwatch.GetTimestamp();
         _preprocessor!.Submit(_inputResource);
         CollectHeldFrame();
         ReadOnlySpan<byte> output = RunAndRead();
-        target = DetectionDecoder.SelectNearest(output, _outputPrecision, _outputRows, InputWidth, InputHeight, confidence);
-        if (Log.IsEnabled(LogLevel.Debug))
-        {
-            ObserveScores(output);
-        }
-
-        return true;
-    }
-
-    private void ObserveScores(ReadOnlySpan<byte> output)
-    {
-        _modelBestScore = MathF.Max(_modelBestScore, DetectionDecoder.MaxScore(output, _outputPrecision, _outputRows));
-        _modelFrames++;
-        long now = Stopwatch.GetTimestamp();
-        if (now - _modelWindowStart < Stopwatch.Frequency)
-        {
-            return;
-        }
-
-        Log.Debug($"model: frames={_modelFrames} best_score_any_row={_modelBestScore:F3}");
-        _modelWindowStart = now;
-        _modelFrames = 0;
-        _modelBestScore = 0;
-    }
-
-    public bool TryCollect()
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_collector is not { Due: true } || !_frames!.TryAcquire(0, out _))
-        {
-            return false;
-        }
-
-        CollectHeldFrame();
+        Detection? target = DetectionDecoder.SelectNearest(output, _outputPrecision, _outputRows, InputWidth, InputHeight, confidence);
+        long inferredQpc = Stopwatch.GetTimestamp();
+        float modelBestScore = Log.IsEnabled(LogLevel.Debug)
+            ? DetectionDecoder.MaxScore(output, _outputPrecision, _outputRows)
+            : 0f;
+        result = new FrameResult(presentQpc, acquiredQpc, inferredQpc, target, modelBestScore);
         return true;
     }
 

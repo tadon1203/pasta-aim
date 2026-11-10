@@ -43,12 +43,10 @@ public sealed class SettingsTests
     public void Collect_settings_default_and_clamp()
     {
         Settings defaults = Settings.Parse("{}");
-        Settings clamped = Settings.Parse(@"{ ""collect_size"": 8, ""collect_rate"": 9, ""collect_keys"": [""""] }");
+        Settings clamped = Settings.Parse(@"{ ""collect_size"": 8, ""collect_rate"": 9 }");
 
         Assert.Equal((640, 2), (defaults.CollectSize, defaults.CollectRate));
-        Assert.Equal(["F9"], defaults.CollectKeys);
         Assert.Equal((Settings.MinCollectSize, Settings.MaxCollectRate), (clamped.CollectSize, clamped.CollectRate));
-        Assert.Equal(["F9"], clamped.CollectKeys);
         Assert.Equal(Settings.MaxCollectSize, Settings.Parse(@"{ ""collect_size"": 99999 }").CollectSize);
     }
 

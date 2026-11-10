@@ -178,7 +178,7 @@ public class EngineTests
 
         public void Enqueue(long presentQpc, Detection? target) => _frames.Enqueue((presentQpc, target));
 
-        public bool TryRun(int timeoutMs, float confidence, out long presentQpc, out Detection? target)
+        public bool TryRun(int timeoutMs, float confidence, out FrameResult result)
         {
             Interlocked.Increment(ref _runCalls);
             if (Fault is { } fault)
@@ -188,14 +188,12 @@ public class EngineTests
 
             if (_frames.TryDequeue(out var frame))
             {
-                presentQpc = frame.Qpc;
-                target = frame.Target;
+                result = new FrameResult(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f);
                 return true;
             }
 
             Thread.Sleep(1);
-            presentQpc = 0;
-            target = null;
+            result = default;
             return false;
         }
 

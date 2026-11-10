@@ -9,7 +9,8 @@ public interface ICollectControl
 
     string? LastError { get; }
 
-    void Toggle();
+    /// <summary>Starts or stops collection. Stopping drops a copy that has not been read yet.</summary>
+    void Update(bool wanted);
 
     void Configure(int size, int perSecond);
 

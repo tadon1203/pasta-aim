@@ -24,6 +24,7 @@ public sealed unsafe class Collector : ICollectControl, IDisposable
     private ID3D11Texture2D* _stagingCrop;
     private ID3D11Texture2D* _stagingFull;
     private bool _pending;
+    private bool _failed;
     private string _pendingStem = string.Empty;
     private bool _disposed;
 
@@ -44,12 +45,22 @@ public sealed unsafe class Collector : ICollectControl, IDisposable
     /// <summary>True when the next frame should be passed to <see cref="Capture"/>.</summary>
     public bool Due => _active && !_pending && _schedule.IsDue;
 
-    public void Toggle()
+    /// <summary>
+    /// Sets whether collection runs. Called on the engine thread every loop. A failure stays latched
+    /// until <paramref name="wanted"/> is false, so a persistent error does not restart on every frame.
+    /// </summary>
+    public void Update(bool wanted)
     {
-        if (_active)
+        if (!wanted)
         {
             _active = false;
             _pending = false;
+            _failed = false;
+            return;
+        }
+
+        if (_active || _failed)
+        {
             return;
         }
 
@@ -160,6 +171,7 @@ public sealed unsafe class Collector : ICollectControl, IDisposable
         _lastError = error.Message;
         _active = false;
         _pending = false;
+        _failed = true;
     }
 
     private bool TryRead(ID3D11Texture2D* staging, bool wait, out BgraImage image)

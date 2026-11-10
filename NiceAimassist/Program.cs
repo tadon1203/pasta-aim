@@ -49,7 +49,6 @@ internal static class Program
             Log.Info($"log level {startup.LogLevel}; file {Log.FilePath ?? "(none)"}");
             string modelPath = ResolveModel(startup.Model);
             HoldKeySource holdKey = new(store.Current.HoldKeys, "hold");
-            HoldKeySource collectKey = new(store.Current.CollectKeys, "collect");
 
             gpu = new GpuContext(startup.DisplayAdapter, startup.DisplayOutput);
             collector = new Collector(
@@ -69,7 +68,6 @@ internal static class Program
                     Settings settings = store.Current;
                     Log.Level = settings.LogLevel;
                     holdKey.Follow(settings.HoldKeys);
-                    collectKey.Follow(settings.CollectKeys);
                     return settings;
                 },
                 Stopwatch.GetTimestamp,
@@ -78,8 +76,7 @@ internal static class Program
                     fault = error;
                     stopped.Set();
                 },
-                collector,
-                collectKey.IsHeld);
+                collector);
 
             ConsoleCancelEventHandler onCancel = (_, args) =>
             {

@@ -4,7 +4,7 @@ namespace NiceAimassist.Engine;
 public sealed class EngineStats
 {
     private long _frames;
-    private long _lastLatencyTicks;
+    private volatile LatencySnapshot _latency = LatencySnapshot.Empty;
     private volatile bool _held;
     private volatile bool _collecting;
     private volatile string? _collectError;
@@ -12,8 +12,8 @@ public sealed class EngineStats
 
     public long Frames => Volatile.Read(ref _frames);
 
-    /// <summary>Stopwatch ticks from the last frame's present time to the end of its processing.</summary>
-    public long LastLatencyTicks => Volatile.Read(ref _lastLatencyTicks);
+    /// <summary>The latency of the last full one-second window that had frames; the same numbers the log shows.</summary>
+    public LatencySnapshot Latency => _latency;
 
     public bool Held => _held;
 
@@ -30,11 +30,9 @@ public sealed class EngineStats
         _collectError = error;
     }
 
-    internal void RecordFrame(long latencyTicks)
-    {
-        Volatile.Write(ref _lastLatencyTicks, latencyTicks);
-        Interlocked.Increment(ref _frames);
-    }
+    internal void RecordFrame() => Interlocked.Increment(ref _frames);
+
+    internal void SetLatency(LatencySnapshot latency) => _latency = latency;
 
     internal void SetHeld(bool held) => _held = held;
 }

@@ -18,9 +18,7 @@ public sealed class Engine
     private readonly Func<long> _now;
     private readonly Action<Exception> _onFault;
     private readonly ICollectControl? _collector;
-    private readonly Func<bool>? _isCollectDown;
     private readonly AimController _aim = new();
-    private bool _collectWasDown;
     private bool _wasHeld;
     private readonly EngineDiagnostics _diagnostics;
     private readonly EngineStats _stats = new();
@@ -38,18 +36,16 @@ public sealed class Engine
         Func<Settings> currentSettings,
         Func<long> now,
         Action<Exception> onFault,
-        ICollectControl? collector = null,
-        Func<bool>? isCollectDown = null)
+        ICollectControl? collector = null)
     {
         _collector = collector;
-        _isCollectDown = isCollectDown;
         _pipeline = pipeline ?? throw new ArgumentNullException(nameof(pipeline));
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _isHeld = isHeld ?? throw new ArgumentNullException(nameof(isHeld));
         _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
         _now = now ?? throw new ArgumentNullException(nameof(now));
         _onFault = onFault ?? throw new ArgumentNullException(nameof(onFault));
-        _diagnostics = new EngineDiagnostics(_now);
+        _diagnostics = new EngineDiagnostics(_now, _stats);
     }
 
     public EngineStats Stats => _stats;
@@ -95,8 +91,9 @@ public sealed class Engine
         while (_running)
         {
             Settings settings = _currentSettings();
-            UpdateCollector(settings);
-            if (!_isHeld())
+            bool held = _isHeld();
+            UpdateCollector(settings, held);
+            if (!held)
             {
                 if (_wasHeld)
                 {
@@ -106,7 +103,6 @@ public sealed class Engine
 
                 _stats.SetHeld(false);
                 _aim.Reset();
-                _pipeline.TryCollect();
                 Thread.Sleep(IdleSleepMs);
                 continue;
             }
@@ -120,7 +116,7 @@ public sealed class Engine
 
             _stats.SetHeld(true);
             SendInterpolation(settings.Interpolation);
-            if (!_pipeline.TryRun(FrameTimeoutMs, settings.Confidence / 100f, out long presentQpc, out Detection? target))
+            if (!_pipeline.TryRun(FrameTimeoutMs, settings.Confidence / 100f, out FrameResult frame))
             {
                 _diagnostics.Timeout();
                 continue;
@@ -133,41 +129,30 @@ public sealed class Engine
                 settings.MaxDelta,
                 settings.VelocitySmoothing);
             // The flag is read after the aim so that a stop during the frame suppresses its move.
-            bool aimed = _aim.TryUpdate(target, presentQpc, _now(), _pipeline.InputWidth, _pipeline.InputHeight, parameters, out short dx, out short dy);
+            bool aimed = _aim.TryUpdate(frame.Target, frame.PresentQpc, _now(), _pipeline.InputWidth, _pipeline.InputHeight, parameters, out short dx, out short dy);
+            long aimedAt = _now();
             bool sent = aimed && _running;
             if (sent)
             {
                 _sink.Move(dx, dy);
             }
 
-            long latency = _now() - presentQpc;
-            _stats.RecordFrame(latency);
-            _diagnostics.Frame(target, aimed, sent, dx, dy, latency);
+            long sentAt = sent ? _now() : aimedAt;
+            FrameTimings timings = new(frame.PresentQpc, frame.AcquiredQpc, frame.InferredQpc, aimedAt, sentAt);
+            _stats.RecordFrame();
+            _diagnostics.Frame(frame, timings, aimed, sent, dx, dy);
         }
     }
 
-    private void UpdateCollector(Settings settings)
+    // Collection runs only while the hold key is down, so it follows the same frames the aim uses.
+    private void UpdateCollector(Settings settings, bool held)
     {
         if (_collector is null)
         {
             return;
         }
 
-        bool down = _isCollectDown?.Invoke() ?? false;
-        if (!settings.CollectEnabled)
-        {
-            if (_collector.Active)
-            {
-                _collector.Toggle();
-                Log.Info("collection stopped: collect_enabled is off");
-            }
-        }
-        else if (down && !_collectWasDown)
-        {
-            _collector.Toggle();
-        }
-
-        _collectWasDown = down;
+        _collector.Update(held && settings.CollectEnabled);
         _collector.Configure(settings.CollectSize, settings.CollectRate);
         _collector.Poll();
         _stats.SetCollect(_collector.Active, _collector.Saved, _collector.LastError);

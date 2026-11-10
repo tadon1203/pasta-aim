@@ -11,13 +11,11 @@ public sealed record Settings
 {
     public const string DefaultHoldKey = "F8";
 
-    public const string DefaultCollectKey = "F9";
     public const int MinCollectSize = 64;
     public const int MaxCollectSize = 4096;
     public const int MaxCollectRate = 2;
 
     private static readonly string[] DefaultHoldKeys = [DefaultHoldKey];
-    private static readonly string[] DefaultCollectKeys = [DefaultCollectKey];
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
@@ -62,7 +60,7 @@ public sealed record Settings
     [JsonPropertyName("hold_keys")]
     public IReadOnlyList<string> HoldKeys { get; init; } = DefaultHoldKeys;
 
-    /// <summary>Whether the collect key works. Turning it off also stops a running collection.</summary>
+    /// <summary>Whether collection runs while the hold key is down.</summary>
     [JsonPropertyName("collect_enabled")]
     public bool CollectEnabled { get; init; } = true;
 
@@ -73,10 +71,6 @@ public sealed record Settings
     /// <summary>Training images saved per second while collecting.</summary>
     [JsonPropertyName("collect_rate")]
     public int CollectRate { get; init; } = 2;
-
-    /// <summary>The key names that toggle training-data collection on a press.</summary>
-    [JsonPropertyName("collect_keys")]
-    public IReadOnlyList<string> CollectKeys { get; init; } = DefaultCollectKeys;
 
     /// <summary>The most detailed level written to the log file: error, warn, info, debug or trace.</summary>
     [JsonPropertyName("log_level")]
@@ -104,7 +98,6 @@ public sealed record Settings
         HoldKeys = NormalizedKeys(HoldKeys, DefaultHoldKeys),
         CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
         CollectRate = Math.Clamp(CollectRate, 1, MaxCollectRate),
-        CollectKeys = NormalizedKeys(CollectKeys, DefaultCollectKeys),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
     };
 
