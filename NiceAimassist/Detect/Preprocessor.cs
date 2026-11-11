@@ -29,11 +29,13 @@ public sealed unsafe class Preprocessor : IDisposable
     // D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING. This is the identity RGBA swizzle.
     private const uint DefaultComponentMapping = 0x1688;
     private const int ThreadsPerGroup = 8;
+    private const uint D3DCompileOptimizationLevel3 = 1u << 15;
 
     private static readonly D3D12 D3D12Api = D3D12.GetApi();
     private static readonly D3DCompiler Compiler = D3DCompiler.GetApi();
 
     private readonly DesktopCapture _frames;
+    private readonly GpuTimer _timer;
     private readonly DisplayDevices _gpu;
     private readonly ID3D12Device* _device;
     private readonly ID3D12CommandQueue* _queue;
@@ -55,10 +57,11 @@ public sealed unsafe class Preprocessor : IDisposable
     private ID3D12Resource* _destination;
     private bool _disposed;
 
-    internal Preprocessor(DisplayDevices gpu, DesktopCapture frames, TensorPrecision precision)
+    internal Preprocessor(DisplayDevices gpu, DesktopCapture frames, TensorPrecision precision, GpuTimer timer)
     {
         _gpu = gpu;
         _frames = frames;
+        _timer = timer;
         _device = gpu.Device;
         _queue = gpu.ComputeQueue;
         _source = frames.SharedResource;
@@ -85,7 +88,7 @@ public sealed unsafe class Preprocessor : IDisposable
                 NodeMask = 0,
             };
             ID3D12DescriptorHeap* heap;
-            Com.Check(_device->CreateDescriptorHeap(&heapDesc, Com.IidOf<ID3D12DescriptorHeap>(), (void**)&heap), "CreateDescriptorHeap");
+            ComInterop.Check(_device->CreateDescriptorHeap(&heapDesc, ComInterop.IidOf<ID3D12DescriptorHeap>(), (void**)&heap), "CreateDescriptorHeap");
             _heap = heap;
 
             uint stride = _device->GetDescriptorHandleIncrementSize(DescriptorHeapType.CbvSrvUav);
@@ -105,19 +108,19 @@ public sealed unsafe class Preprocessor : IDisposable
             _device->CreateShaderResourceView(_source, &srv, cpuStart);
 
             ID3D12CommandAllocator* allocator;
-            Com.Check(
-                _device->CreateCommandAllocator(CommandListType.Compute, Com.IidOf<ID3D12CommandAllocator>(), (void**)&allocator),
+            ComInterop.Check(
+                _device->CreateCommandAllocator(CommandListType.Compute, ComInterop.IidOf<ID3D12CommandAllocator>(), (void**)&allocator),
                 "CreateCommandAllocator");
             _allocator = allocator;
 
             ID3D12GraphicsCommandList* list;
-            Com.Check(
+            ComInterop.Check(
                 _device->CreateCommandList(
                     0, CommandListType.Compute, (ID3D12CommandAllocator*)_allocator, (ID3D12PipelineState*)_pipeline,
-                    Com.IidOf<ID3D12GraphicsCommandList>(), (void**)&list),
+                    ComInterop.IidOf<ID3D12GraphicsCommandList>(), (void**)&list),
                 "CreateCommandList");
             _list = list;
-            Com.Check(_list->Close(), "Close the preprocess command list");
+            ComInterop.Check(_list->Close(), "Close the preprocess command list");
         }
         catch
         {
@@ -142,10 +145,10 @@ public sealed unsafe class Preprocessor : IDisposable
             Bind(destination);
         }
 
-        Com.Check(_queue->Wait(_frames.CopyDoneFence, sequence), "Wait for the captured frame");
+        ComInterop.Check(_queue->Wait(_frames.CopyDoneFence, sequence), "Wait for the captured frame");
         ID3D12CommandList* list = (ID3D12CommandList*)_list;
         _queue->ExecuteCommandLists(1, &list);
-        Com.Check(_queue->Signal(_frames.ComputeDoneFence, sequence), "Signal the compute done fence");
+        ComInterop.Check(_queue->Signal(_frames.ComputeDoneFence, sequence), "Signal the compute done fence");
         _frames.MarkSubmitted(sequence);
     }
 
@@ -158,17 +161,17 @@ public sealed unsafe class Preprocessor : IDisposable
 
         _disposed = true;
         // The queue can still read the source and the descriptor heap. Dispose this object before its DesktopCapture.
-        NativeGpu.WaitForFence(_frames.ComputeDoneFence, _frames.SubmittedSequence);
+        FenceEvent.WaitOnce(_frames.ComputeDoneFence, _frames.SubmittedSequence);
         ReleaseAll();
     }
 
     private void ReleaseAll()
     {
-        Com.Release(ref _list);
-        Com.Release(ref _allocator);
-        Com.Release(ref _heap);
-        Com.Release(ref _pipeline);
-        Com.Release(ref _rootSignature);
+        ComInterop.Release(ref _list);
+        ComInterop.Release(ref _allocator);
+        ComInterop.Release(ref _heap);
+        ComInterop.Release(ref _pipeline);
+        ComInterop.Release(ref _rootSignature);
         _destination = null;
     }
 
@@ -183,8 +186,8 @@ public sealed unsafe class Preprocessor : IDisposable
         }
 
         // The recorded list, the allocator, and the descriptor heap are reused. The GPU must finish them first.
-        NativeGpu.WaitForFence(_frames.ComputeDoneFence, _frames.SubmittedSequence);
-        Com.Check(_allocator->Reset(), "Reset the preprocess allocator");
+        FenceEvent.WaitOnce(_frames.ComputeDoneFence, _frames.SubmittedSequence);
+        ComInterop.Check(_allocator->Reset(), "Reset the preprocess allocator");
 
         UnorderedAccessViewDesc uav = new() { Format = _format, ViewDimension = UavDimension.Buffer };
         uav.Anonymous.Buffer = new BufferUav
@@ -196,8 +199,9 @@ public sealed unsafe class Preprocessor : IDisposable
         };
         _device->CreateUnorderedAccessView(destination, null, &uav, _uavCpu);
 
-        Com.Check(_list->Reset(_allocator, _pipeline), "Reset the preprocess command list");
-        ResourceBarrier toRead = D3D12Helpers.Transition(_source, ResourceStates.Common, ResourceStates.NonPixelShaderResource);
+        ComInterop.Check(_list->Reset(_allocator, _pipeline), "Reset the preprocess command list");
+        _timer.RecordStart(_list);
+        ResourceBarrier toRead = D3D12Barrier.Transition(_source, ResourceStates.Common, ResourceStates.NonPixelShaderResource);
         _list->ResourceBarrier(1, &toRead);
         _list->SetComputeRootSignature(_rootSignature);
         ID3D12DescriptorHeap* heap = _heap;
@@ -213,9 +217,9 @@ public sealed unsafe class Preprocessor : IDisposable
         ResourceBarrier written = new() { Type = ResourceBarrierType.Uav, Flags = ResourceBarrierFlags.None };
         written.Anonymous.UAV = new ResourceUavBarrier { PResource = destination };
         _list->ResourceBarrier(1, &written);
-        ResourceBarrier toCommon = D3D12Helpers.Transition(_source, ResourceStates.NonPixelShaderResource, ResourceStates.Common);
+        ResourceBarrier toCommon = D3D12Barrier.Transition(_source, ResourceStates.NonPixelShaderResource, ResourceStates.Common);
         _list->ResourceBarrier(1, &toCommon);
-        Com.Check(_list->Close(), "Close the preprocess command list");
+        ComInterop.Check(_list->Close(), "Close the preprocess command list");
 
         _destination = destination;
     }
@@ -261,23 +265,23 @@ public sealed unsafe class Preprocessor : IDisposable
         int result = D3D12Api.SerializeRootSignature(&description, D3DRootSignatureVersion.Version1, &serialized, &errors);
         if (result < 0)
         {
-            string message = D3D12Helpers.BlobToString(errors);
-            Com.Release(ref errors);
+            string message = BlobToString(errors);
+            ComInterop.Release(ref errors);
             throw new InvalidOperationException($"SerializeRootSignature failed (0x{result:X8}): {message}");
         }
 
         try
         {
             ID3D12RootSignature* signature;
-            Com.Check(
+            ComInterop.Check(
                 _device->CreateRootSignature(
-                    0, serialized->GetBufferPointer(), serialized->GetBufferSize(), Com.IidOf<ID3D12RootSignature>(), (void**)&signature),
+                    0, serialized->GetBufferPointer(), serialized->GetBufferSize(), ComInterop.IidOf<ID3D12RootSignature>(), (void**)&signature),
                 "CreateRootSignature");
             return signature;
         }
         finally
         {
-            Com.Release(ref serialized);
+            ComInterop.Release(ref serialized);
         }
     }
 
@@ -290,13 +294,13 @@ public sealed unsafe class Preprocessor : IDisposable
         fixed (byte* sourcePointer = source)
         {
             result = Compiler.Compile(
-                sourcePointer, (nuint)source.Length, "preprocess.hlsl", null, null, "main", "cs_5_1", 0, 0, &bytecode, &errors);
+                sourcePointer, (nuint)source.Length, "preprocess.hlsl", null, null, "main", "cs_5_1", D3DCompileOptimizationLevel3, 0, &bytecode, &errors);
         }
 
         if (result < 0)
         {
-            string message = D3D12Helpers.BlobToString(errors);
-            Com.Release(ref errors);
+            string message = BlobToString(errors);
+            ComInterop.Release(ref errors);
             throw new InvalidOperationException($"Compiling the preprocess shader failed (0x{result:X8}): {message}");
         }
 
@@ -308,14 +312,27 @@ public sealed unsafe class Preprocessor : IDisposable
                 CS = new ShaderBytecode { PShaderBytecode = bytecode->GetBufferPointer(), BytecodeLength = bytecode->GetBufferSize() },
             };
             ID3D12PipelineState* state;
-            Com.Check(
-                _device->CreateComputePipelineState(&description, Com.IidOf<ID3D12PipelineState>(), (void**)&state),
+            ComInterop.Check(
+                _device->CreateComputePipelineState(&description, ComInterop.IidOf<ID3D12PipelineState>(), (void**)&state),
                 "CreateComputePipelineState");
             return state;
         }
         finally
         {
-            Com.Release(ref bytecode);
+            ComInterop.Release(ref bytecode);
         }
+    }
+
+    /// <summary>The text of a compiler or serializer error blob. The value is an empty string when the blob is null.</summary>
+    private static string BlobToString(ID3D10Blob* blob)
+    {
+        if (blob == null)
+        {
+            return string.Empty;
+        }
+
+        // SAFETY: the blob is not null. The caller owns it until the caller releases it after this call. GetBufferPointer
+        // and GetBufferSize describe the buffer of the blob. That buffer stays valid until the blob is released.
+        return Encoding.UTF8.GetString((byte*)blob->GetBufferPointer(), (int)blob->GetBufferSize());
     }
 }

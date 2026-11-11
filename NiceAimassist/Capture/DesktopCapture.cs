@@ -1,16 +1,23 @@
+using System.Runtime.InteropServices;
 using NiceAimassist.Display;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D11;
 using Silk.NET.Direct3D12;
 using Silk.NET.DXGI;
 using D3D11Box = Silk.NET.Direct3D11.Box;
+using UnmanagedType = System.Runtime.InteropServices.UnmanagedType;
 using D3D12FenceFlags = Silk.NET.Direct3D12.FenceFlags;
 
 namespace NiceAimassist.Capture;
 
 // A frame that is not submitted to the Preprocessor is dropped. The next copy then waits only for the last submitted frame.
-public sealed unsafe class DesktopCapture : IDisposable
+public sealed unsafe partial class DesktopCapture : IDisposable
 {
+    private const int DxgiAccessLost = unchecked((int)0x887A0026);
+    private const int DxgiWaitTimeout = unchecked((int)0x887A0027);
+    private const uint GenericAll = 0x10000000;
+    private const uint SharedResourceReadWrite = 0x80000001;
+
     private readonly DisplayDevices _gpu;
     private ID3D11Texture2D* _sharedTexture;
     private ID3D11Fence* _copyDoneFence11;
@@ -36,7 +43,7 @@ public sealed unsafe class DesktopCapture : IDisposable
 
         ID3D11Device* captureDevice = gpu.CaptureDevice;
         ID3D12Device* device = gpu.Device;
-        ID3D11Device5* captureDevice5 = Com.Query<ID3D11Device5>(captureDevice);
+        ID3D11Device5* captureDevice5 = ComInterop.Query<ID3D11Device5>(captureDevice);
         try
         {
             Texture2DDesc textureDesc = new()
@@ -53,38 +60,38 @@ public sealed unsafe class DesktopCapture : IDisposable
                 MiscFlags = (uint)(ResourceMiscFlag.Shared | ResourceMiscFlag.SharedNthandle),
             };
             ID3D11Texture2D* texture;
-            Com.Check(captureDevice->CreateTexture2D(&textureDesc, null, &texture), "CreateTexture2D (shared frame)");
+            ComInterop.Check(captureDevice->CreateTexture2D(&textureDesc, null, &texture), "CreateTexture2D (shared frame)");
             _sharedTexture = texture;
             _sharedResource = OpenSharedTexture(_sharedTexture, device);
 
             ID3D11Fence* ready;
-            Com.Check(
-                captureDevice5->CreateFence(0, FenceFlag.Shared, Com.IidOf<ID3D11Fence>(), (void**)&ready),
+            ComInterop.Check(
+                captureDevice5->CreateFence(0, FenceFlag.Shared, ComInterop.IidOf<ID3D11Fence>(), (void**)&ready),
                 "ID3D11Device5.CreateFence (capture ready)");
             _copyDoneFence11 = ready;
             _copyDoneFence12 = OpenSharedFence12(_copyDoneFence11, device);
 
             // The compute device creates this fence. The capture copy then waits on the GPU, not on the CPU.
             ID3D12Fence* computeDone;
-            Com.Check(
-                device->CreateFence(0, D3D12FenceFlags.Shared, Com.IidOf<ID3D12Fence>(), (void**)&computeDone),
+            ComInterop.Check(
+                device->CreateFence(0, D3D12FenceFlags.Shared, ComInterop.IidOf<ID3D12Fence>(), (void**)&computeDone),
                 "ID3D12Device.CreateFence (compute done)");
             _computeDoneFence12 = computeDone;
             void* computeDoneHandle;
-            Com.Check(
-                device->CreateSharedHandle((ID3D12DeviceChild*)_computeDoneFence12, null, Com.GenericAll, (char*)null, &computeDoneHandle),
+            ComInterop.Check(
+                device->CreateSharedHandle((ID3D12DeviceChild*)_computeDoneFence12, null, GenericAll, (char*)null, &computeDoneHandle),
                 "CreateSharedHandle (compute done fence)");
             try
             {
                 ID3D11Fence* computeDone11;
-                Com.Check(
-                    captureDevice5->OpenSharedFence(computeDoneHandle, Com.IidOf<ID3D11Fence>(), (void**)&computeDone11),
+                ComInterop.Check(
+                    captureDevice5->OpenSharedFence(computeDoneHandle, ComInterop.IidOf<ID3D11Fence>(), (void**)&computeDone11),
                     "OpenSharedFence (compute done fence)");
                 _computeDoneFence11 = computeDone11;
             }
             finally
             {
-                NativeGpu.CloseSharedHandle(computeDoneHandle);
+                CloseHandle((nint)computeDoneHandle);
             }
 
             _duplication = DuplicateOutput();
@@ -96,7 +103,7 @@ public sealed unsafe class DesktopCapture : IDisposable
         }
         finally
         {
-            Com.Release(ref captureDevice5);
+            ComInterop.Release(ref captureDevice5);
         }
     }
 
@@ -130,40 +137,40 @@ public sealed unsafe class DesktopCapture : IDisposable
             DisposeDesktopImage();
             _frameHeld = false;
             int release = _duplication->ReleaseFrame();
-            if (release == Com.DxgiAccessLost)
+            if (release == DxgiAccessLost)
             {
                 RecreateDuplication();
                 return CaptureStatus.Lost;
             }
 
-            Com.Check(release, "ReleaseFrame");
+            ComInterop.Check(release, "ReleaseFrame");
         }
 
         OutduplFrameInfo frameInfo;
         IDXGIResource* resource;
         int acquire = _duplication->AcquireNextFrame((uint)timeoutMs, &frameInfo, &resource);
-        if (acquire == Com.DxgiWaitTimeout)
+        if (acquire == DxgiWaitTimeout)
         {
             return CaptureStatus.Timeout;
         }
 
-        if (acquire == Com.DxgiAccessLost)
+        if (acquire == DxgiAccessLost)
         {
             RecreateDuplication();
             return CaptureStatus.Lost;
         }
 
-        Com.Check(acquire, "AcquireNextFrame");
+        ComInterop.Check(acquire, "AcquireNextFrame");
         _frameHeld = true;
 
         if (frameInfo.LastPresentTime == 0)
         {
-            Com.Release(ref resource);
+            ComInterop.Release(ref resource);
             return CaptureStatus.Unchanged;
         }
 
         _desktopResource = resource;
-        _desktopTexture = Com.Query<ID3D11Texture2D>(resource);
+        _desktopTexture = ComInterop.Query<ID3D11Texture2D>(resource);
         if (!_layoutValid)
         {
             ValidateLayout(_desktopTexture);
@@ -172,14 +179,14 @@ public sealed unsafe class DesktopCapture : IDisposable
         ID3D11DeviceContext4* context = _gpu.CaptureContext4;
         if (_submittedSequence != 0)
         {
-            Com.Check(context->Wait(_computeDoneFence11, _submittedSequence), "ID3D11DeviceContext4.Wait");
+            ComInterop.Check(context->Wait(_computeDoneFence11, _submittedSequence), "ID3D11DeviceContext4.Wait");
         }
 
         D3D11Box sourceBox = _sourceBox;
         ((ID3D11DeviceContext*)context)->CopySubresourceRegion(
             (ID3D11Resource*)_sharedTexture, 0, 0, 0, 0, (ID3D11Resource*)_desktopTexture, 0, &sourceBox);
         _sequence++;
-        Com.Check(context->Signal(_copyDoneFence11, _sequence), "ID3D11DeviceContext4.Signal");
+        ComInterop.Check(context->Signal(_copyDoneFence11, _sequence), "ID3D11DeviceContext4.Signal");
         // Without a flush, the copy and the signal may not reach the GPU. The compute queue can already wait for them.
         ((ID3D11DeviceContext*)context)->Flush();
 
@@ -205,62 +212,66 @@ public sealed unsafe class DesktopCapture : IDisposable
         ReleaseAll();
     }
 
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseHandle(nint handle);
+
     private void ReleaseAll()
     {
         DisposeDesktopImage();
-        Com.Release(ref _duplication);
-        Com.Release(ref _computeDoneFence11);
-        Com.Release(ref _computeDoneFence12);
-        Com.Release(ref _copyDoneFence11);
-        Com.Release(ref _copyDoneFence12);
-        Com.Release(ref _sharedResource);
-        Com.Release(ref _sharedTexture);
+        ComInterop.Release(ref _duplication);
+        ComInterop.Release(ref _computeDoneFence11);
+        ComInterop.Release(ref _computeDoneFence12);
+        ComInterop.Release(ref _copyDoneFence11);
+        ComInterop.Release(ref _copyDoneFence12);
+        ComInterop.Release(ref _sharedResource);
+        ComInterop.Release(ref _sharedTexture);
     }
 
     private static ID3D12Resource* OpenSharedTexture(ID3D11Texture2D* texture, ID3D12Device* device)
     {
-        IDXGIResource1* dxgi = Com.Query<IDXGIResource1>(texture);
+        IDXGIResource1* dxgi = ComInterop.Query<IDXGIResource1>(texture);
         try
         {
             void* handle;
-            Com.Check(dxgi->CreateSharedHandle(null, Com.SharedResourceReadWrite, (char*)null, &handle), "CreateSharedHandle (texture)");
+            ComInterop.Check(dxgi->CreateSharedHandle(null, SharedResourceReadWrite, (char*)null, &handle), "CreateSharedHandle (texture)");
             try
             {
                 ID3D12Resource* resource;
-                Com.Check(device->OpenSharedHandle(handle, Com.IidOf<ID3D12Resource>(), (void**)&resource), "OpenSharedHandle (texture)");
+                ComInterop.Check(device->OpenSharedHandle(handle, ComInterop.IidOf<ID3D12Resource>(), (void**)&resource), "OpenSharedHandle (texture)");
                 return resource;
             }
             finally
             {
-                NativeGpu.CloseSharedHandle(handle);
+                CloseHandle((nint)handle);
             }
         }
         finally
         {
-            Com.Release(ref dxgi);
+            ComInterop.Release(ref dxgi);
         }
     }
 
     private static ID3D12Fence* OpenSharedFence12(ID3D11Fence* fence, ID3D12Device* device)
     {
         void* handle;
-        Com.Check(fence->CreateSharedHandle(null, Com.GenericAll, (char*)null, &handle), "CreateSharedHandle (ready fence)");
+        ComInterop.Check(fence->CreateSharedHandle(null, GenericAll, (char*)null, &handle), "CreateSharedHandle (ready fence)");
         try
         {
             ID3D12Fence* opened;
-            Com.Check(device->OpenSharedHandle(handle, Com.IidOf<ID3D12Fence>(), (void**)&opened), "OpenSharedHandle (ready fence)");
+            ComInterop.Check(device->OpenSharedHandle(handle, ComInterop.IidOf<ID3D12Fence>(), (void**)&opened), "OpenSharedHandle (ready fence)");
             return opened;
         }
         finally
         {
-            NativeGpu.CloseSharedHandle(handle);
+            CloseHandle((nint)handle);
         }
     }
 
     private IDXGIOutputDuplication* DuplicateOutput()
     {
         IDXGIOutputDuplication* duplication;
-        Com.Check(_gpu.Output->DuplicateOutput((IUnknown*)_gpu.CaptureDevice, &duplication), "DuplicateOutput");
+        ComInterop.Check(_gpu.Output->DuplicateOutput((IUnknown*)_gpu.CaptureDevice, &duplication), "DuplicateOutput");
         return duplication;
     }
 
@@ -281,7 +292,7 @@ public sealed unsafe class DesktopCapture : IDisposable
     private void RecreateDuplication()
     {
         DisposeDesktopImage();
-        Com.Release(ref _duplication);
+        ComInterop.Release(ref _duplication);
         _duplication = DuplicateOutput();
         _frameHeld = false;
         _layoutValid = false;
@@ -289,7 +300,7 @@ public sealed unsafe class DesktopCapture : IDisposable
 
     private void DisposeDesktopImage()
     {
-        Com.Release(ref _desktopTexture);
-        Com.Release(ref _desktopResource);
+        ComInterop.Release(ref _desktopTexture);
+        ComInterop.Release(ref _desktopResource);
     }
 }

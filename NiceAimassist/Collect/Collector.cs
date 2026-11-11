@@ -1,18 +1,19 @@
 using System.Buffers;
 using NiceAimassist.Capture;
+using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using Silk.NET.Direct3D11;
 
 namespace NiceAimassist.Collect;
 
 /// <summary>
-/// Copies the desktop into staging textures. Reads them back later. The loop thread never waits on the GPU.
-/// Every method except the writer callbacks runs on the loop thread.
+/// Copies the desktop into staging textures, maps them, and hands them to the writer thread.
+/// Every method except the writer callbacks runs on the loop thread. The loop thread never waits on the GPU.
 /// </summary>
-public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposable
+public sealed unsafe class Collector : ICollectControl, IFrameCollector, IDisposable
 {
     private readonly CollectState _state;
-    private readonly CollectCopy _copy;
+    private readonly StagingCopy _copy;
     private readonly SampleQueue _queue;
     private readonly DatasetWriter _dataset;
     private int _size = CollectSettings.DefaultSize;
@@ -22,23 +23,25 @@ public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposa
     public Collector(DisplayDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
     {
         _dataset = new DatasetWriter(datasetRoot);
-        _state = new CollectState(new CollectSchedule(now, ticksPerSecond));
-        _copy = new CollectCopy(gpu);
+        _state = new CollectState(now, ticksPerSecond);
+        _copy = new StagingCopy(gpu);
         _queue = new SampleQueue(Write, error => _state.ReportWriteError(error.Message));
     }
 
-    public bool IsDue => _state.IsDue;
+    // While the staging textures are mapped, a new GPU copy would write memory that the writer still reads.
+    public bool IsDue => _state.IsDue && _copy.CanCopy;
 
     public CollectStatus Update(CollectSettings settings, bool held)
     {
         _state.SetEnabled(held && settings.Enabled);
         _size = settings.Size;
         _state.SetRate(settings.Rate);
+        _copy.ReleaseIfCopied();
         SubmitReadySample();
         return new CollectStatus(_state.Active, _queue.Saved, _state.LastError);
     }
 
-    public void Observe(ID3D11Texture2D* desktop)
+    public void Collect(ID3D11Texture2D* desktop)
     {
         try
         {
@@ -76,23 +79,23 @@ public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposa
 
         try
         {
-            if (!_copy.TryReadFull(out BgraImage original))
+            if (!_copy.TryMap(out MappedPixels full, out MappedPixels crop))
             {
                 return;
             }
 
             _state.ClearPending();
-            if (!_copy.TryReadCrop(out BgraImage crop))
+            bool accepted = false;
+            try
             {
-                Release(original);
-                _state.Fail("the crop staging texture was not readable");
-                return;
+                accepted = _queue.TrySubmit(new Sample(_pendingFileName, crop, full));
             }
-
-            if (!_queue.TrySubmit(new Sample(_pendingFileName, crop, original)))
+            finally
             {
-                Release(crop);
-                Release(original);
+                if (!accepted)
+                {
+                    _copy.CancelMap();
+                }
             }
         }
         catch (Exception error)
@@ -103,14 +106,33 @@ public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposa
 
     private void Write(Sample sample)
     {
+        BgraImage crop = default;
+        BgraImage original = default;
         try
         {
-            _dataset.Write(sample.FileNameWithoutExtension, sample.Crop, sample.Original);
+            try
+            {
+                crop = sample.Crop.CopyToPooled();
+                original = sample.Original.CopyToPooled();
+            }
+            finally
+            {
+                _copy.MarkCopied();
+            }
+
+            _dataset.Write(sample.FileNameWithoutExtension, crop, original);
         }
         finally
         {
-            Release(sample.Crop);
-            Release(sample.Original);
+            if (crop.Pixels is not null)
+            {
+                Release(crop);
+            }
+
+            if (original.Pixels is not null)
+            {
+                Release(original);
+            }
         }
     }
 }

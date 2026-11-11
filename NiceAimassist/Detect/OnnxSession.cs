@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using NiceAimassist.Display;
+using NiceAimassist.Logging;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D12;
 
@@ -15,6 +17,7 @@ internal sealed unsafe class OnnxSession : IDisposable
     private nint _inputValue;
     private nint _outputValue;
     private nint _binding;
+    private nint _runOptions;
     private ID3D12Resource* _inputResource;
     private ID3D12Resource* _outputResource;
     private bool _disposed;
@@ -33,7 +36,16 @@ internal sealed unsafe class OnnxSession : IDisposable
         {
             _env = OrtApi.CreateEnv("NiceAimassist");
             _dmlDevice = DirectMl.CreateDevice(gpu.Device);
-            _session = CreateSession(modelPath);
+            try
+            {
+                _session = CreateSession(modelPath, strict: true);
+                Log.Info("every model node runs on DirectML; graph capture is requested");
+            }
+            catch (InvalidOperationException error)
+            {
+                Log.Warn($"the model has nodes that DirectML cannot run; graph capture is off: {error.Message}");
+                _session = CreateSession(modelPath, strict: false);
+            }
 
             TensorIo input = OrtApi.GetTensorIo(_session, input: true, 0);
             TensorIo output = OrtApi.GetTensorIo(_session, input: false, 0);
@@ -61,6 +73,11 @@ internal sealed unsafe class OnnxSession : IDisposable
             _binding = OrtApi.CreateIoBinding(_session);
             OrtApi.BindInput(_binding, input.Name, _inputValue);
             OrtApi.BindOutput(_binding, output.Name, _outputValue);
+
+            _runOptions = OrtApi.CreateRunOptions();
+            // The DirectML provider submits its work to the compute queue at the end of each run and does not wait for it.
+            // The output copy goes on the same queue after the run, so the copy reads the finished output.
+            OrtApi.AddRunConfig(_runOptions, "disable_synchronize_execution_providers", "1");
         }
         catch
         {
@@ -80,7 +97,7 @@ internal sealed unsafe class OnnxSession : IDisposable
     internal ID3D12Resource* OutputResource => _outputResource;
 
     /// <summary>Runs the model on the input tensor. The caller reads the output tensor after the run.</summary>
-    internal void Run() => OrtApi.RunWithBinding(_session, _binding);
+    internal void Run() => OrtApi.RunWithBinding(_session, _runOptions, _binding);
 
     public void Dispose()
     {
@@ -100,6 +117,7 @@ internal sealed unsafe class OnnxSession : IDisposable
         _gpu.WaitIdle();
 
         ReleaseOnce(ref _binding, OrtApi.ReleaseIoBinding);
+        ReleaseOnce(ref _runOptions, OrtApi.ReleaseRunOptions);
         ReleaseOnce(ref _inputValue, OrtApi.ReleaseValue);
         ReleaseOnce(ref _outputValue, OrtApi.ReleaseValue);
         ReleaseOnce(ref _allocator, OrtApi.ReleaseAllocator);
@@ -113,11 +131,11 @@ internal sealed unsafe class OnnxSession : IDisposable
 
         ReleaseOnce(ref _env, OrtApi.ReleaseEnv);
 
-        Com.Release(ref _outputResource);
-        Com.Release(ref _inputResource);
+        ComInterop.Release(ref _outputResource);
+        ComInterop.Release(ref _inputResource);
     }
 
-    private nint CreateSession(string modelPath)
+    private nint CreateSession(string modelPath, bool strict)
     {
         nint options = OrtApi.CreateSessionOptions();
         try
@@ -127,7 +145,12 @@ internal sealed unsafe class OnnxSession : IDisposable
             OrtApi.SetIntraOpThreads(options, 1);
             OrtApi.AddSessionConfig(options, "session.intra_op.allow_spinning", "0");
             OrtApi.AddSessionConfig(options, "session.inter_op.allow_spinning", "0");
-            OrtApi.AddSessionConfig(options, "ep.dml.enable_cpu_sync_spinning", "1");
+            if (strict)
+            {
+                OrtApi.AddSessionConfig(options, "session.disable_cpu_ep_fallback", "1");
+                OrtApi.AddSessionConfig(options, "ep.dml.enable_graph_capture", "1");
+            }
+
             OrtApi.AppendDirectMl1(options, (nint)_dmlDevice, (nint)_gpu.ComputeQueue);
             return OrtApi.CreateSession(_env, modelPath, options);
         }
@@ -162,7 +185,7 @@ internal sealed unsafe class OnnxSession : IDisposable
         }
         catch
         {
-            Com.Release(ref resource);
+            ComInterop.Release(ref resource);
             throw;
         }
 
@@ -176,5 +199,23 @@ internal sealed unsafe class OnnxSession : IDisposable
             release(handle);
             handle = 0;
         }
+    }
+}
+
+internal static unsafe partial class DirectMl
+{
+    // The IID of IDMLDevice.
+    private static readonly Guid DeviceIid = new("6dbd6437-96fd-423f-a98c-ae5e7c2a573f");
+
+    [LibraryImport("DirectML.dll")]
+    private static partial int DMLCreateDevice(ID3D12Device* d3d12Device, uint flags, Guid* riid, void** device);
+
+    /// <summary>Returns an IDMLDevice. The caller releases it.</summary>
+    internal static void* CreateDevice(ID3D12Device* device)
+    {
+        void* result;
+        Guid iid = DeviceIid;
+        ComInterop.Check(DMLCreateDevice(device, 0, &iid, &result), "DMLCreateDevice");
+        return result;
     }
 }

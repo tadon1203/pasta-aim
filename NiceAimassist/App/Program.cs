@@ -22,6 +22,7 @@ internal static class Program
         Log.OpenFile(Path.Combine(AppContext.BaseDirectory, "logs"));
         try
         {
+            RaiseProcessPriority();
             return Run();
         }
         catch (Exception error)
@@ -33,6 +34,19 @@ internal static class Program
         finally
         {
             Log.Close();
+        }
+    }
+
+    private static void RaiseProcessPriority()
+    {
+        using Process process = Process.GetCurrentProcess();
+        try
+        {
+            process.PriorityClass = ProcessPriorityClass.High;
+        }
+        catch (System.ComponentModel.Win32Exception error)
+        {
+            Log.Warn($"the process priority could not be set to High: {error.Message}");
         }
     }
 
@@ -67,7 +81,7 @@ internal static class Program
                 detector,
                 device,
                 holdKey.IsHeld,
-                live.Current,
+                live.ApplyLatest,
                 Stopwatch.GetTimestamp,
                 error =>
                 {
@@ -87,7 +101,7 @@ internal static class Program
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (MainWindow form = new(file, loop.Stats, stopped, model.Directory))
+            using (MainWindow form = new(file, loop.LoopStatus, stopped, model.Directory))
             {
                 Application.Run(form);
             }

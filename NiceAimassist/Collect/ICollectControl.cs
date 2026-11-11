@@ -4,8 +4,8 @@ namespace NiceAimassist.Collect;
 public interface ICollectControl
 {
     /// <summary>
-    /// Applies the settings and the hold state. Then moves a finished GPU copy to the writer thread.
-    /// Never waits for the GPU.
+    /// Applies the settings and the hold state. Then unmaps the textures the writer copied, and maps a finished GPU copy
+    /// for the writer thread. Never waits for the GPU.
     /// </summary>
     CollectStatus Update(CollectSettings settings, bool held);
 }

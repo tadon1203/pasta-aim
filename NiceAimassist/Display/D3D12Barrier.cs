@@ -1,11 +1,8 @@
-using System.Text;
-using Silk.NET.Core.Native;
-using Silk.NET.Direct3D.Compilers;
 using Silk.NET.Direct3D12;
 
 namespace NiceAimassist.Display;
 
-internal static unsafe class D3D12Helpers
+internal static unsafe class D3D12Barrier
 {
     // D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES. The barrier covers every mip level and array slice.
     private const uint AllSubresources = uint.MaxValue;
@@ -22,18 +19,5 @@ internal static unsafe class D3D12Helpers
             StateAfter = after,
         };
         return barrier;
-    }
-
-    /// <summary>The text of a compiler or serializer error blob. The value is an empty string when the blob is null.</summary>
-    internal static string BlobToString(ID3D10Blob* blob)
-    {
-        if (blob == null)
-        {
-            return string.Empty;
-        }
-
-        // SAFETY: the blob is not null. The caller owns it until the caller releases it after this call. GetBufferPointer
-        // and GetBufferSize describe the buffer of the blob. That buffer stays valid until the blob is released.
-        return Encoding.UTF8.GetString((byte*)blob->GetBufferPointer(), (int)blob->GetBufferSize());
     }
 }

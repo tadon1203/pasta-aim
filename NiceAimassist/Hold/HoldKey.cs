@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace NiceAimassist.Hold;
 
 /// A keyboard key or mouse button. The aim is enabled while it is held.
-public readonly struct HoldKey
+public readonly partial struct HoldKey
 {
     private static readonly (string Name, int Code)[] Table =
     [
@@ -126,7 +126,10 @@ public readonly struct HoldKey
             && PadIsDown(_padMask, buttons, left, right);
     }
 
-    private static bool IsPressed(int virtualKey) => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+    private static bool IsPressed(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    [LibraryImport("user32.dll")]
+    private static partial short GetAsyncKeyState(int virtualKey);
 
     private static bool PadIsDown(int mask, ushort buttons, byte left, byte right) => mask switch
     {
@@ -134,70 +137,4 @@ public readonly struct HoldKey
         RightTrigger => right >= TriggerThreshold,
         _ => (buttons & mask) != 0,
     };
-}
-
-/// Reads the first connected XInput controller. A disconnected slot is slow to query. The slots
-/// are scanned again only once a second while no controller is connected.
-internal static partial class XInput
-{
-    private const int Slots = 4;
-    private const long RescanTicks = 1_000;
-
-    private static int _slot = -1;
-    private static long _nextScan;
-
-    public static bool TryRead(out ushort buttons, out byte left, out byte right)
-    {
-        int slot = Volatile.Read(ref _slot);
-        if (slot >= 0)
-        {
-            if (GetState(slot, out State state) == 0)
-            {
-                (buttons, left, right) = (state.Buttons, state.LeftTrigger, state.RightTrigger);
-                return true;
-            }
-
-            Volatile.Write(ref _slot, -1);
-        }
-
-        long now = Environment.TickCount64;
-        if (now >= Volatile.Read(ref _nextScan))
-        {
-            Volatile.Write(ref _nextScan, now + RescanTicks);
-            for (int index = 0; index < Slots; index++)
-            {
-                if (GetState(index, out State state) == 0)
-                {
-                    Volatile.Write(ref _slot, index);
-                    (buttons, left, right) = (state.Buttons, state.LeftTrigger, state.RightTrigger);
-                    return true;
-                }
-            }
-        }
-
-        (buttons, left, right) = (0, 0, 0);
-        return false;
-    }
-
-    [LibraryImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
-    private static partial int GetState(int userIndex, out State state);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct State
-    {
-        public uint PacketNumber;
-        public ushort Buttons;
-        public byte LeftTrigger;
-        public byte RightTrigger;
-        public short ThumbLX;
-        public short ThumbLY;
-        public short ThumbRX;
-        public short ThumbRY;
-    }
-}
-
-internal static partial class NativeMethods
-{
-    [LibraryImport("user32.dll")]
-    internal static partial short GetAsyncKeyState(int virtualKey);
 }

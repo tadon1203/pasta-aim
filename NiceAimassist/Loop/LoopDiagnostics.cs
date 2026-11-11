@@ -6,12 +6,13 @@ using NiceAimassist.Logging;
 namespace NiceAimassist.Loop;
 
 /// <summary>
-/// Counts what the held loop did. Once per second, it logs the counts and publishes the latency window to
-/// <see cref="LoopStats"/>. A "no movement" result can then be traced to its stage. This class is the only owner of the window.
+/// Counts what the held loop did. Once per second, it logs the counts and publishes the latency to
+/// <see cref="LoopStatus"/>. A "no movement" result can then be traced to its stage.
 /// </summary>
-internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
+internal sealed class LoopDiagnostics(Func<long> now, LoopStatus loopStatus)
 {
-    private readonly LatencyWindow _latency = new();
+    private StageTicks _sum;
+    private StageTicks _max;
     private long _windowStart = now();
     private int _frames;
     private int _timeouts;
@@ -38,7 +39,9 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
     public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, AimResult aim, bool sent)
     {
         _frames++;
-        _latency.Add(timings);
+        StageTicks stages = timings.Stages.WithBreakdown(frame.Breakdown);
+        _sum = _sum.Plus(stages);
+        _max = _max.MaxWith(stages);
         _topScore = MathF.Max(_topScore, frame.TopScore);
         if (frame.Target is { } detection)
         {
@@ -68,7 +71,8 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
         _frames = _timeouts = _noFrames = _targets = _aimed = _sent = 0;
         _bestScore = 0;
         _topScore = 0;
-        _latency.Reset();
+        _sum = default;
+        _max = default;
     }
 
     private void Tick()
@@ -79,10 +83,10 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
             return;
         }
 
-        LatencySnapshot latency = _latency.Snapshot();
+        LatencySnapshot latency = _frames == 0 ? LatencySnapshot.Empty : new(_sum.Divide(_frames), _max);
         if (_frames > 0)
         {
-            stats.SetLatency(latency);
+            loopStatus.SetLatency(latency);
         }
 
         if (Log.IsEnabled(LogLevel.Debug))
@@ -99,6 +103,12 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
                 + $"aim={StageTicks.PairMs(avg.Aim, max.Aim)} "
                 + $"move={StageTicks.PairMs(avg.Move, max.Move)} "
                 + $"total={StageTicks.PairMs(avg.Total, max.Total)}");
+            Log.Debug(
+                $"detect breakdown avg/max ms: submit={StageTicks.PairMs(avg.Submit, max.Submit)} "
+                + $"run={StageTicks.PairMs(avg.Run, max.Run)} "
+                + $"wait={StageTicks.PairMs(avg.Wait, max.Wait)} "
+                + $"decode={StageTicks.PairMs(avg.Decode, max.Decode)} "
+                + $"gpu={StageTicks.PairMs(avg.Gpu, max.Gpu)}");
         }
 
         Restart();

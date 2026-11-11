@@ -16,7 +16,7 @@ public sealed class SampleQueue : IDisposable
     private readonly Thread _thread;
     private long _saved;
 
-    /// <param name="write">Runs on the writer thread. It owns the buffers of the sample only while it runs.</param>
+    /// <param name="write">Runs on the writer thread. It reads the mapped memory of the sample only while it runs.</param>
     /// <param name="onError">Called on the writer thread when <paramref name="write"/> throws. The thread keeps running.</param>
     public SampleQueue(Action<Sample> write, Action<Exception> onError)
     {
@@ -55,4 +55,4 @@ public sealed class SampleQueue : IDisposable
     }
 }
 
-public sealed record Sample(string FileNameWithoutExtension, BgraImage Crop, BgraImage Original);
+public sealed record Sample(string FileNameWithoutExtension, MappedPixels Crop, MappedPixels Original);

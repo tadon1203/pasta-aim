@@ -31,14 +31,15 @@ public unsafe class PreprocessorGpuTests
             Flags = ResourceFlags.AllowUnorderedAccess,
         };
         ID3D12Resource* tensor;
-        Com.Check(
+        ComInterop.Check(
             gpu.Device->CreateCommittedResource(
-                &heap, HeapFlags.None, &description, ResourceStates.UnorderedAccess, null, Com.IidOf<ID3D12Resource>(), (void**)&tensor),
+                &heap, HeapFlags.None, &description, ResourceStates.UnorderedAccess, null, ComInterop.IidOf<ID3D12Resource>(), (void**)&tensor),
             "CreateCommittedResource");
         try
         {
-            using Preprocessor preprocessor = new(gpu, frames, TensorPrecision.Fp32);
-            using OutputReader reader = new(gpu, tensor, bytes);
+            using GpuTimer timer = new(gpu);
+            using Preprocessor preprocessor = new(gpu, frames, TensorPrecision.Fp32, timer);
+            using OutputReader reader = new(gpu, tensor, bytes, timer);
 
             CapturedFrame frame = default;
             bool acquired = false;
@@ -61,7 +62,7 @@ public unsafe class PreprocessorGpuTests
         finally
         {
             gpu.WaitIdle();
-            Com.Release(ref tensor);
+            ComInterop.Release(ref tensor);
         }
     }
 }

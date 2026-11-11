@@ -3,16 +3,8 @@ using Silk.NET.Core.Native;
 
 namespace NiceAimassist.Display;
 
-internal static unsafe class Com
+internal static unsafe class ComInterop
 {
-    internal const int DxgiNotFound = unchecked((int)0x887A0002);
-    internal const int DxgiWasStillDrawing = unchecked((int)0x887A000A);
-    internal const int DxgiAccessLost = unchecked((int)0x887A0026);
-    internal const int DxgiWaitTimeout = unchecked((int)0x887A0027);
-
-    internal const uint GenericAll = 0x10000000;
-    internal const uint SharedResourceReadWrite = 0x80000001;
-
     internal static void Check(int result, string operation)
     {
         if (result < 0)

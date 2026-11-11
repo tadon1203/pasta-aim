@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 
 namespace NiceAimassist.Mouse;
 
+internal readonly record struct MakcuPacket(byte Command, byte[] Payload);
+
 internal sealed class MakcuPacketDecoder
 {
     private static readonly byte[] Header = [0xDE, 0xAD];

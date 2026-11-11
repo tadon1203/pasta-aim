@@ -75,7 +75,7 @@ public class FrameLoopTests
         FakeMouse mouse = new();
         FrameLoop loop = Start(detector, mouse, () => true);
 
-        WaitUntil(() => loop.Stats.Frames >= 1);
+        WaitUntil(() => loop.LoopStatus.Frames >= 1);
         loop.Stop();
 
         Assert.True(mouse.Moves.IsEmpty);
@@ -93,11 +93,11 @@ public class FrameLoopTests
 
         detector.Enqueue(Stopwatch.GetTimestamp(), null);
         detector.Enqueue(Stopwatch.GetTimestamp(), null);
-        WaitUntil(() => loop.Stats.Frames >= 2);
+        WaitUntil(() => loop.LoopStatus.Frames >= 2);
         settings.Value = Snapshot(Interpolation.Auto);
         detector.Enqueue(Stopwatch.GetTimestamp(), null);
         detector.Enqueue(Stopwatch.GetTimestamp(), null);
-        WaitUntil(() => loop.Stats.Frames >= 4);
+        WaitUntil(() => loop.LoopStatus.Frames >= 4);
         loop.Stop();
 
         Interpolation[] sent = mouse.Interpolations.ToArray();
@@ -189,7 +189,7 @@ public class FrameLoopTests
 
             if (_frames.TryDequeue(out var frame))
             {
-                result = new DetectedFrame(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f);
+                result = new DetectedFrame(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f, default);
                 return CaptureStatus.Ready;
             }
 

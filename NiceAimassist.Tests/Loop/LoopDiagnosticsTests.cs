@@ -18,35 +18,35 @@ public class LoopDiagnosticsTests
     [Fact]
     public void WindowReportsAverageAndMaxPerStage()
     {
-        LatencyWindow window = new();
-        window.Add(new FrameTimings(0, 10, 20, 30, 40));
-        window.Add(new FrameTimings(0, 30, 80, 90, 100));
+        StageTicks first = new(10, 20, 0, 0, 0, Submit: 4, Gpu: 8);
+        StageTicks second = new(30, 5, 0, 0, 0, Submit: 2, Gpu: 12);
 
-        LatencySnapshot snapshot = window.Snapshot();
+        StageTicks average = first.Plus(second).Divide(2);
+        StageTicks max = first.MaxWith(second);
 
-        Assert.Equal(new StageTicks(20, 30, 10, 10, 70), snapshot.Average);
-        Assert.Equal(new StageTicks(30, 50, 10, 10, 100), snapshot.Max);
+        Assert.Equal(new StageTicks(20, 12, 0, 0, 0, Submit: 3, Gpu: 10), average);
+        Assert.Equal(new StageTicks(30, 20, 0, 0, 0, Submit: 4, Gpu: 12), max);
     }
 
     [Fact]
     public void LatencyIsPublishedOnlyWhenAFullSecondHadFrames()
     {
         long clock = 0;
-        LoopStats stats = new();
-        LoopDiagnostics diagnostics = new(() => clock, stats);
-        DetectedFrame frame = new(0, 0, 0, null, 0f);
+        LoopStatus status = new();
+        LoopDiagnostics diagnostics = new(() => clock, status);
+        DetectedFrame frame = new(0, 0, 0, null, 0f, default);
         AimResult move = new(AimStatus.Move, 0, 0);
 
         diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
-        Assert.Same(LatencySnapshot.Empty, stats.Latency);
+        Assert.Same(LatencySnapshot.Empty, status.Latency);
 
         clock = Stopwatch.Frequency;
         diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
-        Assert.Equal(4, stats.Latency.Average.Total);
+        Assert.Equal(4, status.Latency.Average.Total);
 
         // A window with only timeouts keeps the last published value.
         clock += Stopwatch.Frequency;
         diagnostics.RecordTimeout();
-        Assert.Equal(4, stats.Latency.Average.Total);
+        Assert.Equal(4, status.Latency.Average.Total);
     }
 }

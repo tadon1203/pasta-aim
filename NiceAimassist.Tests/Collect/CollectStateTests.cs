@@ -4,17 +4,12 @@ namespace NiceAimassist.Tests.Collect;
 
 public sealed class CollectStateTests
 {
-    private static CollectState NewState()
-    {
-        var schedule = new CollectSchedule(() => 0, ticksPerSecond: 1000);
-        schedule.SetRate(2);
-        return new CollectState(schedule);
-    }
+    private static CollectState NewState(Func<long> now) => new(now, ticksPerSecond: 1000);
 
     [Fact]
     public void A_failure_stays_latched_until_collection_is_disabled()
     {
-        CollectState state = NewState();
+        CollectState state = NewState(() => 0);
         state.SetEnabled(true);
         state.Fail("the duplication stopped");
 
@@ -31,7 +26,7 @@ public sealed class CollectStateTests
     [Fact]
     public void Disabling_clears_a_pending_copy()
     {
-        CollectState state = NewState();
+        CollectState state = NewState(() => 0);
         state.SetEnabled(true);
         state.MarkPending();
         Assert.False(state.IsDue);
@@ -46,12 +41,37 @@ public sealed class CollectStateTests
     [Fact]
     public void A_write_error_is_kept_and_collection_continues()
     {
-        CollectState state = NewState();
+        CollectState state = NewState(() => 0);
         state.SetEnabled(true);
 
         state.ReportWriteError("the disk is full");
 
         Assert.True(state.Active);
         Assert.Equal("the disk is full", state.LastError);
+    }
+
+    [Fact]
+    public void A_stall_delays_the_next_image_without_a_burst()
+    {
+        long now = 0;
+        CollectState state = new(() => now, ticksPerSecond: 1000);
+        state.SetRate(2);
+        state.SetEnabled(true);
+
+        Assert.True(state.IsDue);
+        state.MarkPending();
+        state.ClearPending();
+        Assert.False(state.IsDue);
+
+        now = 10_000;
+        Assert.True(state.IsDue);
+        state.MarkPending();
+        state.ClearPending();
+        Assert.False(state.IsDue);
+
+        now += 499;
+        Assert.False(state.IsDue);
+        now += 1;
+        Assert.True(state.IsDue);
     }
 }

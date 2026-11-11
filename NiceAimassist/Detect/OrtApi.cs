@@ -33,6 +33,7 @@ internal static unsafe partial class OrtApi
         SessionGetOutputTypeInfo = 34,
         SessionGetInputName = 36,
         SessionGetOutputName = 37,
+        CreateRunOptions = 39,
         CreateTensorAsOrtValue = 48,
         GetTensorMutableData = 51,
         CastTypeInfoToTensorInfo = 55,
@@ -47,6 +48,7 @@ internal static unsafe partial class OrtApi
         ReleaseMemoryInfo = 94,
         ReleaseSession = 95,
         ReleaseValue = 96,
+        ReleaseRunOptions = 97,
         ReleaseTypeInfo = 98,
         ReleaseSessionOptions = 100,
         SessionGetModelMetadata = 111,
@@ -60,6 +62,7 @@ internal static unsafe partial class OrtApi
         ReleaseIoBinding = 135,
         BindInput = 136,
         BindOutput = 137,
+        AddRunConfigEntry = 165,
         GetExecutionProviderApi = 195,
     }
 
@@ -122,6 +125,33 @@ internal static unsafe partial class OrtApi
         {
             Check(((delegate* unmanaged<nint, nint, nint, nint>)Slot(ApiSlot.AddSessionConfigEntry))(
                 options, keyPtr, valuePtr), "AddSessionConfigEntry");
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(keyPtr);
+            Marshal.FreeCoTaskMem(valuePtr);
+        }
+    }
+
+    internal static nint CreateRunOptions()
+    {
+        nint options;
+        Check(((delegate* unmanaged<nint*, nint>)Slot(ApiSlot.CreateRunOptions))(&options),
+            "CreateRunOptions");
+        return options;
+    }
+
+    internal static void ReleaseRunOptions(nint options) =>
+        ((delegate* unmanaged<nint, void>)Slot(ApiSlot.ReleaseRunOptions))(options);
+
+    internal static void AddRunConfig(nint options, string key, string value)
+    {
+        nint keyPtr = Utf8(key);
+        nint valuePtr = Utf8(value);
+        try
+        {
+            Check(((delegate* unmanaged<nint, nint, nint, nint>)Slot(ApiSlot.AddRunConfigEntry))(
+                options, keyPtr, valuePtr), "AddRunConfigEntry");
         }
         finally
         {
@@ -322,10 +352,10 @@ internal static unsafe partial class OrtApi
     internal static void BindOutput(nint binding, string name, nint value) =>
         BindTensor(ApiSlot.BindOutput, binding, name, value);
 
-    // Runs without run options. Only the loop thread calls this.
-    internal static void RunWithBinding(nint session, nint binding) =>
+    // Only the loop thread calls this.
+    internal static void RunWithBinding(nint session, nint runOptions, nint binding) =>
         Check(((delegate* unmanaged<nint, nint, nint, nint>)Slot(ApiSlot.RunWithBinding))(
-            session, 0, binding), "RunWithBinding");
+            session, runOptions, binding), "RunWithBinding");
 
     private static nint LoadApi()
     {

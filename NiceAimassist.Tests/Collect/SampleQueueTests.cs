@@ -10,7 +10,7 @@ public sealed class SampleQueueTests
         using ManualResetEventSlim release = new();
         using ManualResetEventSlim started = new();
         using SampleQueue queue = new(_ => { started.Set(); release.Wait(); }, _ => { });
-        Sample sample = new("s", Solid(1, 1), Solid(1, 1));
+        Sample sample = new("s", Unmapped(), Unmapped());
 
         Assert.True(queue.TrySubmit(sample));
         Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
@@ -23,5 +23,5 @@ public sealed class SampleQueueTests
         release.Set();
     }
 
-    private static BgraImage Solid(int width, int height) => new(new byte[width * height * 4], width, height);
+    private static MappedPixels Unmapped() => new(nint.Zero, RowPitch: 4, Width: 1, Height: 1);
 }

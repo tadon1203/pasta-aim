@@ -3,7 +3,7 @@ using NiceAimassist.Collect;
 namespace NiceAimassist.Loop;
 
 /// <summary>Frame statistics. The loop thread writes them. Any thread can read them.</summary>
-public sealed class LoopStats
+public sealed class LoopStatus
 {
     private readonly object _collectGate = new();
     private long _frames;

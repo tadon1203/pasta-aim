@@ -11,18 +11,19 @@ public sealed unsafe class Detector : IDetector
     private const int WarmUpRuns = 3;
     private const int AcquireTimeoutMs = 100;
 
-    private readonly IFrameObserver? _observer;
+    private readonly IFrameCollector? _collector;
     private OnnxSession? _session;
     private OutputReader? _outputReader;
     private Preprocessor? _preprocessor;
+    private GpuTimer? _timer;
     private DesktopCapture? _capture;
     private bool _disposed;
 
-    public Detector(DisplayDevices gpu, string modelPath, IFrameObserver? observer = null)
+    public Detector(DisplayDevices gpu, string modelPath, IFrameCollector? collector = null)
     {
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(modelPath);
-        _observer = observer;
+        _collector = collector;
         try
         {
             _session = new OnnxSession(gpu, modelPath);
@@ -34,8 +35,9 @@ public sealed unsafe class Detector : IDetector
                 + $"output {_session.Output.Rows} rows {_session.Output.Precision}");
 
             _capture = new DesktopCapture(gpu, InputWidth, InputHeight);
-            _preprocessor = new Preprocessor(gpu, _capture, _session.Input.Precision);
-            _outputReader = new OutputReader(gpu, _session.OutputResource, checked((int)_session.Output.ByteLength));
+            _timer = new GpuTimer(gpu);
+            _preprocessor = new Preprocessor(gpu, _capture, _session.Input.Precision, _timer);
+            _outputReader = new OutputReader(gpu, _session.OutputResource, checked((int)_session.Output.ByteLength), _timer);
 
             for (int run = 0; run < WarmUpRuns; run++)
             {
@@ -65,7 +67,12 @@ public sealed unsafe class Detector : IDetector
 
         long capturedTimestamp = Stopwatch.GetTimestamp();
         _preprocessor!.Submit(frame, _session!.InputResource);
-        ReadOnlySpan<byte> output = InferAndRead();
+        long submitted = Stopwatch.GetTimestamp();
+        _session.Run();
+        long ran = Stopwatch.GetTimestamp();
+        ReadOnlySpan<byte> output = _outputReader!.Read();
+        long gpu = _timer!.ReadElapsedStopwatchTicks();
+        long read = Stopwatch.GetTimestamp();
         DecodeResult decoded = DetectionDecoder.Decode(output, _session.Output, new Size(InputWidth, InputHeight), confidence);
         long detectedTimestamp = Stopwatch.GetTimestamp();
         if (decoded.Nearest is not null)
@@ -73,8 +80,9 @@ public sealed unsafe class Detector : IDetector
             CollectHeldFrame();
         }
 
+        DetectBreakdown breakdown = new(submitted - capturedTimestamp, ran - submitted, read - ran, detectedTimestamp - read, gpu);
         result = new DetectedFrame(
-            frame.DesktopTimestamp, capturedTimestamp, detectedTimestamp, decoded.Nearest, decoded.TopScore);
+            frame.DesktopTimestamp, capturedTimestamp, detectedTimestamp, decoded.Nearest, decoded.TopScore, breakdown);
         return CaptureStatus.Ready;
     }
 
@@ -91,7 +99,7 @@ public sealed unsafe class Detector : IDetector
 
     private void CollectHeldFrame()
     {
-        if (_observer is null || !_observer.IsDue)
+        if (_collector is null || !_collector.IsDue)
         {
             return;
         }
@@ -102,7 +110,7 @@ public sealed unsafe class Detector : IDetector
             return;
         }
 
-        _observer.Observe(desktop);
+        _collector.Collect(desktop);
     }
 
     private ReadOnlySpan<byte> InferAndRead()
@@ -111,8 +119,9 @@ public sealed unsafe class Detector : IDetector
         return _outputReader!.Read();
     }
 
-    // The session waits for the queue before it releases anything. The output reader, the preprocessor and the
-    // capture can still be used by the queue until then. Therefore, they are released after the session.
+    // The session waits for the queue before it releases anything. The output reader, the preprocessor, the timer and
+    // the capture can still be used by the queue until then. Therefore, they are released after the session.
+    // The output reader and the preprocessor hold command lists that write to the timer. The timer is released after them.
     private void ReleaseAll()
     {
         _session?.Dispose();
@@ -121,6 +130,8 @@ public sealed unsafe class Detector : IDetector
         _outputReader = null;
         _preprocessor?.Dispose();
         _preprocessor = null;
+        _timer?.Dispose();
+        _timer = null;
         _capture?.Dispose();
         _capture = null;
     }

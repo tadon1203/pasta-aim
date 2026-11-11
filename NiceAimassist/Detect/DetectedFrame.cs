@@ -7,9 +7,11 @@ namespace NiceAimassist.Detect;
 /// <param name="DesktopTimestamp">When the desktop image was last updated.</param>
 /// <param name="CapturedTimestamp">When the detector got the frame.</param>
 /// <param name="DetectedTimestamp">When the model output was read and decoded.</param>
+/// <param name="Breakdown">The detect stage in parts.</param>
 public readonly record struct DetectedFrame(
     long DesktopTimestamp,
     long CapturedTimestamp,
     long DetectedTimestamp,
     Detection? Target,
-    float TopScore);
+    float TopScore,
+    DetectBreakdown Breakdown);

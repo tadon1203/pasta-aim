@@ -15,7 +15,7 @@ namespace NiceAimassist.App;
 
 /// <summary>
 /// Edits settings.json through <see cref="SettingsFile.Save"/>. The loop reads the change from the file.
-/// The window shares no state with the loop, except <see cref="LoopStats"/>.
+/// The window shares no state with the loop, except <see cref="LoopStatus"/>.
 /// </summary>
 internal sealed class MainWindow : Form
 {
@@ -25,7 +25,7 @@ internal sealed class MainWindow : Form
     private const string AddKeyText = "Add";
 
     private readonly SettingsFile _file;
-    private readonly LoopStats _stats;
+    private readonly LoopStatus _loopStatus;
     private readonly ManualResetEventSlim _stopped;
     private readonly string _modelsDirectory;
 
@@ -55,10 +55,10 @@ internal sealed class MainWindow : Form
     private long _lastFrames;
     private long _lastTicks = Stopwatch.GetTimestamp();
 
-    public MainWindow(SettingsFile file, LoopStats stats, ManualResetEventSlim stopped, string modelsDirectory)
+    public MainWindow(SettingsFile file, LoopStatus loopStatus, ManualResetEventSlim stopped, string modelsDirectory)
     {
         _file = file;
-        _stats = stats;
+        _loopStatus = loopStatus;
         _stopped = stopped;
         _modelsDirectory = modelsDirectory;
 
@@ -353,17 +353,17 @@ internal sealed class MainWindow : Form
             return;
         }
 
-        long frames = _stats.Frames;
+        long frames = _loopStatus.Frames;
         long ticks = Stopwatch.GetTimestamp();
         double fps = (frames - _lastFrames) * (double)Stopwatch.Frequency / (ticks - _lastTicks);
-        StageTicks latency = _stats.Latency.Average;
+        StageTicks latency = _loopStatus.Latency.Average;
         _lastFrames = frames;
         _lastTicks = ticks;
-        CollectStatus collectStatus = _stats.Collect;
+        CollectStatus collectStatus = _loopStatus.Collect;
         string collect = collectStatus.LastError is { } error
             ? $"   collect error: {error}"
             : collectStatus.Active ? $"   collecting, saved {collectStatus.Saved}" : string.Empty;
         _status.Text = $"fps {fps:F1}   latency {latency.FormatMs()}   "
-            + $"{(_stats.Held ? "held" : "idle")}{collect}";
+            + $"{(_loopStatus.Held ? "held" : "idle")}{collect}";
     }
 }

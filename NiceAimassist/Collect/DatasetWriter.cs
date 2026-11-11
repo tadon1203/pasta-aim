@@ -4,9 +4,6 @@ using System.Runtime.InteropServices;
 
 namespace NiceAimassist.Collect;
 
-/// <summary>A tightly packed BGRA image. <see cref="Pixels"/> may be longer than the image.</summary>
-public readonly record struct BgraImage(byte[] Pixels, int Width, int Height);
-
 /// <summary>Writes one training sample. The sample is an Ultralytics-style crop and a full-display original. Both are JPEG files.</summary>
 public sealed class DatasetWriter
 {

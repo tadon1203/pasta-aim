@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using NiceAimassist.Aim;
 using NiceAimassist.Collect;
 using NiceAimassist.Settings;
@@ -10,7 +11,7 @@ using NiceAimassist.Mouse;
 namespace NiceAimassist.Loop;
 
 /// <summary>Runs the aim loop on one dedicated thread.</summary>
-public sealed class FrameLoop
+public sealed partial class FrameLoop
 {
     private const int IdleSleepMs = 1;
 
@@ -24,7 +25,7 @@ public sealed class FrameLoop
     private readonly AimController _aim = new();
     private bool _wasHeld;
     private readonly LoopDiagnostics _diagnostics;
-    private readonly LoopStats _stats = new();
+    private readonly LoopStatus _loopStatus = new();
     private volatile bool _running;
     private Thread? _thread;
     private bool _interpolationSent;
@@ -48,10 +49,10 @@ public sealed class FrameLoop
         _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
         _now = now ?? throw new ArgumentNullException(nameof(now));
         _onFault = onFault ?? throw new ArgumentNullException(nameof(onFault));
-        _diagnostics = new LoopDiagnostics(_now, _stats);
+        _diagnostics = new LoopDiagnostics(_now, _loopStatus);
     }
 
-    public LoopStats Stats => _stats;
+    public LoopStatus LoopStatus => _loopStatus;
 
     public void Start()
     {
@@ -61,7 +62,7 @@ public sealed class FrameLoop
         }
 
         _running = true;
-        _thread = new Thread(ThreadMain) { Name = "loop", IsBackground = true };
+        _thread = new Thread(ThreadMain) { Name = "loop", IsBackground = true, Priority = ThreadPriority.Highest };
         _thread.Start();
     }
 
@@ -78,6 +79,13 @@ public sealed class FrameLoop
 
     private void ThreadMain()
     {
+        uint taskIndex = 0;
+        nint mmcss = AvSetMmThreadCharacteristicsW("Games", ref taskIndex);
+        if (mmcss == 0)
+        {
+            Log.Warn($"AvSetMmThreadCharacteristicsW failed for task Games ({Marshal.GetLastPInvokeError()}); the loop keeps its thread priority only");
+        }
+
         try
         {
             Loop();
@@ -87,10 +95,19 @@ public sealed class FrameLoop
             Log.Error($"the loop faulted: {error}");
             _onFault(error);
         }
+        finally
+        {
+            // The revert must run on the thread that set the characteristics.
+            if (mmcss != 0)
+            {
+                AvRevertMmThreadCharacteristics(mmcss);
+            }
+        }
     }
 
     private void Loop()
     {
+        using IdleTimer idleTimer = new();
         while (_running)
         {
             AppSettings settings = _currentSettings();
@@ -104,9 +121,9 @@ public sealed class FrameLoop
                     _wasHeld = false;
                 }
 
-                _stats.SetHeld(false);
+                _loopStatus.SetHeld(false);
                 _aim.Reset();
-                Thread.Sleep(IdleSleepMs);
+                idleTimer.SleepMs(IdleSleepMs);
                 continue;
             }
 
@@ -117,7 +134,7 @@ public sealed class FrameLoop
                 _wasHeld = true;
             }
 
-            _stats.SetHeld(true);
+            _loopStatus.SetHeld(true);
             SendInterpolation(settings.Mouse.Interpolation);
             CaptureStatus status = _detector.TryDetect(settings.Detect.Confidence / 100f, out DetectedFrame frame);
             if (status == CaptureStatus.Timeout)
@@ -148,10 +165,17 @@ public sealed class FrameLoop
 
             long sentAt = sent ? _now() : aimedAt;
             FrameTimings timings = new(frame.DesktopTimestamp, frame.CapturedTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
-            _stats.RecordFrame();
+            _loopStatus.RecordFrame();
             _diagnostics.RecordFrame(frame, timings, aim, sent);
         }
     }
+
+    [LibraryImport("avrt.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial nint AvSetMmThreadCharacteristicsW(string taskName, ref uint taskIndex);
+
+    [LibraryImport("avrt.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AvRevertMmThreadCharacteristics(nint handle);
 
     // Collection runs only while the hold key is down. It uses the same frames as the aim.
     private void UpdateCollector(AppSettings settings, bool held)
@@ -161,7 +185,7 @@ public sealed class FrameLoop
             return;
         }
 
-        _stats.Collect = _collector.Update(settings.Collect, held);
+        _loopStatus.Collect = _collector.Update(settings.Collect, held);
     }
 
     private void SendInterpolation(Interpolation interpolation)

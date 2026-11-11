@@ -5,8 +5,8 @@ using NiceAimassist.Settings;
 namespace NiceAimassist.App;
 
 /// <summary>
-/// Gives the loop the latest settings. A new snapshot applies the log level and the hold keys once.
-/// Only the loop thread calls <see cref="Current"/>. The loop applies a new snapshot once. It does not apply it on every loop.
+/// Gives the loop the latest settings. <see cref="ApplyLatest"/> applies the log level and the hold keys when the snapshot changes.
+/// Only the loop thread calls <see cref="ApplyLatest"/>.
 /// </summary>
 internal sealed class LiveSettings
 {
@@ -20,7 +20,7 @@ internal sealed class LiveSettings
         _holdKeys = holdKeys;
     }
 
-    public AppSettings Current()
+    public AppSettings ApplyLatest()
     {
         AppSettings settings = _file.Current;
         if (!ReferenceEquals(settings, _applied))
