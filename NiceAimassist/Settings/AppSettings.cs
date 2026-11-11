@@ -8,21 +8,21 @@ using NiceAimassist.Hold;
 using NiceAimassist.Logging;
 using NiceAimassist.Mouse;
 
-namespace NiceAimassist.Config;
+namespace NiceAimassist.Settings;
 
 /// <summary>
-/// The settings file. A missing field takes its default. An unknown field is ignored.
-/// An out-of-range value is clamped by <see cref="WithClampedRanges"/>.
+/// The settings file. A missing section takes its defaults. An unknown field is ignored.
+/// An out-of-range value is clamped by <see cref="Clamped"/>.
 /// </summary>
-public sealed record Settings
+public sealed record AppSettings
 {
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
-    [JsonPropertyName("detect")]
-    public DetectSettings Detect { get; init; } = new();
-
     [JsonPropertyName("display")]
     public DisplaySettings Display { get; init; } = new();
+
+    [JsonPropertyName("detect")]
+    public DetectSettings Detect { get; init; } = new();
 
     [JsonPropertyName("aim")]
     public AimSettings Aim { get; init; } = new();
@@ -40,27 +40,27 @@ public sealed record Settings
     public LogSettings Log { get; init; } = new();
 
     /// <summary>Parses a settings file and validates it. Throws <see cref="JsonException"/> when the text is not a settings object.</summary>
-    public static Settings Parse(string json)
+    public static AppSettings Parse(string json)
     {
-        Settings settings = JsonSerializer.Deserialize<Settings>(json)
+        AppSettings settings = JsonSerializer.Deserialize<AppSettings>(json)
             ?? throw new JsonException("the settings file is empty or null");
-        return settings.WithClampedRanges();
+        return settings.Clamped();
     }
 
-    /// <summary>Clamps every ranged value into its range. Replaces an empty key or model name.</summary>
-    public Settings WithClampedRanges() => this with
+    /// <summary>Clamps every section into its range.</summary>
+    public AppSettings Clamped() => this with
     {
-        Hold = Hold.Clamped(),
-        Collect = Collect.Clamped(),
-        Log = Log.Clamped(),
         Display = Display.Clamped(),
         Detect = Detect.Clamped(),
         Aim = Aim.Clamped(),
         Mouse = Mouse.Clamped(),
+        Hold = Hold.Clamped(),
+        Collect = Collect.Clamped(),
+        Log = Log.Clamped(),
     };
 
     // The list property makes the generated comparison use references.
-    public bool Equals(Settings? other) => other is not null && ToJson() == other.ToJson();
+    public bool Equals(AppSettings? other) => other is not null && ToJson() == other.ToJson();
 
     public override int GetHashCode() => ToJson().GetHashCode();
 

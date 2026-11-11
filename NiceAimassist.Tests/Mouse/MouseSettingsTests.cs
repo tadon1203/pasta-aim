@@ -1,5 +1,5 @@
 using System.Text.Json;
-using NiceAimassist.Config;
+using NiceAimassist.Settings;
 using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Tests.Mouse;
@@ -9,7 +9,7 @@ public sealed class MouseSettingsTests
     [Fact]
     public void A_missing_mouse_section_takes_auto_interpolation()
     {
-        Assert.Equal(Interpolation.Auto, Settings.Parse("{}").Mouse.Interpolation);
+        Assert.Equal(Interpolation.Auto, AppSettings.Parse("{}").Mouse.Interpolation);
     }
 
     [Theory]
@@ -21,7 +21,7 @@ public sealed class MouseSettingsTests
     [InlineData(@"{ ""mouse"": { ""interpolation"": -3 } }", 0)]
     public void Interpolation_reads_auto_or_a_clamped_percent(string json, int expectedWire)
     {
-        Interpolation interpolation = Settings.Parse(json).Mouse.Interpolation;
+        Interpolation interpolation = AppSettings.Parse(json).Mouse.Interpolation;
 
         Assert.Equal(expectedWire == -1, interpolation.IsAuto);
         Assert.Equal(expectedWire == -1 ? null : expectedWire, interpolation.FixedPercent);
@@ -30,13 +30,13 @@ public sealed class MouseSettingsTests
     [Fact]
     public void Interpolation_of_another_kind_makes_the_file_unparsable()
     {
-        Assert.Throws<JsonException>(() => Settings.Parse(@"{ ""mouse"": { ""interpolation"": ""fast"" } }"));
+        Assert.Throws<JsonException>(() => AppSettings.Parse(@"{ ""mouse"": { ""interpolation"": ""fast"" } }"));
     }
 
     [Fact]
     public void Auto_serializes_as_the_string_auto()
     {
-        string json = new Settings().ToJson();
+        string json = new AppSettings().ToJson();
 
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement interpolation = document.RootElement.GetProperty("mouse").GetProperty("interpolation");

@@ -1,7 +1,7 @@
 using System.Drawing;
 using NiceAimassist.Aim;
 using NiceAimassist.Collect;
-using NiceAimassist.Config;
+using NiceAimassist.Settings;
 using NiceAimassist.Capture;
 using NiceAimassist.Detect;
 using NiceAimassist.Logging;
@@ -17,7 +17,7 @@ public sealed class FrameLoop
     private readonly IDetector _detector;
     private readonly IMouse _mouse;
     private readonly Func<bool> _isHeld;
-    private readonly Func<Settings> _currentSettings;
+    private readonly Func<AppSettings> _currentSettings;
     private readonly Func<long> _now;
     private readonly Action<Exception> _onFault;
     private readonly ICollectControl? _collector;
@@ -36,7 +36,7 @@ public sealed class FrameLoop
         IDetector detector,
         IMouse mouse,
         Func<bool> isHeld,
-        Func<Settings> currentSettings,
+        Func<AppSettings> currentSettings,
         Func<long> now,
         Action<Exception> onFault,
         ICollectControl? collector = null)
@@ -93,7 +93,7 @@ public sealed class FrameLoop
     {
         while (_running)
         {
-            Settings settings = _currentSettings();
+            AppSettings settings = _currentSettings();
             bool held = _isHeld();
             UpdateCollector(settings, held);
             if (!held)
@@ -154,7 +154,7 @@ public sealed class FrameLoop
     }
 
     // Collection runs only while the hold key is down. It uses the same frames as the aim.
-    private void UpdateCollector(Settings settings, bool held)
+    private void UpdateCollector(AppSettings settings, bool held)
     {
         if (_collector is null)
         {

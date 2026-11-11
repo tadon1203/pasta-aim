@@ -3,7 +3,7 @@ using System.Drawing;
 using System.Windows.Forms;
 using NiceAimassist.Aim;
 using NiceAimassist.Collect;
-using NiceAimassist.Config;
+using NiceAimassist.Settings;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
 using NiceAimassist.Hold;
@@ -14,7 +14,7 @@ using Timer = System.Windows.Forms.Timer;
 namespace NiceAimassist.Ui;
 
 /// <summary>
-/// Edits settings.json through <see cref="SettingsStore.Save"/>. The loop reads the change from the store.
+/// Edits settings.json through <see cref="SettingsFile.Save"/>. The loop reads the change from the file.
 /// The form shares no state with the loop, except <see cref="LoopStats"/>.
 /// </summary>
 internal sealed class SettingsForm : Form
@@ -24,7 +24,7 @@ internal sealed class SettingsForm : Form
     private const int StatusIntervalMs = 1000;
     private const string AddKeyText = "Add";
 
-    private readonly SettingsStore _store;
+    private readonly SettingsFile _file;
     private readonly LoopStats _stats;
     private readonly ManualResetEventSlim _stopped;
     private readonly string _modelsDirectory;
@@ -55,15 +55,15 @@ internal sealed class SettingsForm : Form
     private long _lastFrames;
     private long _lastTicks = Stopwatch.GetTimestamp();
 
-    public SettingsForm(SettingsStore store, LoopStats stats, ManualResetEventSlim stopped, string modelsDirectory)
+    public SettingsForm(SettingsFile file, LoopStats stats, ManualResetEventSlim stopped, string modelsDirectory)
     {
-        _store = store;
+        _file = file;
         _stats = stats;
         _stopped = stopped;
         _modelsDirectory = modelsDirectory;
 
         InitializeComponent();
-        LoadSettings(store.Current);
+        LoadSettings(file.Current);
         WireEvents();
         _statusTimer.Start();
     }
@@ -166,7 +166,7 @@ internal sealed class SettingsForm : Form
         _layout.Controls.Add(input);
     }
 
-    private void LoadSettings(Settings settings)
+    private void LoadSettings(AppSettings settings)
     {
         string[] models = Directory.Exists(_modelsDirectory)
             ? [.. Directory.GetFiles(_modelsDirectory, "*.onnx").Select(Path.GetFileName).OfType<string>().Order()]
@@ -228,14 +228,14 @@ internal sealed class SettingsForm : Form
         FormClosing += (_, _) => Flush();
     }
 
-    private Settings ReadSettings() => _store.Current with
+    private AppSettings ReadSettings() => _file.Current with
     {
-        Detect = _store.Current.Detect with
+        Detect = _file.Current.Detect with
         {
             Model = _model.SelectedItem as string,
             Confidence = (int)_confidence.Value,
         },
-        Aim = _store.Current.Aim with
+        Aim = _file.Current.Aim with
         {
             SensitivityX = (int)_sensitivityX.Value,
             SensitivityY = (int)_sensitivityY.Value,
@@ -243,22 +243,22 @@ internal sealed class SettingsForm : Form
             MaxDelta = (int)_maxDelta.Value,
             VelocitySmoothing = (int)_velocitySmoothing.Value,
         },
-        Hold = _store.Current.Hold with { Keys = [.. _holdKeys.Items.Cast<string>()] },
-        Mouse = _store.Current.Mouse with
+        Hold = _file.Current.Hold with { Keys = [.. _holdKeys.Items.Cast<string>()] },
+        Mouse = _file.Current.Mouse with
         {
             Interpolation = _interpolationAuto.Checked
                 ? Interpolation.Auto
                 : Interpolation.Percent((int)_interpolationPercent.Value),
         },
-        Collect = _store.Current.Collect with
+        Collect = _file.Current.Collect with
         {
             Size = (int)_collectSize.Value,
             Rate = (int)_collectRate.Value,
             Enabled = _collectEnabled.Checked,
         },
-        Log = _store.Current.Log with
+        Log = _file.Current.Log with
         {
-            Level = _logLevel.SelectedItem is LogLevel level ? level : _store.Current.Log.Level,
+            Level = _logLevel.SelectedItem is LogLevel level ? level : _file.Current.Log.Level,
         },
     };
 
@@ -276,7 +276,7 @@ internal sealed class SettingsForm : Form
         }
 
         _saveTimer.Stop();
-        _store.Save(ReadSettings());
+        _file.Save(ReadSettings());
     }
 
     private void SetCollectInputsEnabled()

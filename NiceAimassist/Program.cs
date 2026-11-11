@@ -2,7 +2,7 @@
 using System.Runtime;
 using System.Windows.Forms;
 using NiceAimassist.Collect;
-using NiceAimassist.Config;
+using NiceAimassist.Settings;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using NiceAimassist.Hold;
@@ -37,7 +37,7 @@ internal static class Program
 
     private static int Run()
     {
-        SettingsStore store = new(SettingsStore.DefaultPath);
+        SettingsFile file = new(SettingsFile.DefaultPath);
         DisplayDevices? gpu = null;
         Collector? collector = null;
         IDetector? detector = null;
@@ -46,7 +46,7 @@ internal static class Program
         ConsoleCancelEventHandler? onCancel = null;
         try
         {
-            Settings startup = store.Current;
+            AppSettings startup = file.Current;
             Log.Level = startup.Log.Level;
             Log.Info($"log level {startup.Log.Level}; file {Log.FilePath ?? "(none)"}");
             ModelFolder.ModelLocation model = ModelFolder.Resolve(startup.Detect.Model);
@@ -61,15 +61,15 @@ internal static class Program
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            // Only the loop thread reads this. The loop applies a new snapshot from the store once. It does not apply it on every loop.
-            Settings? applied = null;
+            // Only the loop thread reads this. The loop applies a new snapshot from the file once. It does not apply it on every loop.
+            AppSettings? applied = null;
             loop = new FrameLoop(
                 detector,
                 device,
                 holdKey.IsHeld,
                 () =>
                 {
-                    Settings settings = store.Current;
+                    AppSettings settings = file.Current;
                     if (!ReferenceEquals(settings, applied))
                     {
                         applied = settings;
@@ -98,7 +98,7 @@ internal static class Program
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (SettingsForm form = new(store, loop.Stats, stopped, model.Directory))
+            using (SettingsForm form = new(file, loop.Stats, stopped, model.Directory))
             {
                 Application.Run(form);
             }
@@ -122,7 +122,7 @@ internal static class Program
             collector?.Dispose();
             gpu?.Dispose();
             device?.Dispose();
-            store.Dispose();
+            file.Dispose();
         }
     }
 }

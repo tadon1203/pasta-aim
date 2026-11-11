@@ -1,20 +1,20 @@
 using System.Text.Json;
 using NiceAimassist.Logging;
 
-namespace NiceAimassist.Config;
+namespace NiceAimassist.Settings;
 
 /// <summary>
 /// Reads the settings file. Re-reads it whenever it changes.
 /// Readers take <see cref="Current"/> without a lock. A gate serializes the reloads.
 /// </summary>
-public sealed class SettingsStore : IDisposable
+public sealed class SettingsFile : IDisposable
 {
     private readonly string _path;
     private readonly TimeSpan _debounce;
     private readonly object _gate = new();
     private readonly Timer _timer;
     private readonly FileSystemWatcher _watcher;
-    private Settings _current;
+    private AppSettings _current;
     private bool _disposed;
 
     /// <summary>
@@ -22,7 +22,7 @@ public sealed class SettingsStore : IDisposable
     /// A file that cannot be parsed gives the defaults. The file stays unchanged.
     /// </summary>
     /// <param name="debounceMilliseconds">Delay after the last file event before the file is re-read.</param>
-    public SettingsStore(string path, int debounceMilliseconds = 200)
+    public SettingsFile(string path, int debounceMilliseconds = 200)
     {
         _path = Path.GetFullPath(path);
         _debounce = TimeSpan.FromMilliseconds(debounceMilliseconds);
@@ -43,14 +43,14 @@ public sealed class SettingsStore : IDisposable
     public static string DefaultPath => Path.Combine(AppContext.BaseDirectory, "settings.json");
 
     /// <summary>The latest settings. Safe to call from any thread.</summary>
-    public Settings Current => Volatile.Read(ref _current);
+    public AppSettings Current => Volatile.Read(ref _current);
 
     /// <summary>Writes the settings to the file. The watcher then reloads them into <see cref="Current"/>.</summary>
-    public void Save(Settings settings)
+    public void Save(AppSettings settings)
     {
         try
         {
-            File.WriteAllText(_path, settings.WithClampedRanges().ToJson());
+            File.WriteAllText(_path, settings.Clamped().ToJson());
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -74,11 +74,11 @@ public sealed class SettingsStore : IDisposable
         _timer.Dispose();
     }
 
-    private Settings ReadOrCreate()
+    private AppSettings ReadOrCreate()
     {
         if (!File.Exists(_path))
         {
-            Settings defaults = new();
+            AppSettings defaults = new();
             try
             {
                 File.WriteAllText(_path, defaults.ToJson());
@@ -94,12 +94,12 @@ public sealed class SettingsStore : IDisposable
 
         try
         {
-            return Settings.Parse(File.ReadAllText(_path));
+            return AppSettings.Parse(File.ReadAllText(_path));
         }
         catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
         {
             Log.Warn($"settings could not be read from {_path}; using the defaults: {error.Message}");
-            return new Settings();
+            return new AppSettings();
         }
     }
 
@@ -123,10 +123,10 @@ public sealed class SettingsStore : IDisposable
                 return;
             }
 
-            Settings updated;
+            AppSettings updated;
             try
             {
-                updated = Settings.Parse(File.ReadAllText(_path));
+                updated = AppSettings.Parse(File.ReadAllText(_path));
             }
             catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
             {
@@ -134,7 +134,7 @@ public sealed class SettingsStore : IDisposable
                 return;
             }
 
-            Settings previous = _current;
+            AppSettings previous = _current;
             if (updated.Detect.Model != previous.Detect.Model || updated.Display != previous.Display)
             {
                 Log.Warn("model and display take effect after a restart");

@@ -1,28 +1,27 @@
-using System.Text.Json;
-
-using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using NiceAimassist.Hold;
 using NiceAimassist.Mouse;
+using NiceAimassist.Settings;
 
-namespace NiceAimassist.Tests.Config;
+namespace NiceAimassist.Tests.Settings;
 
-public sealed class SettingsTests
+public sealed class AppSettingsTests
 {
     [Fact]
-    public void A_missing_field_takes_its_default_and_an_unknown_field_is_ignored()
+    public void A_missing_section_takes_its_defaults_and_an_unknown_field_is_ignored()
     {
-        Settings settings = Settings.Parse(@"{ ""version"": 2 }");
+        AppSettings settings = AppSettings.Parse(@"{ ""version"": 2 }");
 
+        Assert.Equal(["F8"], settings.Hold.Keys);
         Assert.Equal(0, settings.Display.Adapter);
         Assert.Equal(0, settings.Display.Output);
     }
 
     [Fact]
-    public void Serialized_settings_use_snake_case_names_and_read_back_equal()
+    public void Serialized_settings_use_nested_snake_case_names_and_read_back_equal()
     {
-        Settings settings = new()
+        AppSettings settings = new()
         {
             Detect = new DetectSettings { Model = "yolo.onnx" },
             Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
@@ -34,14 +33,14 @@ public sealed class SettingsTests
 
         Assert.Contains("\"target_y_offset\"", json);
         Assert.Contains("\"interpolation\": 30", json);
-        Assert.Equal(settings, Settings.Parse(json));
+        Assert.Equal(settings, AppSettings.Parse(json));
     }
 
     [Fact]
     public void Text_that_is_not_an_object_is_unparsable()
     {
-        Assert.Throws<JsonException>(() => Settings.Parse("[1, 2]"));
-        Assert.Throws<JsonException>(() => Settings.Parse("null"));
-        Assert.Throws<JsonException>(() => Settings.Parse(@"{ ""aim"": { ""sensitivity_x"": ""fast"" } }"));
+        Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse("[1, 2]"));
+        Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse("null"));
+        Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse(@"{ ""aim"": { ""sensitivity_x"": ""fast"" } }"));
     }
 }

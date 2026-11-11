@@ -1,9 +1,8 @@
+using NiceAimassist.Settings;
 
-using NiceAimassist.Config;
+namespace NiceAimassist.Tests.Settings;
 
-namespace NiceAimassist.Tests.Config;
-
-public sealed class SettingsStoreTests : IDisposable
+public sealed class SettingsFileTests : IDisposable
 {
     private const int DebounceMilliseconds = 50;
 
@@ -11,18 +10,18 @@ public sealed class SettingsStoreTests : IDisposable
         Path.GetTempPath(),
         "nice-aimassist-settings-" + Guid.NewGuid().ToString("N"));
 
-    private readonly List<SettingsStore> _stores = new();
+    private readonly List<SettingsFile> _files = new();
 
-    public SettingsStoreTests()
+    public SettingsFileTests()
     {
         Directory.CreateDirectory(_directory);
     }
 
     public void Dispose()
     {
-        foreach (SettingsStore store in _stores)
+        foreach (SettingsFile file in _files)
         {
-            store.Dispose();
+            file.Dispose();
         }
 
         Directory.Delete(_directory, recursive: true);
@@ -32,26 +31,26 @@ public sealed class SettingsStoreTests : IDisposable
     public void A_missing_file_is_created_with_the_defaults()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsStore store = NewStore(path);
+        SettingsFile file = NewFile(path);
 
-        Settings loaded = store.Current;
+        AppSettings loaded = file.Current;
 
-        Assert.Equal(new Settings(), loaded);
+        Assert.Equal(new AppSettings(), loaded);
         Assert.True(File.Exists(path));
-        Assert.Equal(new Settings(), Settings.Parse(File.ReadAllText(path)));
+        Assert.Equal(new AppSettings(), AppSettings.Parse(File.ReadAllText(path)));
     }
 
     [Fact]
     public void An_unparsable_file_gives_the_defaults_and_is_not_overwritten()
     {
         string path = Path.Combine(_directory, "settings.json");
-        const string broken = "{ \"sensitivity_x\": 150";
+        const string broken = "{ \"aim\": { \"sensitivity_x\": 150";
         File.WriteAllText(path, broken);
-        SettingsStore store = NewStore(path);
+        SettingsFile file = NewFile(path);
 
-        Settings loaded = store.Current;
+        AppSettings loaded = file.Current;
 
-        Assert.Equal(new Settings(), loaded);
+        Assert.Equal(new AppSettings(), loaded);
         Assert.Equal(broken, File.ReadAllText(path));
     }
 
@@ -59,34 +58,34 @@ public sealed class SettingsStoreTests : IDisposable
     public void A_valid_edit_is_published_after_the_debounce()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsStore store = NewStore(path);
+        SettingsFile file = NewFile(path);
 
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
 
-        Assert.True(WaitUntil(() => store.Current.Aim.SensitivityX == 300));
+        Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 300));
     }
 
     [Fact]
     public void An_invalid_edit_keeps_the_previous_settings()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsStore store = NewStore(path);
+        SettingsFile file = NewFile(path);
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
-        Assert.True(WaitUntil(() => store.Current.Aim.SensitivityX == 300));
+        Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 300));
 
         File.WriteAllText(path, "{ \"aim\": { \"sensitivity_x\": 4");
         Thread.Sleep(DebounceMilliseconds * 6);
-        Assert.Equal(300, store.Current.Aim.SensitivityX);
+        Assert.Equal(300, file.Current.Aim.SensitivityX);
 
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 400 } }");
-        Assert.True(WaitUntil(() => store.Current.Aim.SensitivityX == 400));
+        Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 400));
     }
 
-    private SettingsStore NewStore(string path)
+    private SettingsFile NewFile(string path)
     {
-        SettingsStore store = new(path, DebounceMilliseconds);
-        _stores.Add(store);
-        return store;
+        SettingsFile file = new(path, DebounceMilliseconds);
+        _files.Add(file);
+        return file;
     }
 
     private static bool WaitUntil(Func<bool> condition, int timeoutMilliseconds = 5_000)

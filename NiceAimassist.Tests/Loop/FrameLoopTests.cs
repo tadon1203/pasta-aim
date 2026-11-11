@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using NiceAimassist.Config;
+using NiceAimassist.Settings;
 using NiceAimassist.Capture;
 using NiceAimassist.Loop;
 using NiceAimassist.Mouse;
@@ -87,7 +87,7 @@ public class FrameLoopTests
         // The frames are fed in two stages. The setting change happens between the stages.
         FakeDetector detector = new();
         FakeMouse mouse = new();
-        Holder<Settings> settings = new(Snapshot(Interpolation.Percent(30)));
+        Holder<AppSettings> settings = new(Snapshot(Interpolation.Percent(30)));
         FrameLoop loop = new(detector, mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
 
@@ -141,9 +141,9 @@ public class FrameLoopTests
         return loop;
     }
 
-    private static Settings Snapshot() => Snapshot(Interpolation.Auto);
+    private static AppSettings Snapshot() => Snapshot(Interpolation.Auto);
 
-    private static Settings Snapshot(Interpolation interpolation) => new() { Mouse = new MouseSettings { Interpolation = interpolation } };
+    private static AppSettings Snapshot(Interpolation interpolation) => new() { Mouse = new MouseSettings { Interpolation = interpolation } };
 
     private static void WaitUntil(Func<bool> condition)
     {
