@@ -5,7 +5,7 @@ using NiceAimassist.Aim;
 using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
-using NiceAimassist.Input;
+using NiceAimassist.Hold;
 using NiceAimassist.Mouse;
 using Timer = System.Windows.Forms.Timer;
 
@@ -176,7 +176,7 @@ internal sealed class SettingsForm : Form
         }
 
         _model.SelectedItem = settings.Detect.Model;
-        _holdKeys.Items.AddRange([.. settings.HoldKeys]);
+        _holdKeys.Items.AddRange([.. settings.Hold.Keys]);
         _sensitivityX.Value = settings.Aim.SensitivityX;
         _sensitivityY.Value = settings.Aim.SensitivityY;
         _confidence.Value = settings.Detect.Confidence;
@@ -241,7 +241,7 @@ internal sealed class SettingsForm : Form
             MaxDelta = (int)_maxDelta.Value,
             VelocitySmoothing = (int)_velocitySmoothing.Value,
         },
-        HoldKeys = [.. _holdKeys.Items.Cast<string>()],
+        Hold = _store.Current.Hold with { Keys = [.. _holdKeys.Items.Cast<string>()] },
         Mouse = _store.Current.Mouse with
         {
             Interpolation = _interpolationAuto.Checked

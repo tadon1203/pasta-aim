@@ -1,6 +1,6 @@
-using NiceAimassist.Input;
+using NiceAimassist.Hold;
 
-namespace NiceAimassist.Tests.Input;
+namespace NiceAimassist.Tests.Hold;
 
 public class HoldKeyTests
 {

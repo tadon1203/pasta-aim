@@ -3,6 +3,7 @@ using System.Text.Json;
 using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
+using NiceAimassist.Hold;
 using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Tests.Config;
@@ -14,7 +15,6 @@ public sealed class SettingsTests
     {
         Settings settings = Settings.Parse(@"{ ""version"": 2 }");
 
-        Assert.Equal(["F8"], settings.HoldKeys);
         Assert.Equal(0, settings.Display.Adapter);
         Assert.Equal(0, settings.Display.Output);
     }
@@ -38,22 +38,6 @@ public sealed class SettingsTests
     }
 
     [Fact]
-    public void Blank_hold_keys_fall_back_to_the_default()
-    {
-        Settings settings = Settings.Parse(@"{ ""hold_keys"": [""  ""] }");
-
-        Assert.Equal(["F8"], settings.HoldKeys);
-    }
-
-    [Fact]
-    public void Hold_keys_are_trimmed_and_deduplicated_ignoring_case()
-    {
-        Settings settings = Settings.Parse(@"{ ""hold_keys"": ["" F9 "", ""f9"", ""MouseX1"", """"] }");
-
-        Assert.Equal(["F9", "MouseX1"], settings.HoldKeys);
-    }
-
-    [Fact]
     public void Serialized_settings_use_snake_case_names_and_read_back_equal()
     {
         Settings settings = new()
@@ -61,7 +45,7 @@ public sealed class SettingsTests
             Detect = new DetectSettings { Model = "yolo.onnx" },
             Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
             Mouse = new MouseSettings { Interpolation = Interpolation.Percent(30) },
-            HoldKeys = ["F9", "xinput:a"],
+            Hold = new HoldSettings { Keys = ["F9", "xinput:a"] },
         };
 
         string json = settings.ToJson();

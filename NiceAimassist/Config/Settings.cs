@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using NiceAimassist.Aim;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
+using NiceAimassist.Hold;
 using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Config;
@@ -13,14 +14,10 @@ namespace NiceAimassist.Config;
 /// </summary>
 public sealed record Settings
 {
-    public const string DefaultHoldKey = "F8";
-
     public const int MinCollectSize = 64;
     public const int MaxCollectSize = 4096;
     public const int MaxCollectRate = 2;
     public const int MinCollectRate = 1;
-
-    private static readonly string[] DefaultHoldKeys = [DefaultHoldKey];
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
@@ -36,11 +33,8 @@ public sealed record Settings
     [JsonPropertyName("mouse")]
     public MouseSettings Mouse { get; init; } = new();
 
-    /// <summary>
-    /// The key names that hold the aim, such as "F8". The aim is held while any of them is down.
-    /// </summary>
-    [JsonPropertyName("hold_keys")]
-    public IReadOnlyList<string> HoldKeys { get; init; } = DefaultHoldKeys;
+    [JsonPropertyName("hold")]
+    public HoldSettings Hold { get; init; } = new();
 
     /// <summary>Whether collection runs while the hold key is down.</summary>
     [JsonPropertyName("collect_enabled")]
@@ -70,7 +64,7 @@ public sealed record Settings
     /// <summary>Clamps every ranged value into its range. Replaces an empty key or model name.</summary>
     public Settings WithClampedRanges() => this with
     {
-        HoldKeys = NormalizedKeys(HoldKeys),
+        Hold = Hold.Clamped(),
         CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
         CollectRate = Math.Clamp(CollectRate, MinCollectRate, MaxCollectRate),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
@@ -79,14 +73,6 @@ public sealed record Settings
         Aim = Aim.Clamped(),
         Mouse = Mouse.Clamped(),
     };
-
-    private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)
-    {
-        string[] kept = [.. (names ?? []).Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)];
-        return kept.Length == 0 ? DefaultHoldKeys : kept;
-    }
 
     // The list property makes the generated comparison use references.
     public bool Equals(Settings? other) => other is not null && ToJson() == other.ToJson();

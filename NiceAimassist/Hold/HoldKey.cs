@@ -1,7 +1,7 @@
 using System.Collections.Frozen;
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Input;
+namespace NiceAimassist.Hold;
 
 /// A keyboard key or mouse button. The aim is enabled while it is held.
 public readonly struct HoldKey

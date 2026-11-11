@@ -4,10 +4,10 @@ using System.Windows.Forms;
 using NiceAimassist;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
-using NiceAimassist.Loop;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
-using NiceAimassist.Input;
+using NiceAimassist.Hold;
+using NiceAimassist.Loop;
 using NiceAimassist.Mouse;
 using NiceAimassist.Ui;
 using Application = System.Windows.Forms.Application;
@@ -50,7 +50,7 @@ internal static class Program
             Log.Level = startup.LogLevel;
             Log.Info($"log level {startup.LogLevel}; file {Log.FilePath ?? "(none)"}");
             ModelFolder.ModelLocation model = ModelFolder.Resolve(startup.Detect.Model);
-            HoldKeySource holdKey = new(startup.HoldKeys);
+            HoldKeySet holdKey = new(startup.Hold.Keys);
 
             gpu = new DisplayDevices(startup.Display.Adapter, startup.Display.Output);
             collector = new Collector(
@@ -74,7 +74,7 @@ internal static class Program
                     {
                         applied = settings;
                         Log.Level = settings.LogLevel;
-                        holdKey.Update(settings.HoldKeys);
+                        holdKey.Update(settings.Hold.Keys);
                     }
 
                     return settings;
@@ -124,67 +124,5 @@ internal static class Program
             device?.Dispose();
             store.Dispose();
         }
-    }
-
-    private sealed record HoldBinding(IReadOnlyList<string> Names, HoldKey[] Keys);
-
-    /// <summary>The hold keys. The loop thread parses them again when the settings file changes.</summary>
-    private sealed class HoldKeySource
-    {
-        private HoldBinding _binding;
-
-        public HoldKeySource(IReadOnlyList<string> names)
-        {
-            foreach (string name in names)
-            {
-                if (!HoldKey.TryParse(name, out _))
-                {
-                    throw new InvalidOperationException($"unknown hold key \"{name}\" in settings.json");
-                }
-            }
-
-            _binding = new HoldBinding(names, Parse(names));
-        }
-
-        public bool IsHeld()
-        {
-            foreach (HoldKey key in Volatile.Read(ref _binding).Keys)
-            {
-                if (key.IsDown())
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        public void Update(IReadOnlyList<string> names)
-        {
-            HoldBinding current = Volatile.Read(ref _binding);
-            if (current.Names.SequenceEqual(names))
-            {
-                return;
-            }
-
-            HoldKey[] keys = Parse(names);
-            if (keys.Length == 0)
-            {
-                Volatile.Write(ref _binding, current with { Names = names });
-                Log.Warn("no known hold key; keeping the previous keys");
-                return;
-            }
-
-            if (keys.Length < names.Count)
-            {
-                Log.Warn("unknown hold keys are ignored");
-            }
-
-            Volatile.Write(ref _binding, new HoldBinding(names, keys));
-        }
-
-        private static HoldKey[] Parse(IReadOnlyList<string> names) =>
-            [.. names.Select(name => HoldKey.TryParse(name, out HoldKey key) ? (HoldKey?)key : null)
-                .OfType<HoldKey>()];
     }
 }
