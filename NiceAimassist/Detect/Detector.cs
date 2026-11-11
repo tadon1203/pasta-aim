@@ -65,10 +65,14 @@ public sealed unsafe class Detector : IDetector
 
         long capturedTimestamp = Stopwatch.GetTimestamp();
         _preprocessor!.Submit(frame, _session!.InputResource);
-        CollectHeldFrame();
         ReadOnlySpan<byte> output = InferAndRead();
         DecodeResult decoded = DetectionDecoder.Decode(output, _session.Output, new Size(InputWidth, InputHeight), confidence);
         long detectedTimestamp = Stopwatch.GetTimestamp();
+        if (decoded.Nearest is not null)
+        {
+            CollectHeldFrame();
+        }
+
         result = new DetectedFrame(
             frame.DesktopTimestamp, capturedTimestamp, detectedTimestamp, decoded.Nearest, decoded.TopScore);
         return CaptureStatus.Ready;
