@@ -102,6 +102,21 @@ public class MakcuDeviceTests
     }
 
     [Fact]
+    public void AnUnchangedInterpolationIsSentOnlyOnce()
+    {
+        var device = new FakeMakcu { Baud = 4_000_000 };
+        using MakcuDevice link = Connect(device);
+        int framesBefore = device.Frames.Count;
+
+        link.SetInterpolation(Interpolation.Percent(40));
+        link.SetInterpolation(Interpolation.Percent(40));
+        Assert.Equal(framesBefore + 1, device.Frames.Count);
+
+        link.SetInterpolation(Interpolation.Auto);
+        Assert.Equal(framesBefore + 2, device.Frames.Count);
+    }
+
+    [Fact]
     public void APercentIsClampedToTheRangeWhenCreated()
     {
         Assert.Equal(Interpolation.Percent(100), Interpolation.Percent(150));

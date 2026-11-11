@@ -1,6 +1,6 @@
 using NiceAimassist.Detect;
 using NiceAimassist.Shared.Gpu;
-using NiceAimassist.Hold;
+using NiceAimassist.Hotkey;
 using NiceAimassist.Mouse;
 using NiceAimassist.Settings;
 
@@ -13,7 +13,7 @@ public sealed class AppSettingsTests
     {
         AppSettings settings = AppSettings.Parse(@"{ ""version"": 2 }");
 
-        Assert.Equal(["F8"], settings.Hold.Keys);
+        Assert.Equal(["F8"], settings.Hotkey.Keys);
         Assert.Equal(0, settings.Display.Adapter);
         Assert.Equal(0, settings.Display.Output);
     }
@@ -26,7 +26,7 @@ public sealed class AppSettingsTests
             Detect = new DetectSettings { Model = "yolo.onnx" },
             Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
             Mouse = new MouseSettings { Interpolation = Interpolation.Percent(30) },
-            Hold = new HoldSettings { Keys = ["F9", "xinput:a"] },
+            Hotkey = new HotkeySettings { Keys = ["F9", "xinput:a"] },
         };
 
         string json = settings.ToJson();

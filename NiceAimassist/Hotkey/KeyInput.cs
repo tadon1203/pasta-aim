@@ -1,10 +1,10 @@
 using System.Collections.Frozen;
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Hold;
+namespace NiceAimassist.Hotkey;
 
 /// A keyboard key or mouse button. The aim is enabled while it is held.
-public readonly partial struct HoldKey
+public readonly partial struct KeyInput
 {
     private static readonly (string Name, int Code)[] Table =
     [
@@ -52,7 +52,7 @@ public readonly partial struct HoldKey
 
     private readonly int _padMask;
 
-    private HoldKey(int virtualKey, int padMask)
+    private KeyInput(int virtualKey, int padMask)
     {
         VirtualKey = virtualKey;
         _padMask = padMask;
@@ -64,11 +64,11 @@ public readonly partial struct HoldKey
     /// Parses a key name. The case is ignored. A controller input starts with `xinput:` and a slug,
     /// such as `xinput:a` or `xinput:lt`. A bare letter or digit, such as `A` or `1`, is the same
     /// key as `KeyA` or `Digit1`.
-    public static bool TryParse(string name, out HoldKey key)
+    public static bool TryParse(string name, out KeyInput key)
     {
         if (PadMasks.TryGetValue(name, out var mask))
         {
-            key = new HoldKey(0, mask);
+            key = new KeyInput(0, mask);
             return true;
         }
 
@@ -77,7 +77,7 @@ public readonly partial struct HoldKey
             : name;
         if (Codes.TryGetValue(alias, out var code))
         {
-            key = new HoldKey(code, 0);
+            key = new KeyInput(code, 0);
             return true;
         }
 

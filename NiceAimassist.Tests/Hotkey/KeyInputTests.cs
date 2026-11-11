@@ -1,8 +1,8 @@
-using NiceAimassist.Hold;
+using NiceAimassist.Hotkey;
 
-namespace NiceAimassist.Tests.Hold;
+namespace NiceAimassist.Tests.Hotkey;
 
-public class HoldKeyTests
+public class KeyInputTests
 {
     [Theory]
     [InlineData("F8", 0x77)]
@@ -14,7 +14,7 @@ public class HoldKeyTests
     [InlineData("MouseX1", 0x05)]
     public void A_known_name_parses_to_its_virtual_key(string name, int code)
     {
-        Assert.True(HoldKey.TryParse(name, out var key));
+        Assert.True(KeyInput.TryParse(name, out var key));
         Assert.Equal(code, key.VirtualKey);
     }
 
@@ -25,8 +25,8 @@ public class HoldKeyTests
     [InlineData("mousex1", "MouseX1")]
     public void A_name_parses_to_the_same_key_regardless_of_case(string name, string canonical)
     {
-        Assert.True(HoldKey.TryParse(name, out var key));
-        Assert.True(HoldKey.TryParse(canonical, out var expected));
+        Assert.True(KeyInput.TryParse(name, out var key));
+        Assert.True(KeyInput.TryParse(canonical, out var expected));
         Assert.Equal(expected.VirtualKey, key.VirtualKey);
     }
 
@@ -36,7 +36,7 @@ public class HoldKeyTests
     [InlineData("xinput:lt")]
     public void A_controller_name_parses_to_a_controller_input(string name)
     {
-        Assert.True(HoldKey.TryParse(name, out var key));
+        Assert.True(KeyInput.TryParse(name, out var key));
         Assert.Equal(0, key.VirtualKey);
     }
 
@@ -49,6 +49,6 @@ public class HoldKeyTests
     [InlineData("Shift")]
     public void An_unknown_name_is_rejected(string name)
     {
-        Assert.False(HoldKey.TryParse(name, out _));
+        Assert.False(KeyInput.TryParse(name, out _));
     }
 }

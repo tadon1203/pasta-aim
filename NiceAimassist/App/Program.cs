@@ -1,12 +1,14 @@
 ﻿using System.Diagnostics;
 using System.Runtime;
 using System.Windows.Forms;
-using NiceAimassist.Collect;
+using NiceAimassist.Dataset;
 using NiceAimassist.Settings;
 using NiceAimassist.Detect;
+using NiceAimassist.Capture;
 using NiceAimassist.Detect.Model;
+using NiceAimassist.Detect.Runtime;
 using NiceAimassist.Shared.Gpu;
-using NiceAimassist.Hold;
+using NiceAimassist.Hotkey;
 using NiceAimassist.Shared.Logging;
 using NiceAimassist.Loop;
 using NiceAimassist.Mouse;
@@ -56,8 +58,10 @@ internal static class Program
     {
         SettingsFile file = new(SettingsFile.DefaultPath);
         GpuDevices? gpu = null;
-        Collector? collector = null;
-        IDetector? detector = null;
+        OnnxSession? session = null;
+        DesktopCapture? frames = null;
+        DatasetRecorder? recorder = null;
+        Detector? detector = null;
         MakcuDevice? device = null;
         FrameLoop? loop = null;
         ConsoleCancelEventHandler? onCancel = null;
@@ -66,31 +70,41 @@ internal static class Program
             AppSettings startup = file.Current;
             Log.Level = startup.Log.Level;
             Log.Info($"log level {startup.Log.Level}; file {Log.FilePath ?? "(none)"}");
-            ModelFolder.ModelLocation model = ModelFolder.Resolve(startup.Detect.Model);
-            HoldKeySet holdKey = new(startup.Hold.Keys);
+            Directory.CreateDirectory(ModelFolder.Location);
+            string modelPath = ModelFolder.Resolve(startup.Detect.Model);
+            HotkeySet hotkey = new(startup.Hotkey.Keys);
+            if (!hotkey.HasKeys)
+            {
+                throw new InvalidOperationException(
+                    $"settings.json has no known hotkey: {string.Join(", ", startup.Hotkey.Keys)}");
+            }
 
             gpu = new GpuDevices(startup.Display.Adapter, startup.Display.Output);
-            collector = new Collector(
+            session = new OnnxSession(gpu, modelPath);
+            frames = new DesktopCapture(gpu, session.Input.Width, session.Input.Height);
+            recorder = new DatasetRecorder(
                 gpu, Path.Combine(AppContext.BaseDirectory, "dataset"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
-            detector = new Detector(gpu, model.FilePath, collector);
+            detector = new Detector(gpu, session, frames);
+            Log.Info($"model {Path.GetFileName(modelPath)}");
             device = MakcuDevice.Connect();
             Log.Info($"MAKCU on {device.PortName} at {device.BaudRate} baud");
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            LiveSettings live = new(file, holdKey);
+            LiveSettings.Attach(file, hotkey);
             loop = new FrameLoop(
+                frames,
                 detector,
                 device,
-                holdKey.IsHeld,
-                live.ApplyLatest,
+                hotkey.IsHeld,
+                () => file.Current,
                 Stopwatch.GetTimestamp,
                 error =>
                 {
                     fault = error;
                     stopped.Set();
                 },
-                collector);
+                recorder);
 
             onCancel = (_, args) =>
             {
@@ -103,7 +117,7 @@ internal static class Program
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (MainWindow form = new(file, loop.LoopStatus, stopped, model.Directory))
+            using (MainWindow form = new(file, loop.LoopStatus, recorder, stopped, ModelFolder.Location))
             {
                 Application.Run(form);
             }
@@ -124,7 +138,9 @@ internal static class Program
 
             loop?.Stop();
             detector?.Dispose();
-            collector?.Dispose();
+            session?.Dispose();
+            frames?.Dispose();
+            recorder?.Dispose();
             gpu?.Dispose();
             device?.Dispose();
             file.Dispose();

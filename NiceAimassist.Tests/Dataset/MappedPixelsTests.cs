@@ -1,8 +1,8 @@
 using System.Buffers;
 using System.Runtime.InteropServices;
-using NiceAimassist.Collect;
+using NiceAimassist.Dataset;
 
-namespace NiceAimassist.Tests.Collect;
+namespace NiceAimassist.Tests.Dataset;
 
 public sealed class MappedPixelsTests : IDisposable
 {

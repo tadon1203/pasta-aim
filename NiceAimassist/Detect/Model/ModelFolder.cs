@@ -2,25 +2,23 @@ namespace NiceAimassist.Detect.Model;
 
 internal static class ModelFolder
 {
-    /// <summary>The model file and its folder. The settings window lists the models in that folder.</summary>
-    internal sealed record ModelLocation(string Directory, string FilePath);
+    /// <summary>The folder of the model files. The settings window lists the models in that folder.</summary>
+    internal static string Location { get; } = Path.Combine(AppContext.BaseDirectory, "models");
 
-    internal static ModelLocation Resolve(string? model)
+    /// <summary>The path of the model file with the given name.</summary>
+    internal static string Resolve(string? model)
     {
-        string directory = Path.Combine(AppContext.BaseDirectory, "models");
-        System.IO.Directory.CreateDirectory(directory);
-
         if (model is null)
         {
             throw new InvalidOperationException("no model is selected; set \"model\" in settings.json to a .onnx file name in models/");
         }
 
-        string path = Path.Combine(directory, model);
+        string path = Path.Combine(Location, model);
         if (!File.Exists(path))
         {
             throw new InvalidOperationException($"model file not found: {path}");
         }
 
-        return new ModelLocation(Path.GetDirectoryName(path) ?? directory, path);
+        return path;
     }
 }

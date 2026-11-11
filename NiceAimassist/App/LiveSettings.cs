@@ -1,35 +1,16 @@
-using NiceAimassist.Hold;
-using NiceAimassist.Shared.Logging;
+using NiceAimassist.Hotkey;
 using NiceAimassist.Settings;
+using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.App;
 
-/// <summary>
-/// Gives the loop the latest settings. <see cref="ApplyLatest"/> applies the log level and the hold keys when the snapshot changes.
-/// Only the loop thread calls <see cref="ApplyLatest"/>.
-/// </summary>
-internal sealed class LiveSettings
+/// <summary>Applies the settings that act outside the loop, such as the log level and the hotkeys, when the settings change.</summary>
+internal static class LiveSettings
 {
-    private readonly SettingsFile _file;
-    private readonly HoldKeySet _holdKeys;
-    private AppSettings? _applied;
-
-    public LiveSettings(SettingsFile file, HoldKeySet holdKeys)
-    {
-        _file = file;
-        _holdKeys = holdKeys;
-    }
-
-    public AppSettings ApplyLatest()
-    {
-        AppSettings settings = _file.Current;
-        if (!ReferenceEquals(settings, _applied))
+    public static void Attach(SettingsFile file, HotkeySet hotkeys) =>
+        file.Changed += settings =>
         {
-            _applied = settings;
             Log.Level = settings.Log.Level;
-            _holdKeys.Update(settings.Hold.Keys);
-        }
-
-        return settings;
-    }
+            hotkeys.Update(settings.Hotkey.Keys);
+        };
 }

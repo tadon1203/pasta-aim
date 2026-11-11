@@ -81,6 +81,37 @@ public sealed class SettingsFileTests : IDisposable
         Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 400));
     }
 
+    [Fact]
+    public void A_save_is_current_at_once_and_raises_one_change()
+    {
+        string path = Path.Combine(_directory, "settings.json");
+        SettingsFile file = NewFile(path);
+        List<AppSettings> changes = [];
+        file.Changed += changes.Add;
+
+        file.Save(file.Current with { Aim = file.Current.Aim with { SensitivityX = 250 } });
+
+        Assert.Equal(250, file.Current.Aim.SensitivityX);
+        Assert.Equal(250, AppSettings.Parse(File.ReadAllText(path)).Aim.SensitivityX);
+
+        // The watcher reads back the saved file. That read must not raise a second change.
+        Thread.Sleep(DebounceMilliseconds * 6);
+        Assert.Single(changes);
+    }
+
+    [Fact]
+    public void A_save_that_cannot_be_written_stays_current()
+    {
+        string path = Path.Combine(_directory, "settings.json");
+        SettingsFile file = NewFile(path);
+        File.Delete(path);
+        Directory.CreateDirectory(path);
+
+        file.Save(file.Current with { Aim = file.Current.Aim with { SensitivityX = 250 } });
+
+        Assert.Equal(250, file.Current.Aim.SensitivityX);
+    }
+
     private SettingsFile NewFile(string path)
     {
         SettingsFile file = new(path, DebounceMilliseconds);

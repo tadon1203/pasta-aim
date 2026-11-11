@@ -6,10 +6,10 @@ using NiceAimassist.Shared.Logging;
 namespace NiceAimassist.Loop;
 
 /// <summary>
-/// Counts what the held loop did. Once per second, it logs the counts and publishes the latency to
-/// <see cref="LoopStatus"/>. A "no movement" result can then be traced to its stage.
+/// Counts what the held loop did. Once per second, it logs the counts and passes the latency to
+/// <paramref name="publishLatency"/>. A "no movement" result can then be traced to its stage.
 /// </summary>
-internal sealed class LoopDiagnostics(Func<long> now, LoopStatus loopStatus)
+internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> publishLatency)
 {
     private StageTicks _sum;
     private StageTicks _max;
@@ -83,10 +83,11 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStatus loopStatus)
             return;
         }
 
-        LatencySnapshot latency = _frames == 0 ? LatencySnapshot.Empty : new(_sum.Divide(_frames), _max);
+        LatencySnapshot latency = LatencySnapshot.Empty;
         if (_frames > 0)
         {
-            loopStatus.SetLatency(latency);
+            latency = new LatencySnapshot(_sum.Divide(_frames), _max);
+            publishLatency(latency);
         }
 
         if (Log.IsEnabled(LogLevel.Debug))

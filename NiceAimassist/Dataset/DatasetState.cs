@@ -1,7 +1,7 @@
-namespace NiceAimassist.Collect;
+namespace NiceAimassist.Dataset;
 
 // The loop thread uses every member except ReportWriteError. The writer thread calls ReportWriteError only.
-internal sealed class CollectState
+internal sealed class DatasetState
 {
     private readonly Func<long> _now;
     private readonly long _ticksPerSecond;
@@ -10,9 +10,8 @@ internal sealed class CollectState
     private volatile bool _active;
     private volatile string? _lastError;
     private bool _failed;
-    private bool _pending;
 
-    public CollectState(Func<long> now, long ticksPerSecond)
+    public DatasetState(Func<long> now, long ticksPerSecond)
     {
         _now = now;
         _ticksPerSecond = ticksPerSecond;
@@ -21,22 +20,16 @@ internal sealed class CollectState
 
     public bool Active => _active;
 
-    public bool Pending => _pending;
-
     public string? LastError => _lastError;
 
-    public bool IsDue => _active && !_pending && _now() >= _next;
+    public bool IsDue => _active && _now() >= _next;
 
-    /// <summary>
-    /// Starts or stops collection. A failure stays latched until <paramref name="enabled"/> is false.
-    /// Stopping drops a copy that is not read yet.
-    /// </summary>
+    /// <summary>Starts or stops recording. A failure stays latched until <paramref name="enabled"/> is false.</summary>
     public void SetEnabled(bool enabled)
     {
         if (!enabled)
         {
             _active = false;
-            _pending = false;
             _failed = false;
             return;
         }
@@ -53,24 +46,18 @@ internal sealed class CollectState
 
     public void SetRate(int perSecond) => _interval = _ticksPerSecond / Math.Max(1, perSecond);
 
-    public void MarkPending()
-    {
-        _pending = true;
+    public void MarkRecorded() =>
         // A stall delays the next image. It never causes a burst.
         _next = _now() + _interval;
-    }
 
-    public void ClearPending() => _pending = false;
-
-    /// <summary>Stops collection and keeps the message until collection is disabled.</summary>
+    /// <summary>Stops recording and keeps the message until recording is disabled.</summary>
     public void Fail(string message)
     {
         _lastError = message;
         _active = false;
-        _pending = false;
         _failed = true;
     }
 
-    /// <summary>Keeps the message. Collection continues.</summary>
+    /// <summary>Keeps the message. Recording continues.</summary>
     public void ReportWriteError(string message) => _lastError = message;
 }

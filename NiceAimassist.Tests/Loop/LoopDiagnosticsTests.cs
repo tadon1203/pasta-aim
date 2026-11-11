@@ -33,7 +33,7 @@ public class LoopDiagnosticsTests
     {
         long clock = 0;
         LoopStatus status = new();
-        LoopDiagnostics diagnostics = new(() => clock, status);
+        LoopDiagnostics diagnostics = new(() => clock, status.SetLatency);
         DetectedFrame frame = new(0, 0, 0, null, 0f, default);
         AimResult move = new(AimStatus.Move, 0, 0);
 

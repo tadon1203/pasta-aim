@@ -11,7 +11,7 @@ using D3D12FenceFlags = Silk.NET.Direct3D12.FenceFlags;
 namespace NiceAimassist.Capture;
 
 // A frame that is not submitted to the Preprocessor is dropped. The next copy then waits only for the last submitted frame.
-public sealed unsafe partial class DesktopCapture : IDisposable
+public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
 {
     private const int DxgiAccessLost = unchecked((int)0x887A0026);
     private const int DxgiWaitTimeout = unchecked((int)0x887A0027);
@@ -113,20 +113,34 @@ public sealed unsafe partial class DesktopCapture : IDisposable
 
     internal ID3D12Resource* SharedResource => _sharedResource;
 
-    internal ID3D12Fence* CopyDoneFence => _copyDoneFence12;
+    public ID3D11Texture2D* DesktopTexture => _desktopTexture;
 
-    internal ID3D12Fence* ComputeDoneFence => _computeDoneFence12;
+    /// <summary>
+    /// Makes <paramref name="queue"/> wait for the GPU copy of the frame. Accepts only the newest frame, and only once.
+    /// Call <see cref="EndRead"/> after the work that reads the frame is submitted to the queue.
+    /// </summary>
+    internal void BeginRead(ID3D12CommandQueue* queue, CapturedFrame frame)
+    {
+        if (frame.Sequence != _sequence || frame.Sequence <= _submittedSequence)
+        {
+            throw new InvalidOperationException(
+                $"The frame {frame.Sequence} cannot be read: the newest captured frame is {_sequence} and the last read is {_submittedSequence}.");
+        }
 
-    /// <summary>The desktop image of the held frame. It is invalid after the next <see cref="TryAcquire"/>.</summary>
-    internal ID3D11Texture2D* DesktopTexture => _desktopTexture;
+        ComInterop.Check(queue->Wait(_copyDoneFence12, frame.Sequence), "Wait for the captured frame");
+    }
 
-    internal ulong Sequence => _sequence;
+    /// <summary>Tells the next capture copy to wait until <paramref name="queue"/> finished the reads of the frame.</summary>
+    internal void EndRead(ID3D12CommandQueue* queue, CapturedFrame frame)
+    {
+        ComInterop.Check(queue->Signal(_computeDoneFence12, frame.Sequence), "Signal the compute done fence");
+        _submittedSequence = frame.Sequence;
+    }
 
-    internal ulong SubmittedSequence => _submittedSequence;
+    /// <summary>Blocks until the queue finished every read that <see cref="EndRead"/> announced.</summary>
+    internal void WaitReadsDone() => FenceEvent.WaitOnce(_computeDoneFence12, _submittedSequence);
 
-    internal void MarkSubmitted(ulong sequence) => _submittedSequence = sequence;
-
-    internal CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
+    public CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         frame = default;

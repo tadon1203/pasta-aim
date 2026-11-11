@@ -24,20 +24,20 @@ settings.json        created with the defaults on first start when missing
 models/
   {model}.onnx
 logs/                created on start; the last 10 log files are kept
-dataset/             created when collection saves its first sample
+dataset/             created when recording saves its first sample
 ```
 
 1. Build or publish the app (see [Development](#development)).
 2. Create `models/` next to the executable and put one `.onnx` model in it.
 3. Set `detect.model` in `settings.json` to the model's file name, for example `"detect": { "model": "target.onnx" }`.
-4. Start the app. Hold the hold key (default `F8`) to aim.
+4. Start the app. Hold the hotkey (default `F8`) to aim.
 
 Settings are re-read when `settings.json` changes. `detect.model`, `display.adapter` and `display.output` take effect after a restart.
 
 ### Controls
 
-- **Hold key** (`hold.keys`, default `F8`): aim while any listed key is held.
-- **Collection**: saves training samples while a hold key is down. Off when `collect.enabled` is `false`.
+- **Hotkey** (`hotkey.keys`, default `F8`): aim while any listed key is held.
+- **Dataset**: saves training samples while a hotkey is down. Off when `dataset.enabled` is `false`.
 
 ### Settings
 
@@ -55,8 +55,8 @@ The file has one object per feature. A missing section takes its defaults.
     "velocity_smoothing": 50
   },
   "mouse": { "interpolation": "auto" },
-  "hold": { "keys": ["F8"] },
-  "collect": { "enabled": true, "size": 640, "rate": 2 },
+  "hotkey": { "keys": ["F8"] },
+  "dataset": { "enabled": true, "size": 640, "rate": 2 },
   "log": { "level": "Info" }
 }
 ```
@@ -73,15 +73,15 @@ The file has one object per feature. A missing section takes its defaults.
 | `aim.max_delta` | 0 to 32767 | `512` | Cap on the length of one move. `0` is no cap. |
 | `aim.velocity_smoothing` | 0 to 95 | `50` | Smoothing of the target velocity estimate. |
 | `mouse.interpolation` | `"auto"` or 0 to 100 | `"auto"` | MAKCU move smoothing: its Auto mode or a fixed percent. |
-| `hold.keys` | list of key names | `["F8"]` | Keys that enable aiming. |
-| `collect.enabled` | boolean | `true` | Whether collection runs while a hold key is down. |
-| `collect.size` | 64 to 4096 | `640` | Side of the centered square saved as the training image, in pixels. |
-| `collect.rate` | 1 to 2 | `2` | Shots saved per second while collecting. |
+| `hotkey.keys` | list of key names | `["F8"]` | Keys that enable aiming. |
+| `dataset.enabled` | boolean | `true` | Whether recording runs while a hotkey is down. |
+| `dataset.size` | 64 to 4096 | `640` | Side of the centered square saved as the training image, in pixels. |
+| `dataset.rate` | 1 to 2 | `2` | Shots saved per second while recording. |
 | `log.level` | `Error`, `Warn`, `Info`, `Debug`, `Trace` | `Info` | Most detailed level written to the log file. |
 
 Values outside a range are clamped. Unknown fields are ignored. A file that cannot be parsed gives the defaults, and the file is left unchanged. A settings file from an earlier version is not migrated. Its values are lost, and the defaults apply.
 
-Key names are case-insensitive. Examples: `F8`, `KeyA`, `A`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`, `xinput:lt`. The full list is in `NiceAimassist/Hold/HoldKey.cs`.
+Key names are case-insensitive. Examples: `F8`, `KeyA`, `A`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`, `xinput:lt`. The full list is in `NiceAimassist/Hotkey/KeyInput.cs`.
 
 ### Model
 
@@ -121,4 +121,4 @@ The checks to run before a commit are in [CLAUDE.md](./CLAUDE.md#commands).
 - Capture: DXGI Desktop Duplication through Silk.NET; the center square is copied into a shared D3D12 texture
 - Inference: ONNX Runtime with the DirectML execution provider
 - Output: MAKCU over USB serial (`System.IO.Ports`)
-- Controller hold keys: XInput
+- Controller hotkeys: XInput

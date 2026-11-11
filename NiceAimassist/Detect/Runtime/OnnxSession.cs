@@ -37,15 +37,18 @@ internal sealed unsafe class OnnxSession : IDisposable
         {
             _env = OrtApi.CreateEnv("NiceAimassist");
             _dmlDevice = DirectMl.CreateDevice(gpu.Device);
-            try
+            if (TryCreateSession(modelPath, directMlOnly: true, out _session, out string failure))
             {
-                _session = CreateSession(modelPath, strict: true);
                 Log.Info("every model node runs on DirectML; graph capture is requested");
             }
-            catch (InvalidOperationException error)
+            else
             {
-                Log.Warn($"the model has nodes that DirectML cannot run; graph capture is off: {error.Message}");
-                _session = CreateSession(modelPath, strict: false);
+                Log.Warn($"the model did not load with DirectML only; graph capture is off: {failure}");
+                TryCreateSession(modelPath, directMlOnly: false, out _session, out failure);
+                if (_session == 0)
+                {
+                    throw new InvalidOperationException($"the model did not load: {failure}");
+                }
             }
 
             TensorIo input = OrtApi.GetTensorIo(_session, input: true, 0);
@@ -136,7 +139,8 @@ internal sealed unsafe class OnnxSession : IDisposable
         ComInterop.Release(ref _inputResource);
     }
 
-    private nint CreateSession(string modelPath, bool strict)
+    // Only the session creation can fail on the model. A failure of the option calls is a fault of the app, so it throws.
+    private bool TryCreateSession(string modelPath, bool directMlOnly, out nint session, out string failure)
     {
         nint options = OrtApi.CreateSessionOptions();
         try
@@ -146,14 +150,25 @@ internal sealed unsafe class OnnxSession : IDisposable
             OrtApi.SetIntraOpThreads(options, 1);
             OrtApi.AddSessionConfig(options, "session.intra_op.allow_spinning", "0");
             OrtApi.AddSessionConfig(options, "session.inter_op.allow_spinning", "0");
-            if (strict)
+            if (directMlOnly)
             {
                 OrtApi.AddSessionConfig(options, "session.disable_cpu_ep_fallback", "1");
                 OrtApi.AddSessionConfig(options, "ep.dml.enable_graph_capture", "1");
             }
 
             OrtApi.AppendDirectMl1(options, (nint)_dmlDevice, (nint)_gpu.ComputeQueue);
-            return OrtApi.CreateSession(_env, modelPath, options);
+            try
+            {
+                session = OrtApi.CreateSession(_env, modelPath, options);
+                failure = string.Empty;
+                return true;
+            }
+            catch (InvalidOperationException error)
+            {
+                session = 0;
+                failure = error.Message;
+                return false;
+            }
         }
         finally
         {

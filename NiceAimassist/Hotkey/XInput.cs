@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Hold;
+namespace NiceAimassist.Hotkey;
 
 /// Reads the first connected XInput controller. A disconnected slot is slow to query. The slots
 /// are scanned again only once a second while no controller is connected.

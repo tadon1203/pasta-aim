@@ -5,7 +5,7 @@ namespace NiceAimassist.Settings;
 
 /// <summary>
 /// Reads the settings file. Re-reads it whenever it changes.
-/// Readers take <see cref="Current"/> without a lock. A gate serializes the reloads.
+/// Readers take <see cref="Current"/> without a lock. A gate serializes the changes.
 /// </summary>
 public sealed class SettingsFile : IDisposable
 {
@@ -14,6 +14,7 @@ public sealed class SettingsFile : IDisposable
     private readonly object _gate = new();
     private readonly Timer _timer;
     private readonly FileSystemWatcher _watcher;
+    private readonly AppSettings _startup;
     private AppSettings _current;
     private bool _disposed;
 
@@ -27,6 +28,7 @@ public sealed class SettingsFile : IDisposable
         _path = Path.GetFullPath(path);
         _debounce = TimeSpan.FromMilliseconds(debounceMilliseconds);
         _current = ReadOrCreate();
+        _startup = _current;
         _timer = new Timer(_ => Reload(), null, Timeout.Infinite, Timeout.Infinite);
         _watcher = new FileSystemWatcher(Path.GetDirectoryName(_path)!, Path.GetFileName(_path))
         {
@@ -39,22 +41,27 @@ public sealed class SettingsFile : IDisposable
         _watcher.EnableRaisingEvents = true;
     }
 
+    /// <summary>Raised on the thread that changed the settings, after <see cref="Current"/> holds the new value.</summary>
+    public event Action<AppSettings>? Changed;
+
     /// <summary>settings.json next to the executable.</summary>
     public static string DefaultPath => Path.Combine(AppContext.BaseDirectory, "settings.json");
 
     /// <summary>The latest settings. Safe to call from any thread.</summary>
     public AppSettings Current => Volatile.Read(ref _current);
 
-    /// <summary>Writes the settings to the file. The watcher then reloads them into <see cref="Current"/>.</summary>
+    /// <summary>Makes the settings current at once. Then writes them to the file.</summary>
     public void Save(AppSettings settings)
     {
+        AppSettings clamped = settings.Clamped();
+        Publish(clamped);
         try
         {
-            File.WriteAllText(_path, settings.Clamped().ToJson());
+            File.WriteAllText(_path, clamped.ToJson());
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            Log.Warn($"settings could not be written to {_path}: {error.Message}");
+            Log.Warn($"settings could not be written to {_path}; they stay in effect until the app closes: {error.Message}");
         }
     }
 
@@ -116,32 +123,47 @@ public sealed class SettingsFile : IDisposable
 
     private void Reload()
     {
-        lock (_gate)
+        AppSettings updated;
+        try
         {
-            if (_disposed)
-            {
-                return;
-            }
+            updated = AppSettings.Parse(File.ReadAllText(_path));
+        }
+        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"settings reload failed; keeping the previous settings: {error.Message}");
+            return;
+        }
 
-            AppSettings updated;
-            try
-            {
-                updated = AppSettings.Parse(File.ReadAllText(_path));
-            }
-            catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
-            {
-                Log.Warn($"settings reload failed; keeping the previous settings: {error.Message}");
-                return;
-            }
-
-            AppSettings previous = _current;
-            if (updated.Detect.Model != previous.Detect.Model || updated.Display != previous.Display)
-            {
-                Log.Warn("model and display take effect after a restart");
-            }
-
-            Volatile.Write(ref _current, updated);
+        if (Publish(updated))
+        {
             Log.Info("settings reloaded");
         }
     }
+
+    // The file watcher reads back what Save wrote. That read changes nothing and raises no event.
+    private bool Publish(AppSettings updated)
+    {
+        AppSettings previous;
+        lock (_gate)
+        {
+            previous = _current;
+            if (_disposed || updated == previous)
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _current, updated);
+        }
+
+        if (RestartValuesDiffer(previous, updated) && RestartValuesDiffer(_startup, updated))
+        {
+            Log.Warn("model and display take effect after a restart");
+        }
+
+        Changed?.Invoke(updated);
+        return true;
+    }
+
+    private static bool RestartValuesDiffer(AppSettings first, AppSettings second) =>
+        first.Detect.Model != second.Detect.Model || first.Display != second.Display;
 }

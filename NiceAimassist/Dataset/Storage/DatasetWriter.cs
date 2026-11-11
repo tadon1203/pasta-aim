@@ -2,10 +2,10 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Collect;
+namespace NiceAimassist.Dataset.Storage;
 
 /// <summary>Writes one training sample. The sample is an Ultralytics-style crop and a full-display original. Both are JPEG files.</summary>
-public sealed class DatasetWriter
+internal sealed class DatasetWriter
 {
     public const int JpegQuality = 95;
 

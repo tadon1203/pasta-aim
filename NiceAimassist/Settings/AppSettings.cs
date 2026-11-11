@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NiceAimassist.Aim;
-using NiceAimassist.Collect;
+using NiceAimassist.Dataset;
 using NiceAimassist.Detect;
 using NiceAimassist.Shared.Gpu;
-using NiceAimassist.Hold;
+using NiceAimassist.Hotkey;
 using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
 
@@ -30,11 +30,11 @@ public sealed record AppSettings
     [JsonPropertyName("mouse")]
     public MouseSettings Mouse { get; init; } = new();
 
-    [JsonPropertyName("hold")]
-    public HoldSettings Hold { get; init; } = new();
+    [JsonPropertyName("hotkey")]
+    public HotkeySettings Hotkey { get; init; } = new();
 
-    [JsonPropertyName("collect")]
-    public CollectSettings Collect { get; init; } = new();
+    [JsonPropertyName("dataset")]
+    public DatasetSettings Dataset { get; init; } = new();
 
     [JsonPropertyName("log")]
     public LogSettings Log { get; init; } = new();
@@ -54,8 +54,8 @@ public sealed record AppSettings
         Detect = Detect.Clamped(),
         Aim = Aim.Clamped(),
         Mouse = Mouse.Clamped(),
-        Hold = Hold.Clamped(),
-        Collect = Collect.Clamped(),
+        Hotkey = Hotkey.Clamped(),
+        Dataset = Dataset.Clamped(),
         Log = Log.Clamped(),
     };
 

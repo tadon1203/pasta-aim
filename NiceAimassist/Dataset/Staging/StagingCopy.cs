@@ -4,7 +4,7 @@ using Silk.NET.Direct3D11;
 using Silk.NET.DXGI;
 using D3D11Box = Silk.NET.Direct3D11.Box;
 
-namespace NiceAimassist.Collect;
+namespace NiceAimassist.Dataset.Staging;
 
 // Every method except MarkCopied runs on the loop thread. That thread owns the immediate context.
 internal sealed unsafe class StagingCopy : IDisposable
@@ -21,26 +21,41 @@ internal sealed unsafe class StagingCopy : IDisposable
 
     public bool CanCopy => _gate.CanCopy;
 
+    public bool IsPending => _gate.IsPending;
+
     /// <summary>Copies the centered square of <paramref name="size"/> px and the full desktop into the staging textures.</summary>
     public void Copy(ID3D11Texture2D* desktop, int size)
     {
-        if (!_gate.CanCopy)
+        _gate.BeginCopy();
+        try
         {
-            throw new InvalidOperationException("Copy the desktop: the staging textures are still mapped");
+            Texture2DDesc desc;
+            desktop->GetDesc(&desc);
+            (_, _, int side) = CenterCrop.Square((int)desc.Width, (int)desc.Height, size);
+            EnsureStaging(desc, side);
+
+            ID3D11DeviceContext* context = _gpu.CaptureContext;
+            D3D11Box box = CenterCrop.Box((int)desc.Width, (int)desc.Height, side, side);
+            context->CopySubresourceRegion((ID3D11Resource*)_stagingCrop, 0, 0, 0, 0, (ID3D11Resource*)desktop, 0, &box);
+            // The full copy goes last. When it is readable, the crop copy is readable too.
+            context->CopyResource((ID3D11Resource*)_stagingFull, (ID3D11Resource*)desktop);
+            // Without a flush, a DoNotWait map can report "still drawing" until the driver flushes.
+            context->Flush();
         }
+        catch
+        {
+            _gate.CancelCopy();
+            throw;
+        }
+    }
 
-        Texture2DDesc desc;
-        desktop->GetDesc(&desc);
-        (_, _, int side) = CenterCrop.Square((int)desc.Width, (int)desc.Height, size);
-        EnsureStaging(desc, side);
-
-        ID3D11DeviceContext* context = _gpu.CaptureContext;
-        D3D11Box box = CenterCrop.Box((int)desc.Width, (int)desc.Height, side, side);
-        context->CopySubresourceRegion((ID3D11Resource*)_stagingCrop, 0, 0, 0, 0, (ID3D11Resource*)desktop, 0, &box);
-        // The full copy goes last. When it is readable, the crop copy is readable too.
-        context->CopyResource((ID3D11Resource*)_stagingFull, (ID3D11Resource*)desktop);
-        // Without a flush, a DoNotWait map can report "still drawing" until the driver flushes.
-        context->Flush();
+    /// <summary>Forgets a GPU copy that is not mapped yet. Does nothing otherwise.</summary>
+    public void DropPending()
+    {
+        if (_gate.IsPending)
+        {
+            _gate.CancelCopy();
+        }
     }
 
     /// <summary>
@@ -51,9 +66,9 @@ internal sealed unsafe class StagingCopy : IDisposable
     {
         full = default;
         crop = default;
-        if (!_gate.CanCopy)
+        if (!_gate.IsPending)
         {
-            throw new InvalidOperationException("Map the staging textures: they are still mapped");
+            throw new InvalidOperationException("Map the staging textures: no copy is pending");
         }
 
         ID3D11DeviceContext* context = _gpu.CaptureContext;
@@ -107,7 +122,7 @@ internal sealed unsafe class StagingCopy : IDisposable
     // Stopping the writer comes first. The writer must not read memory that this call unmaps.
     public void Dispose()
     {
-        if (!_gate.CanCopy)
+        if (_gate.IsMapped)
         {
             UnmapBoth();
         }

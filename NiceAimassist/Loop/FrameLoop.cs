@@ -1,7 +1,7 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
 using NiceAimassist.Aim;
-using NiceAimassist.Collect;
+using NiceAimassist.Dataset;
 using NiceAimassist.Settings;
 using NiceAimassist.Capture;
 using NiceAimassist.Detect;
@@ -14,42 +14,44 @@ namespace NiceAimassist.Loop;
 public sealed partial class FrameLoop
 {
     private const int IdleSleepMs = 1;
+    private const int AcquireTimeoutMs = 100;
 
+    private readonly IFrameSource _frames;
     private readonly IDetector _detector;
     private readonly IMouse _mouse;
     private readonly Func<bool> _isHeld;
     private readonly Func<AppSettings> _currentSettings;
     private readonly Func<long> _now;
     private readonly Action<Exception> _onFault;
-    private readonly ICollectControl? _collector;
+    private readonly IDatasetControl? _recorder;
     private readonly AimController _aim = new();
     private bool _wasHeld;
     private readonly LoopDiagnostics _diagnostics;
     private readonly LoopStatus _loopStatus = new();
     private volatile bool _running;
     private Thread? _thread;
-    private bool _interpolationSent;
-    private Interpolation _sentInterpolation;
 
     /// <param name="now">Source of the Stopwatch timestamps. Usually <c>Stopwatch.GetTimestamp</c>.</param>
-    /// <param name="onFault">Called on the loop thread when the detector or the mouse throws. The loop ends after the call.</param>
+    /// <param name="onFault">Called on the loop thread when the frame source, the detector, or the mouse throws. The loop ends after the call.</param>
     public FrameLoop(
+        IFrameSource frames,
         IDetector detector,
         IMouse mouse,
         Func<bool> isHeld,
         Func<AppSettings> currentSettings,
         Func<long> now,
         Action<Exception> onFault,
-        ICollectControl? collector = null)
+        IDatasetControl? recorder = null)
     {
-        _collector = collector;
+        _recorder = recorder;
+        _frames = frames ?? throw new ArgumentNullException(nameof(frames));
         _detector = detector ?? throw new ArgumentNullException(nameof(detector));
         _mouse = mouse ?? throw new ArgumentNullException(nameof(mouse));
         _isHeld = isHeld ?? throw new ArgumentNullException(nameof(isHeld));
         _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
         _now = now ?? throw new ArgumentNullException(nameof(now));
         _onFault = onFault ?? throw new ArgumentNullException(nameof(onFault));
-        _diagnostics = new LoopDiagnostics(_now, _loopStatus);
+        _diagnostics = new LoopDiagnostics(_now, _loopStatus.SetLatency);
     }
 
     public LoopStatus LoopStatus => _loopStatus;
@@ -112,12 +114,12 @@ public sealed partial class FrameLoop
         {
             AppSettings settings = _currentSettings();
             bool held = _isHeld();
-            UpdateCollector(settings, held);
+            _recorder?.Update(settings.Dataset, held);
             if (!held)
             {
                 if (_wasHeld)
                 {
-                    Log.Debug("hold key released");
+                    Log.Debug("hotkey released");
                     _wasHeld = false;
                 }
 
@@ -129,14 +131,14 @@ public sealed partial class FrameLoop
 
             if (!_wasHeld)
             {
-                Log.Debug($"hold key pressed; confidence={settings.Detect.Confidence}% input={_detector.InputWidth}x{_detector.InputHeight}");
+                Log.Debug($"hotkey pressed; confidence={settings.Detect.Confidence}% input={_detector.InputWidth}x{_detector.InputHeight}");
                 _diagnostics.Restart();
                 _wasHeld = true;
             }
 
             _loopStatus.SetHeld(true);
-            SendInterpolation(settings.Mouse.Interpolation);
-            CaptureStatus status = _detector.TryDetect(settings.Detect.Confidence / 100f, out DetectedFrame frame);
+            _mouse.SetInterpolation(settings.Mouse.Interpolation);
+            CaptureStatus status = _frames.TryAcquire(AcquireTimeoutMs, out CapturedFrame captured);
             if (status == CaptureStatus.Timeout)
             {
                 _diagnostics.RecordTimeout();
@@ -149,6 +151,7 @@ public sealed partial class FrameLoop
                 continue;
             }
 
+            DetectedFrame frame = _detector.Detect(captured, settings.Detect.Confidence / 100f);
             AimResult aim = _aim.Update(
                 frame.Target,
                 frame.DesktopTimestamp,
@@ -167,6 +170,12 @@ public sealed partial class FrameLoop
             FrameTimings timings = new(frame.DesktopTimestamp, frame.CapturedTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
             _loopStatus.RecordFrame();
             _diagnostics.RecordFrame(frame, timings, aim, sent);
+
+            // The recording comes last. It must not delay the move. The frame stays held until the next acquire.
+            if (frame.Target is not null && _recorder is { IsDue: true })
+            {
+                _recorder.Record(_frames);
+            }
         }
     }
 
@@ -177,27 +186,4 @@ public sealed partial class FrameLoop
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool AvRevertMmThreadCharacteristics(nint handle);
 
-    // Collection runs only while the hold key is down. It uses the same frames as the aim.
-    private void UpdateCollector(AppSettings settings, bool held)
-    {
-        if (_collector is null)
-        {
-            return;
-        }
-
-        _loopStatus.Collect = _collector.Update(settings.Collect, held);
-    }
-
-    private void SendInterpolation(Interpolation interpolation)
-    {
-        if (_interpolationSent && interpolation == _sentInterpolation)
-        {
-            return;
-        }
-
-        _mouse.SetInterpolation(interpolation);
-        Log.Debug($"interpolation set to {(interpolation.FixedPercent is { } percent ? percent + "%" : "auto")}");
-        _sentInterpolation = interpolation;
-        _interpolationSent = true;
-    }
 }

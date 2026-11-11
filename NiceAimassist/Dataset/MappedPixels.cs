@@ -1,10 +1,10 @@
 using System.Buffers;
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Collect;
+namespace NiceAimassist.Dataset;
 
 /// <summary>Mapped staging memory. It stays valid until the texture is unmapped.</summary>
-public readonly record struct MappedPixels(nint Data, int RowPitch, int Width, int Height)
+internal readonly record struct MappedPixels(nint Data, int RowPitch, int Width, int Height)
 {
     /// <summary>Copies the rows into a pooled array. The row pitch can be longer than one row.</summary>
     public BgraImage CopyToPooled()

@@ -1,6 +1,7 @@
-using NiceAimassist.Collect;
+using NiceAimassist.Dataset;
+using NiceAimassist.Dataset.Storage;
 
-namespace NiceAimassist.Tests.Collect;
+namespace NiceAimassist.Tests.Dataset.Storage;
 
 public sealed class SampleQueueTests
 {

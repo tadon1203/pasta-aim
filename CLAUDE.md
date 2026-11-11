@@ -30,17 +30,20 @@ Read a document only when its trigger applies.
 Each top-level folder in `NiceAimassist/` is a feature, with two exceptions: `Shared/` and the two layers above the features.
 
 ```text
-App → Loop → Capture, Detect, Aim, Collect, Hold, Mouse → Shared
+App → Loop → Capture, Detect, Aim, Dataset, Hotkey, Mouse → Shared
 Settings → the settings type of each feature
+Detect, Dataset → Capture
 ```
 
 - A feature does not use the internals of another feature. A dependency points to the right in the diagram.
+- `Loop` owns the order of one frame: acquire, detect, aim, move, record. A feature does not call another feature to start a side effect. Example: `Detector` does not call `DatasetRecorder`.
 - `Shared/` (`Gpu`, `Logging`) does not depend on a feature.
-- `Settings/` and `App/` are layers above the features. They collect the features.
+- `Settings/` and `App/` are layers above the features. They combine the features.
 - Put a subfolder in one feature only when the folder has many files with different roles. Use at most two levels. Example: `Detect/Runtime`, `Mouse/Makcu`.
 - Keep the namespace equal to the folder path.
 - Make a type in a subfolder `internal` when no other feature uses it.
-- A feature can own an interface that another feature implements. Example: `Detect/IFrameCollector`, which `Collect` implements.
+- A feature can own an interface that another feature implements. Example: `Capture/IFrameSource`, which `DesktopCapture` implements and `Loop` and `Dataset` use.
+- A setting that changes while the app runs flows one way: the settings window or the file changes `SettingsFile.Current`, and `SettingsFile.Changed` tells the listeners. Do not write the file to pass a change inside the app.
 - Put a test in the folder that matches the folder of the type under test.
 
 ### Rules

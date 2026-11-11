@@ -56,10 +56,10 @@ internal sealed unsafe class Preprocessor : IDisposable
     private ID3D12DescriptorHeap* _heap;
     private ID3D12CommandAllocator* _allocator;
     private ID3D12GraphicsCommandList* _list;
-    private ID3D12Resource* _destination;
     private bool _disposed;
 
-    internal Preprocessor(GpuDevices gpu, DesktopCapture frames, TensorPrecision precision, GpuTimer timer)
+    // The destination must stay alive, in the unordered access state, for the life of this object.
+    internal Preprocessor(GpuDevices gpu, DesktopCapture frames, TensorPrecision precision, ID3D12Resource* destination, GpuTimer timer)
     {
         _gpu = gpu;
         _frames = frames;
@@ -122,7 +122,7 @@ internal sealed unsafe class Preprocessor : IDisposable
                     ComInterop.IidOf<ID3D12GraphicsCommandList>(), (void**)&list),
                 "CreateCommandList");
             _list = list;
-            ComInterop.Check(_list->Close(), "Close the preprocess command list");
+            Record(destination);
         }
         catch
         {
@@ -131,27 +131,13 @@ internal sealed unsafe class Preprocessor : IDisposable
         }
     }
 
-    // The guard rejects a stale frame. Only the newest captured frame can be submitted, and only once.
-    internal void Submit(CapturedFrame frame, ID3D12Resource* destination)
+    internal void Submit(CapturedFrame frame)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        ulong sequence = frame.Sequence;
-        if (sequence != _frames.Sequence || sequence <= _frames.SubmittedSequence)
-        {
-            throw new InvalidOperationException(
-                $"The frame {sequence} cannot be submitted: the newest captured frame is {_frames.Sequence} and the last submitted is {_frames.SubmittedSequence}.");
-        }
-
-        if (_destination == null || destination != _destination)
-        {
-            Bind(destination);
-        }
-
-        ComInterop.Check(_queue->Wait(_frames.CopyDoneFence, sequence), "Wait for the captured frame");
+        _frames.BeginRead(_queue, frame);
         ID3D12CommandList* list = (ID3D12CommandList*)_list;
         _queue->ExecuteCommandLists(1, &list);
-        ComInterop.Check(_queue->Signal(_frames.ComputeDoneFence, sequence), "Signal the compute done fence");
-        _frames.MarkSubmitted(sequence);
+        _frames.EndRead(_queue, frame);
     }
 
     public void Dispose()
@@ -163,7 +149,7 @@ internal sealed unsafe class Preprocessor : IDisposable
 
         _disposed = true;
         // The queue can still read the source and the descriptor heap. Dispose this object before its DesktopCapture.
-        FenceEvent.WaitOnce(_frames.ComputeDoneFence, _frames.SubmittedSequence);
+        _frames.WaitReadsDone();
         ReleaseAll();
     }
 
@@ -174,10 +160,10 @@ internal sealed unsafe class Preprocessor : IDisposable
         ComInterop.Release(ref _heap);
         ComInterop.Release(ref _pipeline);
         ComInterop.Release(ref _rootSignature);
-        _destination = null;
     }
 
-    private void Bind(ID3D12Resource* destination)
+    // The list stays recorded. Every Submit runs it again.
+    private void Record(ID3D12Resource* destination)
     {
         ulong required = (ulong)_elementCount * _elementBytes;
         if (destination->GetDesc().Width < required)
@@ -186,10 +172,6 @@ internal sealed unsafe class Preprocessor : IDisposable
                 $"The destination holds {destination->GetDesc().Width} bytes; the tensor needs {required}.",
                 nameof(destination));
         }
-
-        // The recorded list, the allocator, and the descriptor heap are reused. The GPU must finish them first.
-        FenceEvent.WaitOnce(_frames.ComputeDoneFence, _frames.SubmittedSequence);
-        ComInterop.Check(_allocator->Reset(), "Reset the preprocess allocator");
 
         UnorderedAccessViewDesc uav = new() { Format = _format, ViewDimension = UavDimension.Buffer };
         uav.Anonymous.Buffer = new BufferUav
@@ -201,7 +183,6 @@ internal sealed unsafe class Preprocessor : IDisposable
         };
         _device->CreateUnorderedAccessView(destination, null, &uav, _uavCpu);
 
-        ComInterop.Check(_list->Reset(_allocator, _pipeline), "Reset the preprocess command list");
         _timer.RecordStart(_list);
         ResourceBarrier toRead = D3D12Barrier.Transition(_source, ResourceStates.Common, ResourceStates.NonPixelShaderResource);
         _list->ResourceBarrier(1, &toRead);
@@ -222,8 +203,6 @@ internal sealed unsafe class Preprocessor : IDisposable
         ResourceBarrier toCommon = D3D12Barrier.Transition(_source, ResourceStates.NonPixelShaderResource, ResourceStates.Common);
         _list->ResourceBarrier(1, &toCommon);
         ComInterop.Check(_list->Close(), "Close the preprocess command list");
-
-        _destination = destination;
     }
 
     private ID3D12RootSignature* CreateRootSignature()

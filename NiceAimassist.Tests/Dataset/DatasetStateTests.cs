@@ -1,15 +1,15 @@
-using NiceAimassist.Collect;
+using NiceAimassist.Dataset;
 
-namespace NiceAimassist.Tests.Collect;
+namespace NiceAimassist.Tests.Dataset;
 
-public sealed class CollectStateTests
+public sealed class DatasetStateTests
 {
-    private static CollectState NewState(Func<long> now) => new(now, ticksPerSecond: 1000);
+    private static DatasetState NewState(Func<long> now) => new(now, ticksPerSecond: 1000);
 
     [Fact]
-    public void A_failure_stays_latched_until_collection_is_disabled()
+    public void A_failure_stays_latched_until_recording_is_disabled()
     {
-        CollectState state = NewState(() => 0);
+        DatasetState state = NewState(() => 0);
         state.SetEnabled(true);
         state.Fail("the duplication stopped");
 
@@ -24,24 +24,24 @@ public sealed class CollectStateTests
     }
 
     [Fact]
-    public void Disabling_clears_a_pending_copy()
+    public void Enabling_again_makes_the_next_image_due_at_once()
     {
-        CollectState state = NewState(() => 0);
+        DatasetState state = NewState(() => 0);
         state.SetEnabled(true);
-        state.MarkPending();
+        state.MarkRecorded();
         Assert.False(state.IsDue);
 
         state.SetEnabled(false);
+        Assert.False(state.IsDue);
 
-        Assert.False(state.Pending);
         state.SetEnabled(true);
         Assert.True(state.IsDue);
     }
 
     [Fact]
-    public void A_write_error_is_kept_and_collection_continues()
+    public void A_write_error_is_kept_and_recording_continues()
     {
-        CollectState state = NewState(() => 0);
+        DatasetState state = NewState(() => 0);
         state.SetEnabled(true);
 
         state.ReportWriteError("the disk is full");
@@ -54,19 +54,17 @@ public sealed class CollectStateTests
     public void A_stall_delays_the_next_image_without_a_burst()
     {
         long now = 0;
-        CollectState state = new(() => now, ticksPerSecond: 1000);
+        DatasetState state = new(() => now, ticksPerSecond: 1000);
         state.SetRate(2);
         state.SetEnabled(true);
 
         Assert.True(state.IsDue);
-        state.MarkPending();
-        state.ClearPending();
+        state.MarkRecorded();
         Assert.False(state.IsDue);
 
         now = 10_000;
         Assert.True(state.IsDue);
-        state.MarkPending();
-        state.ClearPending();
+        state.MarkRecorded();
         Assert.False(state.IsDue);
 
         now += 499;

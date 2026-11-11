@@ -1,29 +1,29 @@
 using System.Buffers;
 using NiceAimassist.Capture;
-using NiceAimassist.Detect;
+using NiceAimassist.Dataset.Staging;
+using NiceAimassist.Dataset.Storage;
 using NiceAimassist.Shared.Gpu;
-using Silk.NET.Direct3D11;
 
-namespace NiceAimassist.Collect;
+namespace NiceAimassist.Dataset;
 
 /// <summary>
 /// Copies the desktop into staging textures, maps them, and hands them to the writer thread.
-/// Every method except the writer callbacks runs on the loop thread. The loop thread never waits on the GPU.
+/// Every method except <see cref="Status"/> and the writer callbacks runs on the loop thread. The loop thread never waits on the GPU.
 /// </summary>
-public sealed unsafe class Collector : ICollectControl, IFrameCollector, IDisposable
+public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
 {
-    private readonly CollectState _state;
+    private readonly DatasetState _state;
     private readonly StagingCopy _copy;
     private readonly SampleQueue _queue;
     private readonly DatasetWriter _dataset;
-    private int _size = CollectSettings.DefaultSize;
+    private int _size = DatasetSettings.DefaultSize;
     private string _pendingFileName = string.Empty;
     private bool _disposed;
 
-    public Collector(GpuDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
+    public DatasetRecorder(GpuDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
     {
         _dataset = new DatasetWriter(datasetRoot);
-        _state = new CollectState(now, ticksPerSecond);
+        _state = new DatasetState(now, ticksPerSecond);
         _copy = new StagingCopy(gpu);
         _queue = new SampleQueue(Write, error => _state.ReportWriteError(error.Message));
     }
@@ -31,23 +31,35 @@ public sealed unsafe class Collector : ICollectControl, IFrameCollector, IDispos
     // While the staging textures are mapped, a new GPU copy would write memory that the writer still reads.
     public bool IsDue => _state.IsDue && _copy.CanCopy;
 
-    public CollectStatus Update(CollectSettings settings, bool held)
+    public DatasetStatus Status => new(_state.Active, _queue.Saved, _state.LastError);
+
+    public void Update(DatasetSettings settings, bool held)
     {
         _state.SetEnabled(held && settings.Enabled);
         _size = settings.Size;
         _state.SetRate(settings.Rate);
+        if (!_state.Active)
+        {
+            _copy.DropPending();
+        }
+
         _copy.ReleaseIfCopied();
         SubmitReadySample();
-        return new CollectStatus(_state.Active, _queue.Saved, _state.LastError);
     }
 
-    public void Collect(ID3D11Texture2D* desktop)
+    public void Record(IFrameSource frames)
     {
+        var desktop = frames.DesktopTexture;
+        if (desktop == null)
+        {
+            return;
+        }
+
         try
         {
             _copy.Copy(desktop, _size);
             _pendingFileName = DatasetWriter.FileNameFor(DateTime.Now);
-            _state.MarkPending();
+            _state.MarkRecorded();
         }
         catch (Exception error)
         {
@@ -72,7 +84,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameCollector, IDispos
 
     private void SubmitReadySample()
     {
-        if (!_state.Pending)
+        if (!_copy.IsPending)
         {
             return;
         }
@@ -84,7 +96,6 @@ public sealed unsafe class Collector : ICollectControl, IFrameCollector, IDispos
                 return;
             }
 
-            _state.ClearPending();
             bool accepted = false;
             try
             {

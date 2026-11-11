@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.Mouse.Makcu;
 
@@ -11,6 +12,7 @@ public sealed class MakcuDevice : IMouse, IDisposable
 
     private readonly IMakcuPort _port;
     private readonly byte[] _request = new byte[MakcuProtocol.MaxRequestLength];
+    private Interpolation? _confirmed;
     private bool _closed;
 
     private MakcuDevice(IMakcuPort port, string portName, int baudRate)
@@ -63,11 +65,17 @@ public sealed class MakcuDevice : IMouse, IDisposable
         }
     }
 
+    /// <summary>Sends the value only when it differs from the last confirmed value.</summary>
     /// <exception cref="InvalidOperationException">MAKCU rejected or answered the value differently. The link stays open.</exception>
     /// <exception cref="IOException">No reply came, or the port failed. The link is closed.</exception>
     public void SetInterpolation(Interpolation interpolation)
     {
         ThrowIfClosed();
+        if (_confirmed == interpolation)
+        {
+            return;
+        }
+
         byte value = interpolation.FixedPercent is { } percent ? (byte)percent : MakcuProtocol.InterpolateAuto;
         int length = MakcuProtocol.EncodeInterpolate(_request, value);
 
@@ -94,6 +102,9 @@ public sealed class MakcuDevice : IMouse, IDisposable
             throw new InvalidOperationException(
                 $"MAKCU answered the move interpolation with {Convert.ToHexString(reply.Value.Payload)}");
         }
+
+        _confirmed = interpolation;
+        Log.Debug($"interpolation set to {(interpolation.FixedPercent is { } fixedPercent ? fixedPercent + "%" : "auto")}");
     }
 
     public void Dispose() => Close();
@@ -105,7 +116,6 @@ public sealed class MakcuDevice : IMouse, IDisposable
         try
         {
             port = open(name, HighBaud);
-            int baud = HighBaud;
             byte? kinds = QueryDeviceKinds(port);
             if (kinds is null)
             {
@@ -130,7 +140,7 @@ public sealed class MakcuDevice : IMouse, IDisposable
                     $"MAKCU on {name} has no mouse route (device kinds 0x{kinds.Value:X2})");
             }
 
-            var link = new MakcuDevice(port, name, baud);
+            var link = new MakcuDevice(port, name, HighBaud);
             port = null;
             return link;
         }

@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
 
-namespace NiceAimassist.Collect;
+namespace NiceAimassist.Dataset.Storage;
 
 /// <summary>
 /// Hands samples to a writer thread through a bounded queue. A full queue rejects the sample.
 /// It does not block the caller. The caller is the loop thread.
 /// </summary>
-public sealed class SampleQueue : IDisposable
+internal sealed class SampleQueue : IDisposable
 {
     public const int QueueCapacity = 2;
 
@@ -22,7 +22,7 @@ public sealed class SampleQueue : IDisposable
     {
         _write = write;
         _onError = onError;
-        _thread = new Thread(Run) { Name = "collect-writer", IsBackground = true };
+        _thread = new Thread(Run) { Name = "dataset-writer", IsBackground = true };
         _thread.Start();
     }
 
@@ -55,4 +55,4 @@ public sealed class SampleQueue : IDisposable
     }
 }
 
-public sealed record Sample(string FileNameWithoutExtension, MappedPixels Crop, MappedPixels Original);
+internal sealed record Sample(string FileNameWithoutExtension, MappedPixels Crop, MappedPixels Original);

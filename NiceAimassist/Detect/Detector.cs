@@ -8,38 +8,43 @@ using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.Detect;
 
+// This object owns the preprocessor, the output reader, and the timer. The caller owns the session and the capture.
+// Dispose this object before the session and the capture.
 public sealed unsafe class Detector : IDetector
 {
     private const int WarmUpRuns = 3;
-    private const int AcquireTimeoutMs = 100;
 
-    private readonly IFrameCollector? _collector;
-    private OnnxSession? _session;
-    private OutputReader? _outputReader;
-    private Preprocessor? _preprocessor;
-    private GpuTimer? _timer;
-    private DesktopCapture? _capture;
+    private readonly GpuDevices _gpu;
+    private readonly OnnxSession _session;
+    private readonly GpuTimer _timer;
+    private readonly Preprocessor _preprocessor;
+    private readonly OutputReader _outputReader;
     private bool _disposed;
 
-    public Detector(GpuDevices gpu, string modelPath, IFrameCollector? collector = null)
+    internal Detector(GpuDevices gpu, OnnxSession session, DesktopCapture frames)
     {
         ArgumentNullException.ThrowIfNull(gpu);
-        ArgumentNullException.ThrowIfNull(modelPath);
-        _collector = collector;
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(frames);
+        _gpu = gpu;
+        _session = session;
+        InputWidth = session.Input.Width;
+        InputHeight = session.Input.Height;
+
+        Log.Info(
+            $"model input {InputWidth}x{InputHeight} {session.Input.Precision}, "
+            + $"output {session.Output.Rows} rows {session.Output.Precision}");
+
+        GpuTimer timer = new(gpu);
+        Preprocessor? preprocessor = null;
+        OutputReader? outputReader = null;
         try
         {
-            _session = new OnnxSession(gpu, modelPath);
-            InputWidth = _session.Input.Width;
-            InputHeight = _session.Input.Height;
-
-            Log.Info(
-                $"model {Path.GetFileName(modelPath)}: input {InputWidth}x{InputHeight} {_session.Input.Precision}, "
-                + $"output {_session.Output.Rows} rows {_session.Output.Precision}");
-
-            _capture = new DesktopCapture(gpu, InputWidth, InputHeight);
-            _timer = new GpuTimer(gpu);
-            _preprocessor = new Preprocessor(gpu, _capture, _session.Input.Precision, _timer);
-            _outputReader = new OutputReader(gpu, _session.OutputResource, checked((int)_session.Output.ByteLength), _timer);
+            preprocessor = new Preprocessor(gpu, frames, session.Input.Precision, session.InputResource, timer);
+            outputReader = new OutputReader(gpu, session.OutputResource, checked((int)session.Output.ByteLength), timer);
+            _timer = timer;
+            _preprocessor = preprocessor;
+            _outputReader = outputReader;
 
             for (int run = 0; run < WarmUpRuns; run++)
             {
@@ -48,7 +53,7 @@ public sealed unsafe class Detector : IDetector
         }
         catch
         {
-            ReleaseAll();
+            ReleaseAll(timer, preprocessor, outputReader);
             throw;
         }
     }
@@ -57,35 +62,23 @@ public sealed unsafe class Detector : IDetector
 
     public int InputHeight { get; }
 
-    public CaptureStatus TryDetect(float confidence, out DetectedFrame result)
+    public DetectedFrame Detect(CapturedFrame frame, float confidence)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        result = default;
-        CaptureStatus status = _capture!.TryAcquire(AcquireTimeoutMs, out CapturedFrame frame);
-        if (status != CaptureStatus.Ready)
-        {
-            return status;
-        }
-
         long capturedTimestamp = Stopwatch.GetTimestamp();
-        _preprocessor!.Submit(frame, _session!.InputResource);
+        _preprocessor.Submit(frame);
         long submitted = Stopwatch.GetTimestamp();
         _session.Run();
         long ran = Stopwatch.GetTimestamp();
-        ReadOnlySpan<byte> output = _outputReader!.Read();
-        long gpu = _timer!.ReadElapsedStopwatchTicks();
+        ReadOnlySpan<byte> output = _outputReader.Read();
+        long gpu = _timer.ReadElapsedStopwatchTicks();
         long read = Stopwatch.GetTimestamp();
         DecodeResult decoded = DetectionDecoder.Decode(output, _session.Output, new Size(InputWidth, InputHeight), confidence);
         long detectedTimestamp = Stopwatch.GetTimestamp();
-        if (decoded.Nearest is not null)
-        {
-            CollectHeldFrame();
-        }
 
         DetectBreakdown breakdown = new(submitted - capturedTimestamp, ran - submitted, read - ran, detectedTimestamp - read, gpu);
-        result = new DetectedFrame(
+        return new DetectedFrame(
             frame.DesktopTimestamp, capturedTimestamp, detectedTimestamp, decoded.Nearest, decoded.TopScore, breakdown);
-        return CaptureStatus.Ready;
     }
 
     public void Dispose()
@@ -96,45 +89,22 @@ public sealed unsafe class Detector : IDetector
         }
 
         _disposed = true;
-        ReleaseAll();
-    }
-
-    private void CollectHeldFrame()
-    {
-        if (_collector is null || !_collector.IsDue)
-        {
-            return;
-        }
-
-        var desktop = _capture!.DesktopTexture;
-        if (desktop == null)
-        {
-            return;
-        }
-
-        _collector.Collect(desktop);
+        ReleaseAll(_timer, _preprocessor, _outputReader);
     }
 
     private ReadOnlySpan<byte> InferAndRead()
     {
-        _session!.Run();
-        return _outputReader!.Read();
+        _session.Run();
+        return _outputReader.Read();
     }
 
-    // The session waits for the queue before it releases anything. The output reader, the preprocessor, the timer and
-    // the capture can still be used by the queue until then. Therefore, they are released after the session.
+    // The queue can still use the output reader, the preprocessor, and the timer. Therefore, wait for the queue first.
     // The output reader and the preprocessor hold command lists that write to the timer. The timer is released after them.
-    private void ReleaseAll()
+    private void ReleaseAll(GpuTimer timer, Preprocessor? preprocessor, OutputReader? outputReader)
     {
-        _session?.Dispose();
-        _session = null;
-        _outputReader?.Dispose();
-        _outputReader = null;
-        _preprocessor?.Dispose();
-        _preprocessor = null;
-        _timer?.Dispose();
-        _timer = null;
-        _capture?.Dispose();
-        _capture = null;
+        _gpu.WaitIdle();
+        outputReader?.Dispose();
+        preprocessor?.Dispose();
+        timer.Dispose();
     }
 }

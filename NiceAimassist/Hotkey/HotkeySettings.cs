@@ -1,21 +1,21 @@
 using System.Text.Json.Serialization;
 
-namespace NiceAimassist.Hold;
+namespace NiceAimassist.Hotkey;
 
-public sealed record HoldSettings
+public sealed record HotkeySettings
 {
     public const string DefaultKey = "F8";
 
     private static readonly string[] DefaultKeys = [DefaultKey];
 
     /// <summary>
-    /// The key names that hold the aim, such as "F8". The aim is held while any of them is down.
+    /// The key names that enable the aim, such as "F8". The aim is enabled while any of them is down.
     /// </summary>
     [JsonPropertyName("keys")]
     public IReadOnlyList<string> Keys { get; init; } = DefaultKeys;
 
     /// <summary>Trims and deduplicates the names, ignoring case. Blank names are removed. No name left means the default key.</summary>
-    public HoldSettings Clamped() => this with { Keys = NormalizedKeys(Keys) };
+    public HotkeySettings Clamped() => this with { Keys = NormalizedKeys(Keys) };
 
     private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)
     {

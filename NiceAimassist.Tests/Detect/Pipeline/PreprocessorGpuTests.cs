@@ -40,7 +40,7 @@ public unsafe class PreprocessorGpuTests
         try
         {
             using GpuTimer timer = new(gpu);
-            using Preprocessor preprocessor = new(gpu, frames, TensorPrecision.Fp32, timer);
+            using Preprocessor preprocessor = new(gpu, frames, TensorPrecision.Fp32, tensor, timer);
             using OutputReader reader = new(gpu, tensor, bytes, timer);
 
             CapturedFrame frame = default;
@@ -51,7 +51,7 @@ public unsafe class PreprocessorGpuTests
             }
 
             Assert.True(acquired, "no desktop frame");
-            preprocessor.Submit(frame, tensor);
+            preprocessor.Submit(frame);
             float[] values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(reader.Read()).ToArray();
 
             // A desktop is never all black. Each channel needs at least one non-zero value.
