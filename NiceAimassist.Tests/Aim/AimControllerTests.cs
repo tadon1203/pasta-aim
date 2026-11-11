@@ -19,17 +19,24 @@ public class AimControllerTests
     private static Detection At(float centerX, float centerY, float height = 40f) =>
         Box(centerX, centerY, 30f, height);
 
-    private static AimParameters Params(int sensitivity = 100, int targetYOffset = 50, int maxDelta = 0, int smoothing = 0) =>
-        new(sensitivity, sensitivity, targetYOffset, maxDelta, smoothing);
+    private static AimSettings Params(int sensitivity = 100, int targetYOffset = 50, int maxDelta = 0, int smoothing = 0) =>
+        new()
+        {
+            SensitivityX = sensitivity,
+            SensitivityY = sensitivity,
+            TargetYOffset = targetYOffset,
+            MaxDelta = maxDelta,
+            VelocitySmoothing = smoothing,
+        };
 
-    private static (bool Sent, int X, int Y) Step(AimController aim, Detection? target, double seconds, AimParameters p, double delay = 0)
+    private static (bool Sent, int X, int Y) Step(AimController aim, Detection? target, double seconds, AimSettings p, double delay = 0)
     {
-        long capture = Ticks(seconds);
-        AimResult result = aim.Update(target, capture, capture + Ticks(delay), Input, p);
-        return (result.Outcome == AimOutcome.Move, result.Dx, result.Dy);
+        long desktop = Ticks(seconds);
+        AimResult result = aim.Update(target, desktop, desktop + Ticks(delay), Input, p);
+        return (result.Status == AimStatus.Move, result.Dx, result.Dy);
     }
 
-    private static (bool Sent, int X, int Y) Single(Detection target, AimParameters p) =>
+    private static (bool Sent, int X, int Y) Single(Detection target, AimSettings p) =>
         Step(new AimController(), target, 0, p);
 
     [Fact]
@@ -43,7 +50,7 @@ public class AimControllerTests
     [Fact]
     public void EachAxisHasItsOwnSensitivity()
     {
-        var p = new AimParameters(SensitivityX: 50, SensitivityY: 200, TargetYOffset: 50, MaxDelta: 0, VelocitySmoothing: 0);
+        var p = new AimSettings { SensitivityX = 50, SensitivityY = 200, TargetYOffset = 50, MaxDelta = 0, VelocitySmoothing = 0 };
         Assert.Equal((true, 5, 40), Single(At(60, 70), p));
     }
 
@@ -62,11 +69,11 @@ public class AimControllerTests
     }
 
     [Fact]
-    public void OutcomeSeparatesNoTargetFromOnTarget()
+    public void StatusSeparatesNoTargetFromOnTarget()
     {
         var aim = new AimController();
-        Assert.Equal(AimOutcome.NoTarget, aim.Update(null, 0, 0, Input, Params()).Outcome);
-        Assert.Equal(AimOutcome.OnTarget, aim.Update(At(50, 50), 0, 0, Input, Params()).Outcome);
+        Assert.Equal(AimStatus.NoTarget, aim.Update(null, 0, 0, Input, Params()).Status);
+        Assert.Equal(AimStatus.OnTarget, aim.Update(At(50, 50), 0, 0, Input, Params()).Status);
     }
 
     [Fact]

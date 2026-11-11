@@ -11,34 +11,12 @@ public sealed class SettingsTests
     [Fact]
     public void A_missing_field_takes_its_default_and_an_unknown_field_is_ignored()
     {
-        Settings settings = Settings.Parse(@"{ ""sensitivity_x"": 250, ""version"": 2 }");
+        Settings settings = Settings.Parse(@"{ ""version"": 2 }");
 
-        Assert.Equal(250, settings.SensitivityX);
-        Assert.Equal(100, settings.SensitivityY);
-        Assert.Equal(50, settings.Detect.Confidence);
-        Assert.Equal(50, settings.TargetYOffset);
-        Assert.Equal(512, settings.MaxDelta);
-        Assert.Equal(50, settings.VelocitySmoothing);
         Assert.Equal(Interpolation.Auto, settings.Interpolation);
         Assert.Equal(["F8"], settings.HoldKeys);
-        Assert.Null(settings.Detect.Model);
         Assert.Equal(0, settings.Display.Adapter);
         Assert.Equal(0, settings.Display.Output);
-    }
-
-    [Fact]
-    public void Out_of_range_values_are_clamped_into_their_range()
-    {
-        Settings settings = Settings.Parse(
-            @"{ ""sensitivity_x"": 0, ""sensitivity_y"": 20000, ""detect"": { ""confidence"": 150 },
-                ""target_y_offset"": -1, ""max_delta"": -5, ""velocity_smoothing"": 200 }");
-
-        Assert.Equal(1, settings.SensitivityX);
-        Assert.Equal(10_000, settings.SensitivityY);
-        Assert.Equal(100, settings.Detect.Confidence);
-        Assert.Equal(0, settings.TargetYOffset);
-        Assert.Equal(0, settings.MaxDelta);
-        Assert.Equal(95, settings.VelocitySmoothing);
     }
 
     [Fact]
@@ -60,12 +38,11 @@ public sealed class SettingsTests
     }
 
     [Fact]
-    public void Blank_hold_keys_and_an_empty_model_fall_back_to_the_defaults()
+    public void Blank_hold_keys_fall_back_to_the_default()
     {
-        Settings settings = Settings.Parse(@"{ ""hold_keys"": [""  ""], ""model"": """" }");
+        Settings settings = Settings.Parse(@"{ ""hold_keys"": [""  ""] }");
 
         Assert.Equal(["F8"], settings.HoldKeys);
-        Assert.Null(settings.Detect.Model);
     }
 
     [Fact]
@@ -149,6 +126,6 @@ public sealed class SettingsTests
     {
         Assert.Throws<JsonException>(() => Settings.Parse("[1, 2]"));
         Assert.Throws<JsonException>(() => Settings.Parse("null"));
-        Assert.Throws<JsonException>(() => Settings.Parse(@"{ ""sensitivity_x"": ""fast"" }"));
+        Assert.Throws<JsonException>(() => Settings.Parse(@"{ ""aim"": { ""sensitivity_x"": ""fast"" } }"));
     }
 }

@@ -18,17 +18,17 @@ public sealed class AimController
     private Detection? _last;
     private Vector2 _remainder;
     private Vector2 _velocity;
-    private (Vector2 Center, long Capture)? _previous;
+    private (Vector2 Center, long Desktop)? _previous;
     private float? _delay;
 
     public AimResult Update(
         Detection? target,
-        long captureTimestamp,
+        long desktopTimestamp,
         long nowTimestamp,
         Size input,
-        in AimParameters parameters)
+        in AimSettings settings)
     {
-        UpdateDelayEstimate(captureTimestamp, nowTimestamp);
+        UpdateDelayEstimate(desktopTimestamp, nowTimestamp);
         if (!IsSameTarget(target))
         {
             ResetTracking();
@@ -37,28 +37,28 @@ public sealed class AimController
         _last = target;
         if (target is not { } detection)
         {
-            return new AimResult(AimOutcome.NoTarget, 0, 0);
+            return new AimResult(AimStatus.NoTarget, 0, 0);
         }
 
         Vector2 center = new(detection.CenterX, detection.CenterY);
-        float gainX = parameters.SensitivityX / SensitivityDefault;
-        float gainY = parameters.SensitivityY / SensitivityDefault;
-        float blend = 1f - parameters.VelocitySmoothing / 100f;
+        float gainX = settings.SensitivityX / SensitivityDefault;
+        float gainY = settings.SensitivityY / SensitivityDefault;
+        float blend = 1f - settings.VelocitySmoothing / 100f;
 
-        Vector2 velocity = UpdateVelocity(center, captureTimestamp, blend);
+        Vector2 velocity = UpdateVelocity(center, desktopTimestamp, blend);
         float lookAhead = MathF.Min((_delay ?? 0f) + ExtraLookAhead, MaxLookAhead);
         Vector2 aimed = center + new Vector2(
             Math.Clamp(velocity.X * lookAhead, -detection.Width, detection.Width),
             Math.Clamp(velocity.Y * lookAhead, -detection.Height, detection.Height));
 
         float errorX = aimed.X - input.Width * 0.5f;
-        float aimY = aimed.Y + detection.Height * ((parameters.TargetYOffset - TargetYOffsetDefault) / 100f);
+        float aimY = aimed.Y + detection.Height * ((settings.TargetYOffset - TargetYOffsetDefault) / 100f);
         float errorY = aimY - input.Height * 0.5f;
         Vector2 movement = new(errorX * gainX, errorY * gainY);
 
-        if (parameters.MaxDelta != 0)
+        if (settings.MaxDelta != 0)
         {
-            float limit = parameters.MaxDelta;
+            float limit = settings.MaxDelta;
             float length = MathF.Sqrt(movement.X * movement.X + movement.Y * movement.Y);
             if (length > limit)
             {
@@ -74,7 +74,7 @@ public sealed class AimController
             Math.Clamp(withRemainder.X - x, -0.5f, 0.5f),
             Math.Clamp(withRemainder.Y - y, -0.5f, 0.5f));
 
-        return new AimResult(x != 0 || y != 0 ? AimOutcome.Move : AimOutcome.OnTarget, x, y);
+        return new AimResult(x != 0 || y != 0 ? AimStatus.Move : AimStatus.OnTarget, x, y);
     }
 
     public void Reset()
@@ -84,9 +84,9 @@ public sealed class AimController
         ResetTracking();
     }
 
-    private void UpdateDelayEstimate(long captureTimestamp, long nowTimestamp)
+    private void UpdateDelayEstimate(long desktopTimestamp, long nowTimestamp)
     {
-        float seconds = (float)(Math.Max(0L, nowTimestamp - captureTimestamp) / (double)Stopwatch.Frequency);
+        float seconds = (float)(Math.Max(0L, nowTimestamp - desktopTimestamp) / (double)Stopwatch.Frequency);
         _delay = _delay is { } smoothed ? smoothed + DelaySmoothing * (seconds - smoothed) : seconds;
     }
 
@@ -100,11 +100,11 @@ public sealed class AimController
         _previous = null;
     }
 
-    private Vector2 UpdateVelocity(Vector2 center, long captureTimestamp, float blend)
+    private Vector2 UpdateVelocity(Vector2 center, long desktopTimestamp, float blend)
     {
         if (_previous is { } previous)
         {
-            double gap = (captureTimestamp - previous.Capture) / (double)Stopwatch.Frequency;
+            double gap = (desktopTimestamp - previous.Desktop) / (double)Stopwatch.Frequency;
             if (gap > 0 && gap <= MaxFrameGap)
             {
                 Vector2 raw = (center - previous.Center) / (float)gap;
@@ -116,7 +116,7 @@ public sealed class AimController
             }
         }
 
-        _previous = (center, captureTimestamp);
+        _previous = (center, desktopTimestamp);
         return _velocity;
     }
 

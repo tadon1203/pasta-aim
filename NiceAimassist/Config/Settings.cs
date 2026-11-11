@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NiceAimassist.Aim;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 
@@ -18,12 +19,6 @@ public sealed record Settings
     public const int MaxCollectRate = 2;
     public const int MinCollectRate = 1;
 
-    public const int MinSensitivity = 1;
-    public const int MaxSensitivity = 10_000;
-    public const int MaxTargetYOffset = 100;
-    public const int MaxDeltaLimit = 32_767;
-    public const int MaxVelocitySmoothing = 95;
-
     private static readonly string[] DefaultHoldKeys = [DefaultHoldKey];
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
@@ -34,22 +29,8 @@ public sealed record Settings
     [JsonPropertyName("display")]
     public DisplaySettings Display { get; init; } = new();
 
-    [JsonPropertyName("sensitivity_x")]
-    public int SensitivityX { get; init; } = 100;
-
-    [JsonPropertyName("sensitivity_y")]
-    public int SensitivityY { get; init; } = 100;
-
-    /// <summary>Aim point inside the target box in percent of its height. 0 is the top edge.</summary>
-    [JsonPropertyName("target_y_offset")]
-    public int TargetYOffset { get; init; } = 50;
-
-    /// <summary>Per-frame cap on the movement length. 0 means no cap.</summary>
-    [JsonPropertyName("max_delta")]
-    public int MaxDelta { get; init; } = 512;
-
-    [JsonPropertyName("velocity_smoothing")]
-    public int VelocitySmoothing { get; init; } = 50;
+    [JsonPropertyName("aim")]
+    public AimSettings Aim { get; init; } = new();
 
     [JsonPropertyName("interpolation")]
     public Interpolation Interpolation { get; init; }
@@ -88,17 +69,13 @@ public sealed record Settings
     /// <summary>Clamps every ranged value into its range. Replaces an empty key or model name.</summary>
     public Settings WithClampedRanges() => this with
     {
-        SensitivityX = Math.Clamp(SensitivityX, MinSensitivity, MaxSensitivity),
-        SensitivityY = Math.Clamp(SensitivityY, MinSensitivity, MaxSensitivity),
-        TargetYOffset = Math.Clamp(TargetYOffset, 0, MaxTargetYOffset),
-        MaxDelta = Math.Clamp(MaxDelta, 0, MaxDeltaLimit),
-        VelocitySmoothing = Math.Clamp(VelocitySmoothing, 0, MaxVelocitySmoothing),
         HoldKeys = NormalizedKeys(HoldKeys),
         CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
         CollectRate = Math.Clamp(CollectRate, MinCollectRate, MaxCollectRate),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
         Display = Display.Clamped(),
         Detect = Detect.Clamped(),
+        Aim = Aim.Clamped(),
     };
 
     private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)

@@ -130,21 +130,15 @@ public sealed class AimLoop
                 continue;
             }
 
-            AimParameters parameters = new(
-                settings.SensitivityX,
-                settings.SensitivityY,
-                settings.TargetYOffset,
-                settings.MaxDelta,
-                settings.VelocitySmoothing);
             AimResult aim = _aim.Update(
                 frame.Target,
                 frame.DesktopTimestamp,
                 _now(),
                 new Size(_detector.InputWidth, _detector.InputHeight),
-                parameters);
+                settings.Aim);
             long aimedAt = _now();
             // Read the flag after the aim. A stop during the frame then suppresses its move.
-            bool sent = aim.Outcome == AimOutcome.Move && _running;
+            bool sent = aim.Status == AimStatus.Move && _running;
             if (sent)
             {
                 _sink.Move(aim.Dx, aim.Dy);

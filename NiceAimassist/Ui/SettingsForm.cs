@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
+using NiceAimassist.Aim;
 using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
@@ -103,12 +104,12 @@ internal sealed class SettingsForm : Form
         keys.Controls.Add(_holdKeys);
         keys.Controls.Add(keyButtons);
 
-        ConfigureNumber(_sensitivityX, Settings.MinSensitivity, Settings.MaxSensitivity);
-        ConfigureNumber(_sensitivityY, Settings.MinSensitivity, Settings.MaxSensitivity);
+        ConfigureNumber(_sensitivityX, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
+        ConfigureNumber(_sensitivityY, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
         ConfigureNumber(_confidence, 0, DetectSettings.MaxConfidence);
-        ConfigureNumber(_targetYOffset, 0, Settings.MaxTargetYOffset);
-        ConfigureNumber(_maxDelta, 0, Settings.MaxDeltaLimit);
-        ConfigureNumber(_velocitySmoothing, 0, Settings.MaxVelocitySmoothing);
+        ConfigureNumber(_targetYOffset, 0, AimSettings.MaxTargetYOffset);
+        ConfigureNumber(_maxDelta, 0, AimSettings.MaxDeltaLimit);
+        ConfigureNumber(_velocitySmoothing, 0, AimSettings.MaxVelocitySmoothing);
         ConfigureNumber(_interpolationPercent, 0, 100);
         _interpolationAuto.Text = "Auto";
         _interpolationAuto.AutoSize = true;
@@ -175,12 +176,12 @@ internal sealed class SettingsForm : Form
 
         _model.SelectedItem = settings.Detect.Model;
         _holdKeys.Items.AddRange([.. settings.HoldKeys]);
-        _sensitivityX.Value = settings.SensitivityX;
-        _sensitivityY.Value = settings.SensitivityY;
+        _sensitivityX.Value = settings.Aim.SensitivityX;
+        _sensitivityY.Value = settings.Aim.SensitivityY;
         _confidence.Value = settings.Detect.Confidence;
-        _targetYOffset.Value = settings.TargetYOffset;
-        _maxDelta.Value = settings.MaxDelta;
-        _velocitySmoothing.Value = settings.VelocitySmoothing;
+        _targetYOffset.Value = settings.Aim.TargetYOffset;
+        _maxDelta.Value = settings.Aim.MaxDelta;
+        _velocitySmoothing.Value = settings.Aim.VelocitySmoothing;
         _interpolationAuto.Checked = settings.Interpolation.IsAuto;
         _interpolationPercent.Value = settings.Interpolation.FixedPercent ?? 0;
         _interpolationPercent.Enabled = !_interpolationAuto.Checked;
@@ -231,12 +232,15 @@ internal sealed class SettingsForm : Form
             Model = _model.SelectedItem as string,
             Confidence = (int)_confidence.Value,
         },
+        Aim = _store.Current.Aim with
+        {
+            SensitivityX = (int)_sensitivityX.Value,
+            SensitivityY = (int)_sensitivityY.Value,
+            TargetYOffset = (int)_targetYOffset.Value,
+            MaxDelta = (int)_maxDelta.Value,
+            VelocitySmoothing = (int)_velocitySmoothing.Value,
+        },
         HoldKeys = [.. _holdKeys.Items.Cast<string>()],
-        SensitivityX = (int)_sensitivityX.Value,
-        SensitivityY = (int)_sensitivityY.Value,
-        TargetYOffset = (int)_targetYOffset.Value,
-        MaxDelta = (int)_maxDelta.Value,
-        VelocitySmoothing = (int)_velocitySmoothing.Value,
         Interpolation = _interpolationAuto.Checked
             ? Interpolation.Auto
             : Interpolation.Percent((int)_interpolationPercent.Value),

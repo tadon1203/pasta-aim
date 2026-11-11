@@ -35,7 +35,7 @@ public class LoopDiagnosticsTests
         LoopStats stats = new();
         LoopDiagnostics diagnostics = new(() => clock, stats);
         DetectedFrame frame = new(0, 0, 0, null, 0f);
-        AimResult move = new(AimOutcome.Move, 0, 0);
+        AimResult move = new(AimStatus.Move, 0, 0);
 
         diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
         Assert.Same(LatencySnapshot.Empty, stats.Latency);

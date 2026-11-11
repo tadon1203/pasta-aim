@@ -45,7 +45,7 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
             _bestScore = MathF.Max(_bestScore, detection.Score);
         }
 
-        bool aimed = aim.Outcome == AimOutcome.Move;
+        bool aimed = aim.Status == AimStatus.Move;
         _aimed += aimed ? 1 : 0;
         _sent += sent ? 1 : 0;
 
@@ -54,7 +54,7 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
             string box = frame.Target is { } t
                 ? $"box=({t.X1:F1},{t.Y1:F1},{t.X2:F1},{t.Y2:F1}) score={t.Score:F3}"
                 : "no target";
-            Log.Trace($"frame {box} aim={aim.Outcome} move=({aim.Dx},{aim.Dy}) sent={sent}");
+            Log.Trace($"frame {box} aim={aim.Status} move=({aim.Dx},{aim.Dy}) sent={sent}");
         }
 
         Tick();

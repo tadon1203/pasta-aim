@@ -61,9 +61,9 @@ public sealed class SettingsStoreTests : IDisposable
         string path = Path.Combine(_directory, "settings.json");
         SettingsStore store = NewStore(path);
 
-        File.WriteAllText(path, @"{ ""sensitivity_x"": 300 }");
+        File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
 
-        Assert.True(WaitUntil(() => store.Current.SensitivityX == 300));
+        Assert.True(WaitUntil(() => store.Current.Aim.SensitivityX == 300));
     }
 
     [Fact]
@@ -71,15 +71,15 @@ public sealed class SettingsStoreTests : IDisposable
     {
         string path = Path.Combine(_directory, "settings.json");
         SettingsStore store = NewStore(path);
-        File.WriteAllText(path, @"{ ""sensitivity_x"": 300 }");
-        Assert.True(WaitUntil(() => store.Current.SensitivityX == 300));
+        File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
+        Assert.True(WaitUntil(() => store.Current.Aim.SensitivityX == 300));
 
-        File.WriteAllText(path, "{ \"sensitivity_x\": 4");
+        File.WriteAllText(path, "{ \"aim\": { \"sensitivity_x\": 4");
         Thread.Sleep(DebounceMilliseconds * 6);
-        Assert.Equal(300, store.Current.SensitivityX);
+        Assert.Equal(300, store.Current.Aim.SensitivityX);
 
-        File.WriteAllText(path, @"{ ""sensitivity_x"": 400 }");
-        Assert.True(WaitUntil(() => store.Current.SensitivityX == 400));
+        File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 400 } }");
+        Assert.True(WaitUntil(() => store.Current.Aim.SensitivityX == 400));
     }
 
     private SettingsStore NewStore(string path)
