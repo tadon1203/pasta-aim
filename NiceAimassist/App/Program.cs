@@ -9,8 +9,9 @@ using NiceAimassist.Hold;
 using NiceAimassist.Logging;
 using NiceAimassist.Loop;
 using NiceAimassist.Mouse;
-using NiceAimassist.Ui;
 using Application = System.Windows.Forms.Application;
+
+namespace NiceAimassist.App;
 
 internal static class Program
 {
@@ -61,24 +62,12 @@ internal static class Program
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            // Only the loop thread reads this. The loop applies a new snapshot from the file once. It does not apply it on every loop.
-            AppSettings? applied = null;
+            LiveSettings live = new(file, holdKey);
             loop = new FrameLoop(
                 detector,
                 device,
                 holdKey.IsHeld,
-                () =>
-                {
-                    AppSettings settings = file.Current;
-                    if (!ReferenceEquals(settings, applied))
-                    {
-                        applied = settings;
-                        Log.Level = settings.Log.Level;
-                        holdKey.Update(settings.Hold.Keys);
-                    }
-
-                    return settings;
-                },
+                live.Current,
                 Stopwatch.GetTimestamp,
                 error =>
                 {
@@ -98,7 +87,7 @@ internal static class Program
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (SettingsForm form = new(file, loop.Stats, stopped, model.Directory))
+            using (MainWindow form = new(file, loop.Stats, stopped, model.Directory))
             {
                 Application.Run(form);
             }

@@ -11,13 +11,13 @@ using NiceAimassist.Logging;
 using NiceAimassist.Mouse;
 using Timer = System.Windows.Forms.Timer;
 
-namespace NiceAimassist.Ui;
+namespace NiceAimassist.App;
 
 /// <summary>
 /// Edits settings.json through <see cref="SettingsFile.Save"/>. The loop reads the change from the file.
-/// The form shares no state with the loop, except <see cref="LoopStats"/>.
+/// The window shares no state with the loop, except <see cref="LoopStats"/>.
 /// </summary>
-internal sealed class SettingsForm : Form
+internal sealed class MainWindow : Form
 {
     private const int SaveDelayMs = 300;
     private const int KeyInputPollMs = 15;
@@ -55,7 +55,7 @@ internal sealed class SettingsForm : Form
     private long _lastFrames;
     private long _lastTicks = Stopwatch.GetTimestamp();
 
-    public SettingsForm(SettingsFile file, LoopStats stats, ManualResetEventSlim stopped, string modelsDirectory)
+    public MainWindow(SettingsFile file, LoopStats stats, ManualResetEventSlim stopped, string modelsDirectory)
     {
         _file = file;
         _stats = stats;
@@ -89,7 +89,7 @@ internal sealed class SettingsForm : Form
         MaximizeBox = false;
 
         _layout.AutoSize = true;
-        _layout.ColumnCount = 2;
+        _layout.ColumnCount = 1;
         _layout.Dock = DockStyle.Fill;
         _layout.Padding = new Padding(12);
 
@@ -120,31 +120,39 @@ internal sealed class SettingsForm : Form
         interpolation.Controls.Add(_interpolationPercent);
         interpolation.Controls.Add(_interpolationAuto);
 
-        AddRow("Model (restart)", _model);
-        AddRow("Hold keys", keys);
-        AddRow("Sensitivity X", _sensitivityX);
-        AddRow("Sensitivity Y", _sensitivityY);
-        AddRow("Confidence %", _confidence);
-        AddRow("Target Y offset %", _targetYOffset);
-        AddRow("Max delta (0 = no cap)", _maxDelta);
-        AddRow("Velocity smoothing %", _velocitySmoothing);
-        AddRow("Interpolation %", interpolation);
+        GroupBox detect = Section("Detect", ("Model (restart)", _model), ("Confidence %", _confidence));
+        GroupBox aim = Section(
+            "Aim",
+            ("Sensitivity X", _sensitivityX),
+            ("Sensitivity Y", _sensitivityY),
+            ("Target Y offset %", _targetYOffset),
+            ("Max delta (0 = no cap)", _maxDelta),
+            ("Velocity smoothing %", _velocitySmoothing));
+        GroupBox mouse = Section("Mouse", ("Interpolation %", interpolation));
+        GroupBox hold = Section("Hold", ("Hold keys", keys));
 
         _logLevel.DropDownStyle = ComboBoxStyle.DropDownList;
         _logLevel.Items.AddRange([.. Enum.GetValues<LogLevel>().Cast<object>()]);
-        AddRow("Log level", _logLevel);
+        GroupBox log = Section("Log", ("Log level", _logLevel));
 
         ConfigureNumber(_collectSize, CollectSettings.MinSize, CollectSettings.MaxSize);
         ConfigureNumber(_collectRate, CollectSettings.MinRate, CollectSettings.MaxRate);
         _collectEnabled.Text = "Enabled (while hold key is down)";
         _collectEnabled.AutoSize = true;
-        AddRow("Collect", _collectEnabled);
-        AddRow("Collect size px", _collectSize);
-        AddRow("Collect images/s", _collectRate);
+        GroupBox collect = Section(
+            "Collect",
+            ("Collect", _collectEnabled),
+            ("Collect size px", _collectSize),
+            ("Collect images/s", _collectRate));
 
         _status.AutoSize = true;
+        _layout.Controls.Add(detect);
+        _layout.Controls.Add(aim);
+        _layout.Controls.Add(mouse);
+        _layout.Controls.Add(hold);
+        _layout.Controls.Add(collect);
+        _layout.Controls.Add(log);
         _layout.Controls.Add(_status);
-        _layout.SetColumnSpan(_status, 2);
         Controls.Add(_layout);
 
         _saveTimer.Interval = SaveDelayMs;
@@ -159,11 +167,19 @@ internal sealed class SettingsForm : Form
         input.Width = 80;
     }
 
-    private void AddRow(string text, Control input)
+    private static GroupBox Section(string title, params (string Text, Control Input)[] rows)
     {
-        _layout.Controls.Add(new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 12, 6) });
-        input.Anchor = AnchorStyles.Left;
-        _layout.Controls.Add(input);
+        TableLayoutPanel table = new() { AutoSize = true, ColumnCount = 2 };
+        foreach ((string text, Control input) in rows)
+        {
+            table.Controls.Add(new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 12, 6) });
+            input.Anchor = AnchorStyles.Left;
+            table.Controls.Add(input);
+        }
+
+        GroupBox section = new() { Text = title, AutoSize = true, Padding = new Padding(8, 4, 8, 8) };
+        section.Controls.Add(table);
+        return section;
     }
 
     private void LoadSettings(AppSettings settings)
