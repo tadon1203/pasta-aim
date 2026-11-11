@@ -120,38 +120,29 @@ internal sealed class MainWindow : Form
         interpolation.Controls.Add(_interpolationPercent);
         interpolation.Controls.Add(_interpolationAuto);
 
-        GroupBox detect = Section("Detect", ("Model (restart)", _model), ("Confidence %", _confidence));
-        GroupBox aim = Section(
-            "Aim",
-            ("Sensitivity X", _sensitivityX),
-            ("Sensitivity Y", _sensitivityY),
-            ("Target Y offset %", _targetYOffset),
-            ("Max delta (0 = no cap)", _maxDelta),
-            ("Velocity smoothing %", _velocitySmoothing));
-        GroupBox mouse = Section("Mouse", ("Interpolation %", interpolation));
-        GroupBox hold = Section("Hold", ("Hold keys", keys));
-
         _logLevel.DropDownStyle = ComboBoxStyle.DropDownList;
         _logLevel.Items.AddRange([.. Enum.GetValues<LogLevel>().Cast<object>()]);
-        GroupBox log = Section("Log", ("Log level", _logLevel));
 
         ConfigureNumber(_collectSize, CollectSettings.MinSize, CollectSettings.MaxSize);
         ConfigureNumber(_collectRate, CollectSettings.MinRate, CollectSettings.MaxRate);
         _collectEnabled.Text = "Enabled (while hold key is down)";
         _collectEnabled.AutoSize = true;
-        GroupBox collect = Section(
-            "Collect",
-            ("Collect", _collectEnabled),
-            ("Collect size px", _collectSize),
-            ("Collect images/s", _collectRate));
 
         _status.AutoSize = true;
-        _layout.Controls.Add(detect);
-        _layout.Controls.Add(aim);
-        _layout.Controls.Add(mouse);
-        _layout.Controls.Add(hold);
-        _layout.Controls.Add(collect);
-        _layout.Controls.Add(log);
+        _layout.Controls.Add(Rows(
+            ("Model (restart)", _model),
+            ("Confidence %", _confidence),
+            ("Sensitivity X", _sensitivityX),
+            ("Sensitivity Y", _sensitivityY),
+            ("Target Y offset %", _targetYOffset),
+            ("Max delta (0 = no cap)", _maxDelta),
+            ("Velocity smoothing %", _velocitySmoothing),
+            ("Interpolation %", interpolation),
+            ("Hold keys", keys),
+            ("Collect", _collectEnabled),
+            ("Collect size px", _collectSize),
+            ("Collect images/s", _collectRate),
+            ("Log level", _logLevel)));
         _layout.Controls.Add(_status);
         Controls.Add(_layout);
 
@@ -167,7 +158,7 @@ internal sealed class MainWindow : Form
         input.Width = 80;
     }
 
-    private static GroupBox Section(string title, params (string Text, Control Input)[] rows)
+    private static TableLayoutPanel Rows(params (string Text, Control Input)[] rows)
     {
         TableLayoutPanel table = new() { AutoSize = true, ColumnCount = 2 };
         foreach ((string text, Control input) in rows)
@@ -177,9 +168,7 @@ internal sealed class MainWindow : Form
             table.Controls.Add(input);
         }
 
-        GroupBox section = new() { Text = title, AutoSize = true, Padding = new Padding(8, 4, 8, 8) };
-        section.Controls.Add(table);
-        return section;
+        return table;
     }
 
     private void LoadSettings(AppSettings settings)
