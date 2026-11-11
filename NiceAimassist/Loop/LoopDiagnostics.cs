@@ -91,12 +91,12 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
             StageTicks max = latency.Max;
             Log.Debug(
                 $"loop {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
-                + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} best_score_any_row={_topScore:F3}");
+                + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} top_score={_topScore:F3}");
             Log.Debug(
                 $"latency avg/max ms: capture={StageTicks.PairMs(avg.Capture, max.Capture)} "
-                + $"infer={StageTicks.PairMs(avg.Infer, max.Infer)} "
+                + $"detect={StageTicks.PairMs(avg.Detect, max.Detect)} "
                 + $"aim={StageTicks.PairMs(avg.Aim, max.Aim)} "
-                + $"send={StageTicks.PairMs(avg.Send, max.Send)} "
+                + $"move={StageTicks.PairMs(avg.Move, max.Move)} "
                 + $"total={StageTicks.PairMs(avg.Total, max.Total)}");
         }
 

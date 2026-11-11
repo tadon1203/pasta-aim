@@ -42,7 +42,7 @@ internal static class Program
         Collector? collector = null;
         IDetector? detector = null;
         MakcuDevice? device = null;
-        AimLoop? loop = null;
+        FrameLoop? loop = null;
         ConsoleCancelEventHandler? onCancel = null;
         try
         {
@@ -63,7 +63,7 @@ internal static class Program
             Exception? fault = null;
             // Only the loop thread reads this. The loop applies a new snapshot from the store once. It does not apply it on every loop.
             Settings? applied = null;
-            loop = new AimLoop(
+            loop = new FrameLoop(
                 detector,
                 device,
                 holdKey.IsHeld,

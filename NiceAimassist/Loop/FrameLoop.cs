@@ -9,7 +9,7 @@ using NiceAimassist.Mouse;
 namespace NiceAimassist.Loop;
 
 /// <summary>Runs the aim loop on one dedicated thread.</summary>
-public sealed class AimLoop
+public sealed class FrameLoop
 {
     private const int IdleSleepMs = 1;
 
@@ -31,7 +31,7 @@ public sealed class AimLoop
 
     /// <param name="now">Source of the Stopwatch timestamps. Usually <c>Stopwatch.GetTimestamp</c>.</param>
     /// <param name="onFault">Called on the loop thread when the detector or the mouse throws. The loop ends after the call.</param>
-    public AimLoop(
+    public FrameLoop(
         IDetector detector,
         IMouse mouse,
         Func<bool> isHeld,
@@ -160,8 +160,7 @@ public sealed class AimLoop
             return;
         }
 
-        CollectStatus status = _collector.Update(settings.Collect, held);
-        _stats.SetCollect(status.Active, status.Saved, status.LastError);
+        _stats.Collect = _collector.Update(settings.Collect, held);
     }
 
     private void SendInterpolation(Interpolation interpolation)

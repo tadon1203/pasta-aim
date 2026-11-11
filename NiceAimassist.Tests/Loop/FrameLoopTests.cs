@@ -8,7 +8,7 @@ using NiceAimassist.Detect;
 
 namespace NiceAimassist.Tests.Loop;
 
-public class LoopTests
+public class FrameLoopTests
 {
     private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(5);
 
@@ -21,7 +21,7 @@ public class LoopTests
         FakeDetector detector = new();
         detector.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMouse mouse = new();
-        AimLoop loop = Start(detector, mouse, () => true);
+        FrameLoop loop = Start(detector, mouse, () => true);
 
         WaitUntil(() => mouse.Moves.Count >= 1);
         loop.Stop();
@@ -38,7 +38,7 @@ public class LoopTests
         detector.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMouse mouse = new();
         FakeHoldKey hold = new(false);
-        AimLoop loop = Start(detector, mouse, hold.IsHeld);
+        FrameLoop loop = Start(detector, mouse, hold.IsHeld);
 
         WaitUntil(() => hold.Polls >= 3);
         loop.Stop();
@@ -57,7 +57,7 @@ public class LoopTests
         detector.Enqueue(first + Stopwatch.Frequency / 20, Centered);
         FakeMouse mouse = new();
         FakeHoldKey hold = new(true, false, true);
-        AimLoop loop = Start(detector, mouse, hold.IsHeld);
+        FrameLoop loop = Start(detector, mouse, hold.IsHeld);
 
         WaitUntil(() => mouse.Moves.Count >= 2);
         loop.Stop();
@@ -73,7 +73,7 @@ public class LoopTests
         FakeDetector detector = new();
         detector.Enqueue(Stopwatch.GetTimestamp(), null);
         FakeMouse mouse = new();
-        AimLoop loop = Start(detector, mouse, () => true);
+        FrameLoop loop = Start(detector, mouse, () => true);
 
         WaitUntil(() => loop.Stats.Frames >= 1);
         loop.Stop();
@@ -88,7 +88,7 @@ public class LoopTests
         FakeDetector detector = new();
         FakeMouse mouse = new();
         Holder<Settings> settings = new(Snapshot(Interpolation.Percent(30)));
-        AimLoop loop = new(detector, mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
+        FrameLoop loop = new(detector, mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
 
         detector.Enqueue(Stopwatch.GetTimestamp(), null);
@@ -111,7 +111,7 @@ public class LoopTests
     {
         FakeDetector detector = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
-        AimLoop loop = new(detector, new FakeMouse(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
+        FrameLoop loop = new(detector, new FakeMouse(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
         loop.Start();
 
         WaitUntil(() => faults.Count >= 1);
@@ -125,7 +125,7 @@ public class LoopTests
     public void StopReturnsPromptlyWhileWaitingForFrames()
     {
         FakeDetector detector = new();
-        AimLoop loop = Start(detector, new FakeMouse(), () => true);
+        FrameLoop loop = Start(detector, new FakeMouse(), () => true);
 
         WaitUntil(() => detector.RunCalls >= 3);
         Stopwatch clock = Stopwatch.StartNew();
@@ -134,9 +134,9 @@ public class LoopTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(1), $"Stop took {clock.Elapsed}");
     }
 
-    private static AimLoop Start(FakeDetector detector, FakeMouse mouse, Func<bool> isHeld)
+    private static FrameLoop Start(FakeDetector detector, FakeMouse mouse, Func<bool> isHeld)
     {
-        AimLoop loop = new(detector, mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
+        FrameLoop loop = new(detector, mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
         return loop;
     }

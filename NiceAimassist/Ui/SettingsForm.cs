@@ -350,9 +350,10 @@ internal sealed class SettingsForm : Form
         StageTicks latency = _stats.Latency.Average;
         _lastFrames = frames;
         _lastTicks = ticks;
-        string collect = _stats.CollectError is { } error
+        CollectStatus collectStatus = _stats.Collect;
+        string collect = collectStatus.LastError is { } error
             ? $"   collect error: {error}"
-            : _stats.Collecting ? $"   collecting, saved {_stats.Saved}" : string.Empty;
+            : collectStatus.Active ? $"   collecting, saved {collectStatus.Saved}" : string.Empty;
         _status.Text = $"fps {fps:F1}   latency {latency.FormatMs()}   "
             + $"{(_stats.Held ? "held" : "idle")}{collect}";
     }
