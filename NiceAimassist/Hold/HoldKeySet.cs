@@ -1,4 +1,4 @@
-using NiceAimassist.Logging;
+using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.Hold;
 

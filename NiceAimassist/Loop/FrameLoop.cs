@@ -5,7 +5,7 @@ using NiceAimassist.Collect;
 using NiceAimassist.Settings;
 using NiceAimassist.Capture;
 using NiceAimassist.Detect;
-using NiceAimassist.Logging;
+using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Loop;

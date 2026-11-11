@@ -7,7 +7,7 @@ using NiceAimassist.Settings;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
 using NiceAimassist.Hold;
-using NiceAimassist.Logging;
+using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
 using Timer = System.Windows.Forms.Timer;
 

@@ -1,7 +1,7 @@
 using System.Buffers;
 using NiceAimassist.Capture;
 using NiceAimassist.Detect;
-using NiceAimassist.Display;
+using NiceAimassist.Shared.Gpu;
 using Silk.NET.Direct3D11;
 
 namespace NiceAimassist.Collect;
@@ -20,7 +20,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameCollector, IDispos
     private string _pendingFileName = string.Empty;
     private bool _disposed;
 
-    public Collector(DisplayDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
+    public Collector(GpuDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
     {
         _dataset = new DatasetWriter(datasetRoot);
         _state = new CollectState(now, ticksPerSecond);

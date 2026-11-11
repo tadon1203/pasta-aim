@@ -1,5 +1,5 @@
 using NiceAimassist.Capture;
-using NiceAimassist.Display;
+using NiceAimassist.Shared.Gpu;
 using Silk.NET.Direct3D11;
 using Silk.NET.DXGI;
 using D3D11Box = Silk.NET.Direct3D11.Box;
@@ -12,12 +12,12 @@ internal sealed unsafe class StagingCopy : IDisposable
     private const uint DoNotWait = 0x100000;
     private const int DxgiWasStillDrawing = unchecked((int)0x887A000A);
 
-    private readonly DisplayDevices _gpu;
+    private readonly GpuDevices _gpu;
     private readonly StagingGate _gate = new();
     private ID3D11Texture2D* _stagingCrop;
     private ID3D11Texture2D* _stagingFull;
 
-    public StagingCopy(DisplayDevices gpu) => _gpu = gpu;
+    public StagingCopy(GpuDevices gpu) => _gpu = gpu;
 
     public bool CanCopy => _gate.CanCopy;
 

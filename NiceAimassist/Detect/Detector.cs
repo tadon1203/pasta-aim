@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Drawing;
 using NiceAimassist.Capture;
-using NiceAimassist.Display;
-using NiceAimassist.Logging;
+using NiceAimassist.Detect.Pipeline;
+using NiceAimassist.Detect.Runtime;
+using NiceAimassist.Shared.Gpu;
+using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.Detect;
 
@@ -19,7 +21,7 @@ public sealed unsafe class Detector : IDetector
     private DesktopCapture? _capture;
     private bool _disposed;
 
-    public Detector(DisplayDevices gpu, string modelPath, IFrameCollector? collector = null)
+    public Detector(GpuDevices gpu, string modelPath, IFrameCollector? collector = null)
     {
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(modelPath);

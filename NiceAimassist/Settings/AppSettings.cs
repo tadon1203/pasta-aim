@@ -3,9 +3,9 @@ using System.Text.Json.Serialization;
 using NiceAimassist.Aim;
 using NiceAimassist.Collect;
 using NiceAimassist.Detect;
-using NiceAimassist.Display;
+using NiceAimassist.Shared.Gpu;
 using NiceAimassist.Hold;
-using NiceAimassist.Logging;
+using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Settings;

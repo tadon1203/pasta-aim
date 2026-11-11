@@ -1,5 +1,5 @@
 using NiceAimassist.Hold;
-using NiceAimassist.Logging;
+using NiceAimassist.Shared.Logging;
 using NiceAimassist.Settings;
 
 namespace NiceAimassist.App;

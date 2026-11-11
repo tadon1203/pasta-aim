@@ -25,6 +25,24 @@ Read a document only when its trigger applies.
 
 ## Code
 
+### Structure
+
+Each top-level folder in `NiceAimassist/` is a feature, with two exceptions: `Shared/` and the two layers above the features.
+
+```text
+App → Loop → Capture, Detect, Aim, Collect, Hold, Mouse → Shared
+Settings → the settings type of each feature
+```
+
+- A feature does not use the internals of another feature. A dependency points to the right in the diagram.
+- `Shared/` (`Gpu`, `Logging`) does not depend on a feature.
+- `Settings/` and `App/` are layers above the features. They collect the features.
+- Put a subfolder in one feature only when the folder has many files with different roles. Use at most two levels. Example: `Detect/Runtime`, `Mouse/Makcu`.
+- Keep the namespace equal to the folder path.
+- Make a type in a subfolder `internal` when no other feature uses it.
+- A feature can own an interface that another feature implements. Example: `Detect/IFrameCollector`, which `Collect` implements.
+- Put a test in the folder that matches the folder of the type under test.
+
 ### Rules
 
 - Errors: throw an exception whose message names the failing step or value. Define an exception type only when a caller catches it by kind.

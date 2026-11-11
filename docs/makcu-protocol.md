@@ -1,6 +1,6 @@
 # MAKCU protocol
 
-The part of the MAKCU binary protocol that the client uses. The code is in `NiceAimassist/Makcu/Protocol.cs` (encoding), `NiceAimassist/Makcu/PacketDecoder.cs` (parsing), and `NiceAimassist/Makcu/MakcuDevice.cs` (exchanges). Code comments link to the sections here and do not repeat the facts.
+The part of the MAKCU binary protocol that the client uses. The code is in `NiceAimassist/Mouse/Makcu/MakcuProtocol.cs` (encoding), `NiceAimassist/Mouse/Makcu/MakcuPacketDecoder.cs` (parsing), and `NiceAimassist/Mouse/Makcu/MakcuDevice.cs` (exchanges). Code comments link to the sections here and do not repeat the facts.
 
 ## Packet
 

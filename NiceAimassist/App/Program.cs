@@ -4,11 +4,13 @@ using System.Windows.Forms;
 using NiceAimassist.Collect;
 using NiceAimassist.Settings;
 using NiceAimassist.Detect;
-using NiceAimassist.Display;
+using NiceAimassist.Detect.Model;
+using NiceAimassist.Shared.Gpu;
 using NiceAimassist.Hold;
-using NiceAimassist.Logging;
+using NiceAimassist.Shared.Logging;
 using NiceAimassist.Loop;
 using NiceAimassist.Mouse;
+using NiceAimassist.Mouse.Makcu;
 using Application = System.Windows.Forms.Application;
 
 namespace NiceAimassist.App;
@@ -53,7 +55,7 @@ internal static class Program
     private static int Run()
     {
         SettingsFile file = new(SettingsFile.DefaultPath);
-        DisplayDevices? gpu = null;
+        GpuDevices? gpu = null;
         Collector? collector = null;
         IDetector? detector = null;
         MakcuDevice? device = null;
@@ -67,7 +69,7 @@ internal static class Program
             ModelFolder.ModelLocation model = ModelFolder.Resolve(startup.Detect.Model);
             HoldKeySet holdKey = new(startup.Hold.Keys);
 
-            gpu = new DisplayDevices(startup.Display.Adapter, startup.Display.Output);
+            gpu = new GpuDevices(startup.Display.Adapter, startup.Display.Output);
             collector = new Collector(
                 gpu, Path.Combine(AppContext.BaseDirectory, "dataset"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
             detector = new Detector(gpu, model.FilePath, collector);

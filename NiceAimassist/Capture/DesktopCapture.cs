@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using NiceAimassist.Display;
+using NiceAimassist.Shared.Gpu;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D11;
 using Silk.NET.Direct3D12;
@@ -18,7 +18,7 @@ public sealed unsafe partial class DesktopCapture : IDisposable
     private const uint GenericAll = 0x10000000;
     private const uint SharedResourceReadWrite = 0x80000001;
 
-    private readonly DisplayDevices _gpu;
+    private readonly GpuDevices _gpu;
     private ID3D11Texture2D* _sharedTexture;
     private ID3D11Fence* _copyDoneFence11;
     private ID3D11Fence* _computeDoneFence11;
@@ -35,7 +35,7 @@ public sealed unsafe partial class DesktopCapture : IDisposable
     private ulong _submittedSequence;
     private bool _disposed;
 
-    public DesktopCapture(DisplayDevices gpu, int inputWidth, int inputHeight)
+    public DesktopCapture(GpuDevices gpu, int inputWidth, int inputHeight)
     {
         _gpu = gpu;
         InputWidth = inputWidth;
