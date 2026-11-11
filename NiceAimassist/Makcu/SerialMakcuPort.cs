@@ -7,7 +7,7 @@ internal sealed class SerialMakcuPort : IMakcuPort
     private const int WriteTimeoutMs = 50;
     private const int WriteBufferSize = 64;
 
-    // The device applies a baud switch after the SET_BAUD packet has left the UART.
+    // The device applies a baud switch after the SET_BAUD packet leaves the UART.
     // Changing the host rate earlier garbles the packet.
     private static readonly TimeSpan BaudSwitchSettle = TimeSpan.FromMilliseconds(10);
 

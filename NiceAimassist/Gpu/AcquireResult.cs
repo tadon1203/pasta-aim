@@ -12,6 +12,6 @@ public enum AcquireResult
     /// <summary>The duplication returned a frame without a new image.</summary>
     NoNewImage,
 
-    /// <summary>The duplication was lost and recreated; the next wait continues on the new duplication.</summary>
+    /// <summary>The duplication was lost and recreated. The next wait continues on the new duplication.</summary>
     DeviceLost,
 }

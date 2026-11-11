@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 
 namespace NiceAimassist;
 
-/// <summary>Ordered from the most to the least severe; a level enables itself and every level before it.</summary>
+/// <summary>Ordered from the most to the least severe. A level enables itself and every level before it.</summary>
 public enum LogLevel
 {
     Error,
@@ -30,7 +30,7 @@ public static class Log
 
     public static bool IsEnabled(LogLevel level) => level <= _level;
 
-    /// <summary>Starts writing every enabled message to a new file in <paramref name="directory"/>. Older files beyond the last few are deleted. A failure leaves the console as the only sink.</summary>
+    /// <summary>Starts writing every enabled message to a new file in <paramref name="directory"/>. Old files beyond the last few are deleted. If a failure occurs, the console is the only sink.</summary>
     public static void OpenFile(string directory)
     {
         try
@@ -65,8 +65,8 @@ public static class Log
 
     public static void Trace(string message) => Write(LogLevel.Trace, message);
 
-    // An interpolated message is formatted only when its level is enabled. Its holes are still evaluated,
-    // so guard the call when a hole does real work.
+    // An interpolated message is formatted only when its level is enabled. The holes are still evaluated.
+    // Guard the call when a hole does real work.
     public static void Error(ref LogHandler<ErrorLevel> handler) => Write(ref handler);
 
     public static void Warn(ref LogHandler<WarnLevel> handler) => Write(ref handler);
@@ -112,7 +112,7 @@ public static class Log
     [InterpolatedStringHandler]
     public ref struct LogHandler<TLevel> where TLevel : ILevel
     {
-        // Used only while IsEnabled is true; the default value is never written to.
+        // Used only while IsEnabled is true. The default value is never written to.
         private DefaultInterpolatedStringHandler _text;
 
         public LogHandler(int literalLength, int formattedCount)
@@ -183,7 +183,7 @@ public static class Log
 
         _file?.Write($"{DateTime.Now:HH:mm:ss.fff} {level.ToString().ToUpperInvariant(),-5} [{Thread.CurrentThread.Name ?? "t" + Environment.CurrentManagedThreadId}] {message}");
 
-        // Console writes block on a slow terminal, so only the quiet levels reach it.
+        // Console writes block on a slow terminal. Therefore, only the quiet levels reach the console.
         switch (level)
         {
             case LogLevel.Error:

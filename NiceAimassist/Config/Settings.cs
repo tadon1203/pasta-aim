@@ -4,8 +4,8 @@ using System.Text.Json.Serialization;
 namespace NiceAimassist.Config;
 
 /// <summary>
-/// The settings file. Missing fields take their defaults, unknown fields are ignored,
-/// and out-of-range values are clamped by <see cref="WithClampedRanges"/>.
+/// The settings file. A missing field takes its default. An unknown field is ignored.
+/// An out-of-range value is clamped by <see cref="WithClampedRanges"/>.
 /// </summary>
 public sealed record Settings
 {
@@ -27,7 +27,7 @@ public sealed record Settings
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
-    /// <summary>The .onnx file name inside models/ next to the executable. Null when none is chosen.</summary>
+    /// <summary>The .onnx file name inside models/ next to the executable. The value is null when no model is chosen.</summary>
     [JsonPropertyName("model")]
     public string? Model { get; init; }
 
@@ -52,7 +52,7 @@ public sealed record Settings
     [JsonPropertyName("target_y_offset")]
     public int TargetYOffset { get; init; } = 50;
 
-    /// <summary>Per-frame cap on the movement length. 0 is no cap.</summary>
+    /// <summary>Per-frame cap on the movement length. 0 means no cap.</summary>
     [JsonPropertyName("max_delta")]
     public int MaxDelta { get; init; } = 512;
 
@@ -93,7 +93,7 @@ public sealed record Settings
         return settings.WithClampedRanges();
     }
 
-    /// <summary>Clamps every ranged value into its range and replaces an empty key or model name.</summary>
+    /// <summary>Clamps every ranged value into its range. Replaces an empty key or model name.</summary>
     public Settings WithClampedRanges() => this with
     {
         SensitivityX = Math.Clamp(SensitivityX, MinSensitivity, MaxSensitivity),
@@ -117,7 +117,7 @@ public sealed record Settings
         return kept.Length == 0 ? DefaultHoldKeys : kept;
     }
 
-    // The list property would make the generated comparison use references.
+    // The list property makes the generated comparison use references.
     public bool Equals(Settings? other) => other is not null && ToJson() == other.ToJson();
 
     public override int GetHashCode() => ToJson().GetHashCode();

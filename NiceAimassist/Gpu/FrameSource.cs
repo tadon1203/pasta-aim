@@ -12,11 +12,11 @@ public sealed unsafe class FrameSource : IDisposable
 {
     private readonly GpuContext _gpu;
     private ID3D11Texture2D* _sharedTexture;
-    private ID3D11Fence* _readyFence11;
-    private ID3D11Fence* _reuseFence11;
+    private ID3D11Fence* _copyDoneFence11;
+    private ID3D11Fence* _computeDoneFence11;
     private ID3D12Resource* _sharedResource;
-    private ID3D12Fence* _readyFence12;
-    private ID3D12Fence* _reuseFence12;
+    private ID3D12Fence* _copyDoneFence12;
+    private ID3D12Fence* _computeDoneFence12;
     private IDXGIOutputDuplication* _duplication;
     private bool _frameHeld;
     private IDXGIResource* _desktopResource;
@@ -60,30 +60,30 @@ public sealed unsafe class FrameSource : IDisposable
             Com.Check(
                 captureDevice5->CreateFence(0, FenceFlag.Shared, Com.IidOf<ID3D11Fence>(), (void**)&ready),
                 "ID3D11Device5.CreateFence (capture ready)");
-            _readyFence11 = ready;
-            _readyFence12 = OpenSharedFence12(_readyFence11, device);
+            _copyDoneFence11 = ready;
+            _copyDoneFence12 = OpenSharedFence12(_copyDoneFence11, device);
 
-            // Created on the compute device so that the capture copy waits on it on the GPU, not on the CPU.
-            ID3D12Fence* reuse;
+            // The compute device creates this fence. The capture copy then waits on the GPU, not on the CPU.
+            ID3D12Fence* computeDone;
             Com.Check(
-                device->CreateFence(0, D3D12FenceFlags.Shared, Com.IidOf<ID3D12Fence>(), (void**)&reuse),
-                "ID3D12Device.CreateFence (reuse)");
-            _reuseFence12 = reuse;
-            void* reuseHandle;
+                device->CreateFence(0, D3D12FenceFlags.Shared, Com.IidOf<ID3D12Fence>(), (void**)&computeDone),
+                "ID3D12Device.CreateFence (compute done)");
+            _computeDoneFence12 = computeDone;
+            void* computeDoneHandle;
             Com.Check(
-                device->CreateSharedHandle((ID3D12DeviceChild*)_reuseFence12, null, Com.GenericAll, (char*)null, &reuseHandle),
-                "CreateSharedHandle (reuse fence)");
+                device->CreateSharedHandle((ID3D12DeviceChild*)_computeDoneFence12, null, Com.GenericAll, (char*)null, &computeDoneHandle),
+                "CreateSharedHandle (compute done fence)");
             try
             {
-                ID3D11Fence* reuse11;
+                ID3D11Fence* computeDone11;
                 Com.Check(
-                    captureDevice5->OpenSharedFence(reuseHandle, Com.IidOf<ID3D11Fence>(), (void**)&reuse11),
-                    "OpenSharedFence (reuse fence)");
-                _reuseFence11 = reuse11;
+                    captureDevice5->OpenSharedFence(computeDoneHandle, Com.IidOf<ID3D11Fence>(), (void**)&computeDone11),
+                    "OpenSharedFence (compute done fence)");
+                _computeDoneFence11 = computeDone11;
             }
             finally
             {
-                NativeGpu.CloseSharedHandle(reuseHandle);
+                NativeGpu.CloseSharedHandle(computeDoneHandle);
             }
 
             _duplication = DuplicateOutput();
@@ -105,9 +105,9 @@ public sealed unsafe class FrameSource : IDisposable
 
     internal ID3D12Resource* SharedResource => _sharedResource;
 
-    internal ID3D12Fence* CaptureReadyFence => _readyFence12;
+    internal ID3D12Fence* CopyDoneFence => _copyDoneFence12;
 
-    internal ID3D12Fence* ReuseFence => _reuseFence12;
+    internal ID3D12Fence* ComputeDoneFence => _computeDoneFence12;
 
     /// <summary>The desktop image of the held frame. It is invalid after the next <see cref="TryAcquire"/>.</summary>
     internal ID3D11Texture2D* DesktopTexture => _desktopTexture;
@@ -118,14 +118,14 @@ public sealed unsafe class FrameSource : IDisposable
 
     internal void MarkSubmitted(ulong sequence) => _submittedSequence = sequence;
 
-    internal AcquireResult TryAcquire(int timeoutMs, out FrameTicket ticket)
+    internal AcquireResult TryAcquire(int timeoutMs, out CapturedFrame frame)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        ticket = default;
+        frame = default;
 
         if (_frameHeld)
         {
-            // The duplicated surface must not outlive the frame it came from, so the wrappers go before ReleaseFrame.
+            // The duplicated surface must not outlive its frame. Release the wrappers before ReleaseFrame.
             DisposeDesktopImage();
             _frameHeld = false;
             int release = _duplication->ReleaseFrame();
@@ -171,18 +171,18 @@ public sealed unsafe class FrameSource : IDisposable
         ID3D11DeviceContext4* context = _gpu.CaptureContext4;
         if (_submittedSequence != 0)
         {
-            Com.Check(context->Wait(_reuseFence11, _submittedSequence), "ID3D11DeviceContext4.Wait");
+            Com.Check(context->Wait(_computeDoneFence11, _submittedSequence), "ID3D11DeviceContext4.Wait");
         }
 
         D3D11Box sourceBox = _sourceBox;
         ((ID3D11DeviceContext*)context)->CopySubresourceRegion(
             (ID3D11Resource*)_sharedTexture, 0, 0, 0, 0, (ID3D11Resource*)_desktopTexture, 0, &sourceBox);
         _sequence++;
-        Com.Check(context->Signal(_readyFence11, _sequence), "ID3D11DeviceContext4.Signal");
-        // Without a flush, the copy and the signal may not reach the GPU while the compute queue already waits on them.
+        Com.Check(context->Signal(_copyDoneFence11, _sequence), "ID3D11DeviceContext4.Signal");
+        // Without a flush, the copy and the signal may not reach the GPU. The compute queue can already wait for them.
         ((ID3D11DeviceContext*)context)->Flush();
 
-        ticket = new FrameTicket(_sequence, frameInfo.LastPresentTime);
+        frame = new CapturedFrame(_sequence, frameInfo.LastPresentTime);
         return AcquireResult.Frame;
     }
 
@@ -208,10 +208,10 @@ public sealed unsafe class FrameSource : IDisposable
     {
         DisposeDesktopImage();
         Com.Release(ref _duplication);
-        Com.Release(ref _reuseFence11);
-        Com.Release(ref _reuseFence12);
-        Com.Release(ref _readyFence11);
-        Com.Release(ref _readyFence12);
+        Com.Release(ref _computeDoneFence11);
+        Com.Release(ref _computeDoneFence12);
+        Com.Release(ref _copyDoneFence11);
+        Com.Release(ref _copyDoneFence12);
         Com.Release(ref _sharedResource);
         Com.Release(ref _sharedTexture);
     }

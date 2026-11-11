@@ -7,7 +7,7 @@ namespace NiceAimassist.Collect;
 /// <summary>A tightly packed BGRA image. <see cref="Pixels"/> may be longer than the image.</summary>
 public readonly record struct BgraImage(byte[] Pixels, int Width, int Height);
 
-/// <summary>Writes one training shot as an Ultralytics-style crop plus a full-display original, both JPEG.</summary>
+/// <summary>Writes one training sample. The sample is an Ultralytics-style crop and a full-display original. Both are JPEG files.</summary>
 public sealed class DatasetWriter
 {
     public const int JpegQuality = 95;
@@ -40,7 +40,7 @@ public sealed class DatasetWriter
         GCHandle pin = GCHandle.Alloc(image.Pixels, GCHandleType.Pinned);
         try
         {
-            // Format32bppRgb ignores the alpha byte, which desktop duplication does not guarantee to be 255.
+            // Format32bppRgb ignores the alpha byte. Desktop duplication does not guarantee that the alpha byte is 255.
             using Bitmap bitmap = new(image.Width, image.Height, image.Width * 4, PixelFormat.Format32bppRgb, pin.AddrOfPinnedObject());
             using EncoderParameters parameters = new(1);
             parameters.Param[0] = new EncoderParameter(Encoder.Quality, (long)JpegQuality);

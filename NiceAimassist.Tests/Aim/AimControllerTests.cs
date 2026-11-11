@@ -76,11 +76,11 @@ public class AimControllerTests
     }
 
     [Fact]
-    public void CarryAccumulatesSubCountMovement()
+    public void RemainderAccumulatesSubCountMovement()
     {
         var aim = new AimController();
         var p = Params();
-        // Frames are a second apart, so the velocity estimate stays at zero.
+        // The frames are one second apart. The velocity estimate stays at zero.
         var sent = new (bool, int, int)[4];
         for (int i = 0; i < sent.Length; i++)
         {
@@ -105,7 +105,7 @@ public class AimControllerTests
         var aim = new AimController();
         var p = Params();
         Step(aim, At(50, 50), 0, p, delay: 0.010);
-        // The blended delay is 0.010 + 0.2 * (0.060 - 0.010) = 0.020, so the lead is 0.030.
+        // The blended delay is 0.010 + 0.2 * (0.060 - 0.010) = 0.020. The lead is 0.030.
         Assert.Equal((true, 40, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.060));
     }
 
@@ -133,7 +133,7 @@ public class AimControllerTests
         var aim = new AimController();
         var p = Params(smoothing: 50);
         Step(aim, At(50, 50), 0, p, delay: 0.01);
-        // Half of the 1000 px/s measured velocity, leading by 0.02 s.
+        // The measured velocity is 1000 px/s. Half of it is the new estimate. The lead is 0.02 s.
         Assert.Equal((true, 20, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
     }
 
@@ -182,7 +182,7 @@ public class AimControllerTests
         var aim = new AimController();
         var p = Params();
         Assert.False(Step(aim, At(50.3f, 50), 0, p).Sent);
-        // Carrying the 0.3 remainder would round 40.3 + 0.3 up to 41.
+        // A carried 0.3 remainder would round 40.3 + 0.3 up to 41. The test expects 40.
         Assert.Equal((true, 40, 0), Step(aim, At(90.3f, 50), 1, p));
     }
 
@@ -190,9 +190,9 @@ public class AimControllerTests
     public void ASaturatedAxisDoesNotKeepAHugeRemainder()
     {
         var aim = new AimController();
-        // 400 px at gain 100 is 40000 counts, which saturates to 32767 and leaves the remainder clamped to 0.5.
+        // 400 px at gain 100 is 40000 counts. The value saturates to 32767. The remainder is clamped to 0.5.
         Assert.Equal((true, 32767, 0), Step(aim, At(450, 50), 0, Params(sensitivity: 10000)));
-        // 400 px at gain 0.25 is exactly 100; with the clamped 0.5 remainder it rounds to 101.
+        // 400 px at gain 0.25 is exactly 100. With the clamped 0.5 remainder, it rounds to 101.
         Assert.Equal((true, 101, 0), Step(aim, At(450, 50), 1, Params(sensitivity: 25)));
     }
 }

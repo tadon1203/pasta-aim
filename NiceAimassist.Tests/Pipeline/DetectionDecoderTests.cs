@@ -6,7 +6,7 @@ namespace NiceAimassist.Tests.Pipeline;
 
 public class DetectionDecoderTests
 {
-    // Input is 100x100, so the center is (50, 50).
+    // The input is 100x100. The center is (50, 50).
     private const int Width = 100;
     private const int Height = 100;
     private static readonly Size Input = new(Width, Height);
@@ -111,7 +111,7 @@ public class DetectionDecoderTests
     [Fact]
     public void Fp16CellsAreReadLittleEndian()
     {
-        // Bit patterns: 0x3C00 is 1.0 and 0x4900 is 10.0 in fp16, stored low byte first.
+        // In fp16, the bit pattern 0x3C00 is 1.0 and 0x4900 is 10.0. Each value is stored low byte first.
         byte[] row =
         [
             0x00, 0x3C, // x1 = 1

@@ -9,10 +9,10 @@ public interface IFramePipeline : IDisposable
     int InputHeight { get; }
 
     /// <summary>
-    /// Waits a bounded time for a new desktop frame and, when there is one, runs the model on it.
-    /// <see cref="FrameResult.Target"/> is the detection nearest to the input center whose score is at
-    /// least <paramref name="confidence"/> (0..1), or null. The result is <see cref="AcquireResult.Frame"/>
-    /// only when <paramref name="result"/> is filled.
+    /// Waits a bounded time for a new desktop frame. If a frame arrives, runs the model on it.
+    /// <see cref="FrameResult.Target"/> is the detection nearest to the input center. Its score is at least
+    /// <paramref name="confidence"/> (0..1). The value is null when no detection qualifies.
+    /// The result is <see cref="AcquireResult.Frame"/> only when <paramref name="result"/> is filled.
     /// </summary>
     AcquireResult TryRun(float confidence, out FrameResult result);
 }

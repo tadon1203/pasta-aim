@@ -2,25 +2,25 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 using NiceAimassist.Config;
-using NiceAimassist.Engine;
+using NiceAimassist.Loop;
 using NiceAimassist.Input;
 using Timer = System.Windows.Forms.Timer;
 
 namespace NiceAimassist.Ui;
 
 /// <summary>
-/// Edits settings.json through <see cref="SettingsStore.Save"/>. The engine picks the change up
-/// from the store, so the form shares no state with it besides <see cref="EngineStats"/>.
+/// Edits settings.json through <see cref="SettingsStore.Save"/>. The loop reads the change from the store.
+/// The form shares no state with the loop, except <see cref="LoopStats"/>.
 /// </summary>
 internal sealed class SettingsForm : Form
 {
     private const int SaveDelayMs = 300;
-    private const int CapturePollMs = 15;
+    private const int KeyInputPollMs = 15;
     private const int StatusIntervalMs = 1000;
     private const string AddKeyText = "Add";
 
     private readonly SettingsStore _store;
-    private readonly EngineStats _stats;
+    private readonly LoopStats _stats;
     private readonly ManualResetEventSlim _stopped;
     private readonly string _modelsDirectory;
 
@@ -43,14 +43,14 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _collectEnabled = new();
     private readonly Label _status = new();
     private readonly Timer _saveTimer = new();
-    private readonly Timer _captureTimer = new();
+    private readonly Timer _keyInputTimer = new();
     private readonly Timer _statusTimer = new();
 
     private bool _armed;
     private long _lastFrames;
     private long _lastTicks = Stopwatch.GetTimestamp();
 
-    public SettingsForm(SettingsStore store, EngineStats stats, ManualResetEventSlim stopped, string modelsDirectory)
+    public SettingsForm(SettingsStore store, LoopStats stats, ManualResetEventSlim stopped, string modelsDirectory)
     {
         _store = store;
         _stats = stats;
@@ -68,7 +68,7 @@ internal sealed class SettingsForm : Form
         if (disposing)
         {
             _saveTimer.Dispose();
-            _captureTimer.Dispose();
+            _keyInputTimer.Dispose();
             _statusTimer.Dispose();
         }
 
@@ -143,7 +143,7 @@ internal sealed class SettingsForm : Form
         Controls.Add(_layout);
 
         _saveTimer.Interval = SaveDelayMs;
-        _captureTimer.Interval = CapturePollMs;
+        _keyInputTimer.Interval = KeyInputPollMs;
         _statusTimer.Interval = StatusIntervalMs;
     }
 
@@ -215,10 +215,10 @@ internal sealed class SettingsForm : Form
             SettingChanged();
         };
         _holdKeys.SelectedIndexChanged += (_, _) => UpdateKeyButtons();
-        _addKey.Click += (_, _) => BeginCapture();
+        _addKey.Click += (_, _) => BeginKeyInput();
         _removeKey.Click += (_, _) => RemoveSelectedKey();
         _saveTimer.Tick += (_, _) => Flush();
-        _captureTimer.Tick += (_, _) => PollCapture();
+        _keyInputTimer.Tick += (_, _) => PollKeyInput();
         _statusTimer.Tick += (_, _) => RefreshStatus();
         FormClosing += (_, _) => Flush();
     }
@@ -279,20 +279,20 @@ internal sealed class SettingsForm : Form
         }
     }
 
-    private void BeginCapture()
+    private void BeginKeyInput()
     {
         _armed = false;
         _addKey.Enabled = false;
         _addKey.Text = "Press… (Esc)";
-        _captureTimer.Start();
+        _keyInputTimer.Start();
     }
 
-    // The click that started the capture is still down, so nothing counts until all keys are up once.
-    private void PollCapture()
+    // The click that started the input is still down. Nothing counts until all keys are up once.
+    private void PollKeyInput()
     {
         if (HoldKey.IsEscapeDown())
         {
-            EndCapture(null);
+            EndKeyInput(null);
             return;
         }
 
@@ -303,13 +303,13 @@ internal sealed class SettingsForm : Form
         }
         else if (_armed)
         {
-            EndCapture(name);
+            EndKeyInput(name);
         }
     }
 
-    private void EndCapture(string? name)
+    private void EndKeyInput(string? name)
     {
-        _captureTimer.Stop();
+        _keyInputTimer.Stop();
         _addKey.Enabled = true;
         _addKey.Text = AddKeyText;
         if (name is not null && !_holdKeys.Items.Cast<string>().Contains(name, StringComparer.OrdinalIgnoreCase))

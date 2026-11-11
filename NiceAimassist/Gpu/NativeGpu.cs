@@ -11,8 +11,8 @@ internal static unsafe partial class NativeGpu
 
     internal static void CloseSharedHandle(void* handle) => CloseHandle((nint)handle);
 
-    // Spins instead of sleeping. A removed device completes every fence with ulong.MaxValue, which ends the loop.
-    internal static void SpinUntil(ID3D12Fence* fence, ulong value)
+    // Spin instead of sleep. A removed device completes every fence with ulong.MaxValue. That value ends the loop.
+    internal static void WaitForFence(ID3D12Fence* fence, ulong value)
     {
         while (fence->GetCompletedValue() < value)
         {

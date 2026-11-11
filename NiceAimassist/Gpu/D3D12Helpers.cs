@@ -7,7 +7,7 @@ namespace NiceAimassist.Gpu;
 
 internal static unsafe class D3D12Helpers
 {
-    // D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES: the barrier covers every mip level and array slice.
+    // D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES. The barrier covers every mip level and array slice.
     private const uint AllSubresources = uint.MaxValue;
 
     /// <summary>A whole-resource transition barrier from <paramref name="before"/> to <paramref name="after"/>.</summary>
@@ -24,7 +24,7 @@ internal static unsafe class D3D12Helpers
         return barrier;
     }
 
-    /// <summary>The text of a compiler or serializer error blob, or an empty string when there is none.</summary>
+    /// <summary>The text of a compiler or serializer error blob. The value is an empty string when the blob is null.</summary>
     internal static string BlobToString(ID3D10Blob* blob)
     {
         if (blob == null)
@@ -32,8 +32,8 @@ internal static unsafe class D3D12Helpers
             return string.Empty;
         }
 
-        // SAFETY: the blob is non-null and owned by the caller until it releases it after this call. GetBufferPointer
-        // and GetBufferSize describe the blob's own buffer, which stays valid until the blob is released.
+        // SAFETY: the blob is not null. The caller owns it until the caller releases it after this call. GetBufferPointer
+        // and GetBufferSize describe the buffer of the blob. That buffer stays valid until the blob is released.
         return Encoding.UTF8.GetString((byte*)blob->GetBufferPointer(), (int)blob->GetBufferSize());
     }
 }

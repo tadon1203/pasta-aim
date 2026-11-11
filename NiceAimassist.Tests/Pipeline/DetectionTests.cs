@@ -24,7 +24,7 @@ public class DetectionTests
     [Fact]
     public void IoUOfBoxesShiftedByHalfTheirWidthIsOneThird()
     {
-        // The shared area is 50 and the union is 150.
+        // The shared area is 50. The union is 150.
         Detection a = new(0, 0, 10, 10, 0.9f, 0);
         Detection b = new(5, 0, 15, 10, 0.9f, 0);
 

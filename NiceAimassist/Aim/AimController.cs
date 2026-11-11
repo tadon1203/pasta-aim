@@ -16,7 +16,7 @@ public sealed class AimController
     private const float TargetYOffsetDefault = 50f;
 
     private Detection? _last;
-    private Vector2 _carry;
+    private Vector2 _remainder;
     private Vector2 _velocity;
     private (Vector2 Center, long Capture)? _previous;
     private float? _delay;
@@ -66,13 +66,13 @@ public sealed class AimController
             }
         }
 
-        Vector2 withCarry = movement + _carry;
-        short x = ToShort(withCarry.X);
-        short y = ToShort(withCarry.Y);
+        Vector2 withRemainder = movement + _remainder;
+        short x = ToShort(withRemainder.X);
+        short y = ToShort(withRemainder.Y);
         // A saturated axis must not keep its overflow as remainder.
-        _carry = new Vector2(
-            Math.Clamp(withCarry.X - x, -0.5f, 0.5f),
-            Math.Clamp(withCarry.Y - y, -0.5f, 0.5f));
+        _remainder = new Vector2(
+            Math.Clamp(withRemainder.X - x, -0.5f, 0.5f),
+            Math.Clamp(withRemainder.Y - y, -0.5f, 0.5f));
 
         return new AimResult(x != 0 || y != 0 ? AimOutcome.Move : AimOutcome.OnTarget, x, y);
     }
@@ -95,7 +95,7 @@ public sealed class AimController
 
     private void ResetTracking()
     {
-        _carry = Vector2.Zero;
+        _remainder = Vector2.Zero;
         _velocity = Vector2.Zero;
         _previous = null;
     }
@@ -120,7 +120,7 @@ public sealed class AimController
         return _velocity;
     }
 
-    // Rounds half away from zero, which the aim relies on for symmetric moves.
+    // Round half away from zero. The aim relies on this rule for symmetric moves.
     private static short ToShort(float value)
     {
         float rounded = MathF.Round(value, MidpointRounding.AwayFromZero);

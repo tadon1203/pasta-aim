@@ -1,6 +1,6 @@
-namespace NiceAimassist.Engine;
+namespace NiceAimassist.Loop;
 
-/// <summary>Accumulates frame timings. It has no clock: the caller decides where a window ends.</summary>
+/// <summary>Accumulates frame timings. It has no clock. The caller decides where a window ends.</summary>
 internal sealed class LatencyWindow
 {
     private long _capture;

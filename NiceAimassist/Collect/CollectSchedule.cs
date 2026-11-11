@@ -1,6 +1,6 @@
 namespace NiceAimassist.Collect;
 
-/// <summary>Decides when the next training image is due. A stall delays the next image; it never causes a burst.</summary>
+/// <summary>Decides when the next training image is due. A stall delays the next image. It never causes a burst.</summary>
 public sealed class CollectSchedule
 {
     private readonly Func<long> _now;

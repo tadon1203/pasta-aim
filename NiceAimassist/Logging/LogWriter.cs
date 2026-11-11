@@ -3,7 +3,7 @@ using System.Text;
 
 namespace NiceAimassist;
 
-/// <summary>Writes lines to a file on its own thread. <see cref="Write"/> never blocks: a full queue drops the line.</summary>
+/// <summary>Writes lines to a file on its own thread. <see cref="Write"/> never blocks. A full queue drops the line.</summary>
 internal sealed class LogWriter : IDisposable
 {
     private const int MaxPending = 65_536;

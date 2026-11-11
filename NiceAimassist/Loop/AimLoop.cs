@@ -5,7 +5,7 @@ using NiceAimassist.Config;
 using NiceAimassist.Gpu;
 using NiceAimassist.Pipeline;
 
-namespace NiceAimassist.Engine;
+namespace NiceAimassist.Loop;
 
 /// <summary>Runs the aim loop on one dedicated thread.</summary>
 public sealed class AimLoop
@@ -21,15 +21,15 @@ public sealed class AimLoop
     private readonly ICollectControl? _collector;
     private readonly AimController _aim = new();
     private bool _wasHeld;
-    private readonly EngineDiagnostics _diagnostics;
-    private readonly EngineStats _stats = new();
+    private readonly LoopDiagnostics _diagnostics;
+    private readonly LoopStats _stats = new();
     private volatile bool _running;
     private Thread? _thread;
     private bool _interpolationSent;
     private Interpolation _sentInterpolation;
 
-    /// <param name="now">Stopwatch timestamp source, normally <c>Stopwatch.GetTimestamp</c>.</param>
-    /// <param name="onFault">Called on the engine thread when the pipeline or the sink throws. The loop ends after it.</param>
+    /// <param name="now">Source of the Stopwatch timestamps. Usually <c>Stopwatch.GetTimestamp</c>.</param>
+    /// <param name="onFault">Called on the loop thread when the pipeline or the sink throws. The loop ends after the call.</param>
     public AimLoop(
         IFramePipeline pipeline,
         IMoveSink sink,
@@ -46,24 +46,24 @@ public sealed class AimLoop
         _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
         _now = now ?? throw new ArgumentNullException(nameof(now));
         _onFault = onFault ?? throw new ArgumentNullException(nameof(onFault));
-        _diagnostics = new EngineDiagnostics(_now, _stats);
+        _diagnostics = new LoopDiagnostics(_now, _stats);
     }
 
-    public EngineStats Stats => _stats;
+    public LoopStats Stats => _stats;
 
     public void Start()
     {
         if (_thread is not null)
         {
-            throw new InvalidOperationException("the engine is already started");
+            throw new InvalidOperationException("the loop is already started");
         }
 
         _running = true;
-        _thread = new Thread(ThreadMain) { Name = "engine", IsBackground = true };
+        _thread = new Thread(ThreadMain) { Name = "loop", IsBackground = true };
         _thread.Start();
     }
 
-    /// <summary>Stops the loop and waits for the engine thread to exit. A frame in progress finishes without moving the mouse.</summary>
+    /// <summary>Stops the loop and waits for the loop thread to exit. A frame in progress ends without a mouse move.</summary>
     public void Stop()
     {
         _running = false;
@@ -82,7 +82,7 @@ public sealed class AimLoop
         }
         catch (Exception error)
         {
-            Log.Error($"the engine faulted: {error}");
+            Log.Error($"the loop faulted: {error}");
             _onFault(error);
         }
     }
@@ -138,12 +138,12 @@ public sealed class AimLoop
                 settings.VelocitySmoothing);
             AimResult aim = _aim.Update(
                 frame.Target,
-                frame.PresentTimestamp,
+                frame.DesktopTimestamp,
                 _now(),
                 new Size(_pipeline.InputWidth, _pipeline.InputHeight),
                 parameters);
             long aimedAt = _now();
-            // The flag is read after the aim so that a stop during the frame suppresses its move.
+            // Read the flag after the aim. A stop during the frame then suppresses its move.
             bool sent = aim.Outcome == AimOutcome.Move && _running;
             if (sent)
             {
@@ -151,13 +151,13 @@ public sealed class AimLoop
             }
 
             long sentAt = sent ? _now() : aimedAt;
-            FrameTimings timings = new(frame.PresentTimestamp, frame.AcquiredTimestamp, frame.InferredTimestamp, aimedAt, sentAt);
+            FrameTimings timings = new(frame.DesktopTimestamp, frame.AcquiredTimestamp, frame.InferredTimestamp, aimedAt, sentAt);
             _stats.RecordFrame();
             _diagnostics.RecordFrame(frame, timings, aim, sent);
         }
     }
 
-    // Collection runs only while the hold key is down, so it follows the same frames the aim uses.
+    // Collection runs only while the hold key is down. It uses the same frames as the aim.
     private void UpdateCollector(Settings settings, bool held)
     {
         if (_collector is null)
@@ -167,7 +167,7 @@ public sealed class AimLoop
 
         _collector.SetEnabled(held && settings.CollectEnabled);
         _collector.Configure(settings.CollectSize, settings.CollectRate);
-        _collector.CollectFinishedCopy();
+        _collector.SubmitReadySample();
         _stats.SetCollect(_collector.Active, _collector.Saved, _collector.LastError);
     }
 

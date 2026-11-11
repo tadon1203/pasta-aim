@@ -19,9 +19,9 @@ public class CollectTests : IDisposable
     [InlineData(1920, 1080, 640, 640)]
     [InlineData(1920, 1080, 641, 641)]
     [InlineData(1920, 1080, 4096, 1080)]
-    public void RoiIsACenteredSquareThatFitsTheDesktop(int dw, int dh, int size, int expectedSide)
+    public void CropIsACenteredSquareThatFitsTheDesktop(int dw, int dh, int size, int expectedSide)
     {
-        (int left, int top, int side) = CollectRoi.Square(dw, dh, size);
+        (int left, int top, int side) = CollectCrop.Square(dw, dh, size);
 
         Assert.Equal(expectedSide, side);
         Assert.Equal((dw - side) / 2, left);
@@ -57,10 +57,10 @@ public class CollectTests : IDisposable
     {
         DatasetWriter writer = new(_root);
 
-        writer.Write("shot", Solid(64, 48), Solid(160, 90));
+        writer.Write("sample", Solid(64, 48), Solid(160, 90));
 
-        string crop = Path.Combine(_root, "images", "train", "shot.jpg");
-        string original = Path.Combine(_root, "original", "shot.jpg");
+        string crop = Path.Combine(_root, "images", "train", "sample.jpg");
+        string original = Path.Combine(_root, "original", "sample.jpg");
         Assert.Equal([(byte)0xFF, (byte)0xD8], File.ReadAllBytes(crop).Take(2).ToArray());
         using (Image image = Image.FromFile(crop))
         {
@@ -76,21 +76,21 @@ public class CollectTests : IDisposable
     }
 
     [Fact]
-    public void FullQueueRejectsAShotWithoutBlocking()
+    public void FullQueueRejectsASampleWithoutBlocking()
     {
         using ManualResetEventSlim release = new();
         using ManualResetEventSlim started = new();
-        using ShotWriter writer = new(_ => { started.Set(); release.Wait(); }, _ => { });
-        Shot shot = new("s", Solid(1, 1), Solid(1, 1));
+        using SampleWriter writer = new(_ => { started.Set(); release.Wait(); }, _ => { });
+        Sample sample = new("s", Solid(1, 1), Solid(1, 1));
 
-        Assert.True(writer.TrySubmit(shot));
+        Assert.True(writer.TrySubmit(sample));
         Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
-        for (int queued = 0; queued < ShotWriter.QueueCapacity; queued++)
+        for (int queued = 0; queued < SampleWriter.QueueCapacity; queued++)
         {
-            Assert.True(writer.TrySubmit(shot));
+            Assert.True(writer.TrySubmit(sample));
         }
 
-        Assert.False(writer.TrySubmit(shot));
+        Assert.False(writer.TrySubmit(sample));
         release.Set();
     }
 

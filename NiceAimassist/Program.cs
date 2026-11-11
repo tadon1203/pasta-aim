@@ -4,7 +4,7 @@ using System.Windows.Forms;
 using NiceAimassist;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
-using NiceAimassist.Engine;
+using NiceAimassist.Loop;
 using NiceAimassist.Gpu;
 using NiceAimassist.Input;
 using NiceAimassist.Makcu;
@@ -42,7 +42,7 @@ internal static class Program
         Collector? collector = null;
         IFramePipeline? pipeline = null;
         MakcuDevice? device = null;
-        AimLoop? engine = null;
+        AimLoop? loop = null;
         ConsoleCancelEventHandler? onCancel = null;
         try
         {
@@ -61,9 +61,9 @@ internal static class Program
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            // Read only on the engine thread. A new snapshot from the store is applied once, not on every loop.
+            // Only the loop thread reads this. The loop applies a new snapshot from the store once. It does not apply it on every loop.
             Settings? applied = null;
-            engine = new AimLoop(
+            loop = new AimLoop(
                 pipeline,
                 new MakcuSink(device),
                 holdKey.IsHeld,
@@ -93,19 +93,19 @@ internal static class Program
                 stopped.Set();
             };
             Console.CancelKeyPress += onCancel;
-            engine.Start();
-            // The visual styles and DPI mode must be set before the first window is created.
+            loop.Start();
+            // Set the visual styles and DPI mode before the first window is created.
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (SettingsForm form = new(store, engine.Stats, stopped, model.Directory))
+            using (SettingsForm form = new(store, loop.Stats, stopped, model.Directory))
             {
                 Application.Run(form);
             }
 
             if (fault is not null)
             {
-                throw new InvalidOperationException($"the engine stopped: {fault.Message}", fault);
+                throw new InvalidOperationException($"the loop stopped: {fault.Message}", fault);
             }
 
             return 0;
@@ -117,7 +117,7 @@ internal static class Program
                 Console.CancelKeyPress -= onCancel;
             }
 
-            engine?.Stop();
+            loop?.Stop();
             pipeline?.Dispose();
             collector?.Dispose();
             gpu?.Dispose();
@@ -126,7 +126,7 @@ internal static class Program
         }
     }
 
-    /// <summary>The model file and the folder that holds it. The settings window lists models from that folder.</summary>
+    /// <summary>The model file and its folder. The settings window lists the models in that folder.</summary>
     private sealed record ModelLocation(string Directory, string FilePath);
 
     private static ModelLocation ResolveModel(string? model)
@@ -150,7 +150,7 @@ internal static class Program
 
     private sealed record HoldBinding(IReadOnlyList<string> Names, HoldKey[] Keys);
 
-    /// <summary>The hold keys. They are re-parsed on the engine thread when the settings file changes.</summary>
+    /// <summary>The hold keys. The loop thread parses them again when the settings file changes.</summary>
     private sealed class HoldKeySource
     {
         private HoldBinding _binding;

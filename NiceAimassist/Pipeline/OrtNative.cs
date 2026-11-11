@@ -4,8 +4,8 @@ namespace NiceAimassist.Pipeline;
 
 internal readonly record struct TensorIo(string Name, long[] Dims, int ElementType);
 
-// The slot numbers are positions in the OrtApi and OrtDmlApi tables. Members are only appended,
-// so the numbers hold for every later version.
+// The slot numbers are positions in the OrtApi and OrtDmlApi tables. Members are only appended.
+// The numbers stay valid for every later version.
 internal static unsafe partial class OrtNative
 {
     private const uint ApiVersion = 17;
@@ -130,7 +130,7 @@ internal static unsafe partial class OrtNative
         }
     }
 
-    // The device and queue must belong to the same D3D12 device and outlive the session.
+    // The device and the queue must belong to the same D3D12 device. They must outlive the session.
     internal static void AppendDirectMl1(nint options, nint dmlDevice, nint commandQueue) =>
         Check(((delegate* unmanaged<nint, nint, nint, nint>)DmlFunction(DmlSlot.AppendExecutionProviderDml1))(
             options, dmlDevice, commandQueue), "SessionOptionsAppendExecutionProvider_DML1");
@@ -236,7 +236,7 @@ internal static unsafe partial class OrtNative
         }
     }
 
-    // The allocator is created from the session, so it must be released before the session.
+    // The allocator is created from the session. Release it before the session.
     internal static nint CreateDirectMlAllocator(nint session)
     {
         nint name = Utf8("DML");
@@ -291,7 +291,7 @@ internal static unsafe partial class OrtNative
         return data;
     }
 
-    // Returns an ID3D12Resource with a reference the caller owns.
+    // Returns an ID3D12Resource. The caller owns the reference.
     internal static nint GetD3D12Resource(nint allocator, nint data)
     {
         nint resource;
@@ -322,7 +322,7 @@ internal static unsafe partial class OrtNative
     internal static void BindOutput(nint binding, string name, nint value) =>
         BindTensor(ApiSlot.BindOutput, binding, name, value);
 
-    // Runs without run options. The engine thread is the only caller.
+    // Runs without run options. Only the loop thread calls this.
     internal static void RunWithBinding(nint session, nint binding) =>
         Check(((delegate* unmanaged<nint, nint, nint, nint>)Slot(ApiSlot.RunWithBinding))(
             session, 0, binding), "RunWithBinding");
@@ -335,7 +335,7 @@ internal static unsafe partial class OrtNative
             throw new InvalidOperationException("onnxruntime.dll did not return an API base.");
         }
 
-        // OrtApiBase::GetApi is its first member.
+        // OrtApiBase::GetApi is the first member.
         nint api = ((delegate* unmanaged<uint, nint>)((nint*)apiBase)[0])(ApiVersion);
         if (api == 0)
         {
@@ -398,7 +398,7 @@ internal static unsafe partial class OrtNative
         }
     }
 
-    // The default allocator belongs to the runtime and is never released.
+    // The runtime owns the default allocator. Never release it.
     private static nint DefaultAllocator()
     {
         nint allocator;

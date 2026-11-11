@@ -12,7 +12,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
     private readonly GpuContext _gpu;
     private readonly ModelOutput _output;
-    private readonly IFrameTap? _tap;
+    private readonly IFrameObserver? _observer;
 
     private nint _env;
     private void* _dmlDevice;
@@ -23,16 +23,16 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private nint _binding;
     private ID3D12Resource* _inputResource;
     private ID3D12Resource* _outputResource;
-    private Readback? _readback;
+    private OutputReader? _outputReader;
     private Preprocessor? _preprocessor;
     private FrameSource? _frames;
     private bool _disposed;
 
-    public FramePipeline(GpuContext gpu, string modelPath, IFrameTap? tap = null)
+    public FramePipeline(GpuContext gpu, string modelPath, IFrameObserver? observer = null)
     {
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(modelPath);
-        _tap = tap;
+        _observer = observer;
         if (!File.Exists(modelPath))
         {
             throw new FileNotFoundException("The ONNX model does not exist.", modelPath);
@@ -74,7 +74,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
             _frames = new FrameSource(gpu, InputWidth, InputHeight);
             _preprocessor = new Preprocessor(gpu, _frames, inputSpec.Precision);
-            _readback = new Readback(gpu, _outputResource, checked((int)_output.ByteLength));
+            _outputReader = new OutputReader(gpu, _outputResource, checked((int)_output.ByteLength));
 
             _binding = OrtNative.CreateIoBinding(_session);
             OrtNative.BindInput(_binding, input.Name, _inputValue);
@@ -104,25 +104,25 @@ public sealed unsafe class FramePipeline : IFramePipeline
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         result = default;
-        AcquireResult status = _frames!.TryAcquire(AcquireTimeoutMs, out FrameTicket ticket);
+        AcquireResult status = _frames!.TryAcquire(AcquireTimeoutMs, out CapturedFrame frame);
         if (status != AcquireResult.Frame)
         {
             return status;
         }
 
         long acquiredTimestamp = Stopwatch.GetTimestamp();
-        _preprocessor!.Submit(ticket, _inputResource);
+        _preprocessor!.Submit(frame, _inputResource);
         CollectHeldFrame();
         ReadOnlySpan<byte> output = InferAndRead();
         DecodeResult decoded = DetectionDecoder.Decode(output, _output, new Size(InputWidth, InputHeight), confidence);
         long inferredTimestamp = Stopwatch.GetTimestamp();
-        result = new FrameResult(ticket.PresentTimestamp, acquiredTimestamp, inferredTimestamp, decoded.Nearest, decoded.MaxScore);
+        result = new FrameResult(frame.DesktopTimestamp, acquiredTimestamp, inferredTimestamp, decoded.Nearest, decoded.MaxScore);
         return AcquireResult.Frame;
     }
 
     private void CollectHeldFrame()
     {
-        if (_tap is null || !_tap.IsDue)
+        if (_observer is null || !_observer.IsDue)
         {
             return;
         }
@@ -133,7 +133,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
             return;
         }
 
-        _tap.Capture(desktop);
+        _observer.Observe(desktop);
     }
 
     public void Dispose()
@@ -150,7 +150,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private ReadOnlySpan<byte> InferAndRead()
     {
         OrtNative.RunWithBinding(_session, _binding);
-        return _readback!.Read();
+        return _outputReader!.Read();
     }
 
     private nint CreateSession(string modelPath)
@@ -205,9 +205,9 @@ public sealed unsafe class FramePipeline : IFramePipeline
         return resource;
     }
 
-    // Order matters: the binding and tensors go before the allocator, the allocator before the session,
-    // and the DirectML device after the session. The readback, preprocessor and frame source come last
-    // because the queue may still touch them until it is idle.
+    // The order matters. Release the binding and the tensors before the allocator. Release the allocator before the session.
+    // Release the DirectML device after the session. Release the output reader, preprocessor and frame source last.
+    // The queue can still touch them until it is idle.
     private void ReleaseAll()
     {
         _gpu.WaitIdle();
@@ -226,8 +226,8 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
         ReleaseOnce(ref _env, OrtNative.ReleaseEnv);
 
-        _readback?.Dispose();
-        _readback = null;
+        _outputReader?.Dispose();
+        _outputReader = null;
         Com.Release(ref _outputResource);
         Com.Release(ref _inputResource);
         _preprocessor?.Dispose();

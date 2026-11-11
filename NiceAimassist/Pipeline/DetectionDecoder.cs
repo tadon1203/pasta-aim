@@ -4,14 +4,14 @@ using System.Runtime.InteropServices;
 
 namespace NiceAimassist.Pipeline;
 
-/// <summary>The output of one decode pass: the nearest accepted detection, and the highest finite score of any row.</summary>
+/// <summary>The output of one decode pass. It holds the nearest accepted detection and the highest finite score of any row.</summary>
 internal readonly record struct DecodeResult(Detection? Nearest, float MaxScore);
 
 internal static class DetectionDecoder
 {
     /// <summary>
-    /// Decodes the model output in one pass. The typed view reads the buffer in native order, which is
-    /// little-endian on the Windows x64 targets.
+    /// Decodes the model output in one pass. The typed view reads the buffer in native byte order.
+    /// On the Windows x64 targets, that order is little-endian.
     /// </summary>
     internal static DecodeResult Decode(ReadOnlySpan<byte> rows, ModelOutput output, Size input, float confidence)
     {
@@ -25,7 +25,7 @@ internal static class DetectionDecoder
             : DecodeCells(MemoryMarshal.Cast<byte, float>(rows), output.Rows, input, confidence);
     }
 
-    // The conversion to float is resolved per element type at JIT time, so the loop has no precision branch.
+    // The conversion to float is resolved per element type at JIT time. Therefore, the loop has no precision branch.
     private static DecodeResult DecodeCells<TElement>(
         ReadOnlySpan<TElement> cells,
         int rowCount,
@@ -50,7 +50,7 @@ internal static class DetectionDecoder
             float score = float.CreateTruncating(cells[cell + 4]);
             float classId = float.CreateTruncating(cells[cell + 5]);
 
-            // The max score ignores the box and the confidence filter, so it is taken before them.
+            // The max score ignores the box and the confidence filter. It is taken before them.
             if (float.IsFinite(score) && score > maxScore)
             {
                 maxScore = score;

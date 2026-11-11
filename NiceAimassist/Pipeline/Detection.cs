@@ -1,6 +1,6 @@
 namespace NiceAimassist.Pipeline;
 
-/// <summary>One model output row, in model-input pixel coordinates (origin top-left). The decoder keeps only boxes with X2 &gt; X1 and Y2 &gt; Y1.</summary>
+/// <summary>One model output row. The coordinates are model-input pixels. The origin is the top left. The decoder keeps only boxes with X2 &gt; X1 and Y2 &gt; Y1.</summary>
 public readonly record struct Detection(float X1, float Y1, float X2, float Y2, float Score, int Class)
 {
     public float Width => X2 - X1;

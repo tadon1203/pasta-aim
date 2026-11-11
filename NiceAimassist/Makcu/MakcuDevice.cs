@@ -3,7 +3,7 @@ using NiceAimassist.Config;
 
 namespace NiceAimassist.Makcu;
 
-/// <summary>An open link to a MAKCU device. Only the engine thread may use it.</summary>
+/// <summary>An open link to a MAKCU device. Only the loop thread may use it.</summary>
 public sealed class MakcuDevice : IDisposable
 {
     private const int HighBaud = 4_000_000;
@@ -85,7 +85,7 @@ public sealed class MakcuDevice : IDisposable
 
         if (reply is null)
         {
-            // A late reply would answer the next exchange, so the link is not kept.
+            // A late reply would answer the next exchange. Therefore, the link is closed.
             Close();
             throw new IOException("MAKCU did not confirm the move interpolation in time");
         }
@@ -101,7 +101,7 @@ public sealed class MakcuDevice : IDisposable
 
     private static MakcuDevice ConnectPort(string name, Func<string, int, IMakcuPort> open)
     {
-        // The rate that the device keeps after the app closes is unknown, so 4 000 000 is tried first.
+        // The device keeps an unknown baud rate after the app closes. Therefore, 4 000 000 is tried first.
         IMakcuPort? port = null;
         try
         {
@@ -141,7 +141,7 @@ public sealed class MakcuDevice : IDisposable
         }
     }
 
-    /// <summary>Null when the device does not answer. A reject is an error, not an answer.</summary>
+    /// <summary>Null when the device does not answer. A reject is an error. It is not an answer.</summary>
     private static byte? QueryDeviceKinds(IMakcuPort port)
     {
         Span<byte> request = stackalloc byte[Protocol.MaxRequestLength];

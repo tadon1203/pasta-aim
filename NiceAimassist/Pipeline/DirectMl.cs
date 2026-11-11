@@ -6,13 +6,13 @@ namespace NiceAimassist.Pipeline;
 
 internal static unsafe partial class DirectMl
 {
-    // IID of IDMLDevice.
+    // The IID of IDMLDevice.
     private static readonly Guid DeviceIid = new("6dbd6437-96fd-423f-a98c-ae5e7c2a573f");
 
     [LibraryImport("DirectML.dll")]
     private static partial int DMLCreateDevice(ID3D12Device* d3d12Device, uint flags, Guid* riid, void** device);
 
-    /// <summary>Returns an IDMLDevice that the caller releases.</summary>
+    /// <summary>Returns an IDMLDevice. The caller releases it.</summary>
     internal static void* CreateDevice(ID3D12Device* device)
     {
         void* result;

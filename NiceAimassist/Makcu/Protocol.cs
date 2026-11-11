@@ -40,7 +40,7 @@ internal static class Protocol
         return 6;
     }
 
-    /// <summary>The length byte of a baud switch counts the command byte, unlike other requests.</summary>
+    /// <summary>The length byte of a baud switch counts the command byte. Other requests do not.</summary>
     public static int EncodeSetBaud(Span<byte> destination, uint baud)
     {
         WriteHeader(destination, 5, CommandSetBaud);
@@ -50,7 +50,7 @@ internal static class Protocol
 
     public static bool IsReject(Packet packet) => packet.Payload is [Reject];
 
-    /// <remarks>Auto (255) is confirmed by any reply: a reject of Auto has the same bytes as its echo.</remarks>
+    /// <remarks>Any reply confirms Auto (255). A reject of Auto has the same bytes as its echo.</remarks>
     public static bool ConfirmsInterpolation(byte value, Packet packet) =>
         value == InterpolateAuto || (packet.Payload is [var echo] && echo == value);
 

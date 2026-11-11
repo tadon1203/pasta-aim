@@ -1,11 +1,11 @@
 using System.Diagnostics;
 using NiceAimassist.Aim;
-using NiceAimassist.Engine;
+using NiceAimassist.Loop;
 using NiceAimassist.Pipeline;
 
-namespace NiceAimassist.Tests.Engine;
+namespace NiceAimassist.Tests.Loop;
 
-public class EngineDiagnosticsTests
+public class LoopDiagnosticsTests
 {
     [Fact]
     public void StageDurationsAreDifferencesOfConsecutiveTimestamps()
@@ -32,8 +32,8 @@ public class EngineDiagnosticsTests
     public void LatencyIsPublishedOnlyWhenAFullSecondHadFrames()
     {
         long clock = 0;
-        EngineStats stats = new();
-        EngineDiagnostics diagnostics = new(() => clock, stats);
+        LoopStats stats = new();
+        LoopDiagnostics diagnostics = new(() => clock, stats);
         FrameResult frame = new(0, 0, 0, null, 0f);
         AimResult move = new(AimOutcome.Move, 0, 0);
 

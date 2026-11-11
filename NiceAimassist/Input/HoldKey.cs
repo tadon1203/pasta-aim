@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace NiceAimassist.Input;
 
-/// A keyboard key or mouse button that enables aiming while it is held.
+/// A keyboard key or mouse button. The aim is enabled while it is held.
 public readonly struct HoldKey
 {
     private static readonly (string Name, int Code)[] Table =
@@ -58,11 +58,11 @@ public readonly struct HoldKey
         _padMask = padMask;
     }
 
-    /// The Windows virtual-key code of the key or button. Zero for a controller input.
+    /// The Windows virtual-key code of the key or button. The value is zero for a controller input.
     public int VirtualKey { get; }
 
-    /// Parses a key name, ignoring case. A controller input is `xinput:` and a slug, such as
-    /// `xinput:a` or `xinput:lt`. A bare letter or digit, such as `A` or `1`, is the same
+    /// Parses a key name. The case is ignored. A controller input starts with `xinput:` and a slug,
+    /// such as `xinput:a` or `xinput:lt`. A bare letter or digit, such as `A` or `1`, is the same
     /// key as `KeyA` or `Digit1`.
     public static bool TryParse(string name, out HoldKey key)
     {
@@ -85,7 +85,7 @@ public readonly struct HoldKey
         return false;
     }
 
-    /// The name of the first key or button that is down now, or null when none is.
+    /// The name of the first key or button that is down now. The value is null when none is down.
     public static string? FirstDown()
     {
         if (XInput.TryRead(out ushort buttons, out byte left, out byte right))
@@ -113,8 +113,8 @@ public readonly struct HoldKey
     /// Whether Escape is down now.
     public static bool IsEscapeDown() => IsPressed(0x1B);
 
-    /// Whether the key is down now. The high bit of the result is the down state; the low bit
-    /// only records a press since the last call and is not read.
+    /// Whether the key is down now. The high bit of the result is the down state. The low bit
+    /// records a press since the last call. The code does not read it.
     public bool IsDown()
     {
         if (_padMask == 0)
@@ -136,8 +136,8 @@ public readonly struct HoldKey
     };
 }
 
-/// Reads the first connected XInput controller. A disconnected slot is slow to query, so the
-/// slots are scanned again only once a second while none is connected.
+/// Reads the first connected XInput controller. A disconnected slot is slow to query. The slots
+/// are scanned again only once a second while no controller is connected.
 internal static partial class XInput
 {
     private const int Slots = 4;

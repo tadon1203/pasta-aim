@@ -9,7 +9,7 @@ namespace NiceAimassist.Gpu;
 
 public sealed unsafe class Preprocessor : IDisposable
 {
-    // The destination is a typed buffer: the view format (R32_FLOAT or R16_FLOAT) decides the stored precision.
+    // The destination is a typed buffer. The view format (R32_FLOAT or R16_FLOAT) sets the stored precision.
     private const string Shader = """
         Texture2D<float4> source_image : register(t0);
         RWBuffer<float> destination : register(u0);
@@ -25,7 +25,7 @@ public sealed unsafe class Preprocessor : IDisposable
         }
         """;
 
-    // D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING: identity RGBA swizzle.
+    // D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING. This is the identity RGBA swizzle.
     private const uint DefaultComponentMapping = 0x1688;
     private const int ThreadsPerGroup = 8;
 
@@ -125,11 +125,11 @@ public sealed unsafe class Preprocessor : IDisposable
         }
     }
 
-    // The guard catches a stale ticket: only the newest captured frame, and only once, may be submitted.
-    internal void Submit(FrameTicket ticket, ID3D12Resource* destination)
+    // The guard rejects a stale frame. Only the newest captured frame can be submitted, and only once.
+    internal void Submit(CapturedFrame frame, ID3D12Resource* destination)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        ulong sequence = ticket.Sequence;
+        ulong sequence = frame.Sequence;
         if (sequence != _frames.Sequence || sequence <= _frames.SubmittedSequence)
         {
             throw new InvalidOperationException(
@@ -141,10 +141,10 @@ public sealed unsafe class Preprocessor : IDisposable
             Bind(destination);
         }
 
-        Com.Check(_queue->Wait(_frames.CaptureReadyFence, sequence), "Wait for the captured frame");
+        Com.Check(_queue->Wait(_frames.CopyDoneFence, sequence), "Wait for the captured frame");
         ID3D12CommandList* list = (ID3D12CommandList*)_list;
         _queue->ExecuteCommandLists(1, &list);
-        Com.Check(_queue->Signal(_frames.ReuseFence, sequence), "Signal the reuse fence");
+        Com.Check(_queue->Signal(_frames.ComputeDoneFence, sequence), "Signal the compute done fence");
         _frames.MarkSubmitted(sequence);
     }
 
@@ -156,8 +156,8 @@ public sealed unsafe class Preprocessor : IDisposable
         }
 
         _disposed = true;
-        // The queue may still read the source and the descriptor heap. Dispose this before its FrameSource.
-        NativeGpu.SpinUntil(_frames.ReuseFence, _frames.SubmittedSequence);
+        // The queue can still read the source and the descriptor heap. Dispose this object before its FrameSource.
+        NativeGpu.WaitForFence(_frames.ComputeDoneFence, _frames.SubmittedSequence);
         ReleaseAll();
     }
 
@@ -181,8 +181,8 @@ public sealed unsafe class Preprocessor : IDisposable
                 nameof(destination));
         }
 
-        // The recorded list, the allocator, and the descriptor heap are reused, so the GPU must finish them first.
-        NativeGpu.SpinUntil(_frames.ReuseFence, _frames.SubmittedSequence);
+        // The recorded list, the allocator, and the descriptor heap are reused. The GPU must finish them first.
+        NativeGpu.WaitForFence(_frames.ComputeDoneFence, _frames.SubmittedSequence);
         Com.Check(_allocator->Reset(), "Reset the preprocess allocator");
 
         UnorderedAccessViewDesc uav = new() { Format = _format, ViewDimension = UavDimension.Buffer };

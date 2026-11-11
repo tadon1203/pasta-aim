@@ -32,7 +32,7 @@ internal static unsafe class Com
         }
     }
 
-    /// <summary>Returns a new reference that the caller releases.</summary>
+    /// <summary>Returns a new reference. The caller releases it.</summary>
     internal static T* Query<T>(void* source)
         where T : unmanaged, IComVtbl<T>
     {

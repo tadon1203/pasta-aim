@@ -3,8 +3,8 @@ using System.Text.Json;
 namespace NiceAimassist.Config;
 
 /// <summary>
-/// Reads the settings file and re-reads it whenever it changes.
-/// Readers take <see cref="Current"/> without a lock; reloads are serialized by a gate.
+/// Reads the settings file. Re-reads it whenever it changes.
+/// Readers take <see cref="Current"/> without a lock. A gate serializes the reloads.
 /// </summary>
 public sealed class SettingsStore : IDisposable
 {
@@ -17,8 +17,8 @@ public sealed class SettingsStore : IDisposable
     private bool _disposed;
 
     /// <summary>
-    /// Reads the file, creates it with the defaults when it is missing, and starts watching it.
-    /// An unparsable file gives the defaults and is left unchanged.
+    /// Reads the file. Creates it with the defaults when it is missing. Starts watching it.
+    /// A file that cannot be parsed gives the defaults. The file stays unchanged.
     /// </summary>
     /// <param name="debounceMilliseconds">Delay after the last file event before the file is re-read.</param>
     public SettingsStore(string path, int debounceMilliseconds = 200)
@@ -31,7 +31,7 @@ public sealed class SettingsStore : IDisposable
         {
             NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
         };
-        // Editors save by writing a temporary file and renaming it, so Renamed and Created matter too.
+        // Editors save by writing a temporary file and renaming it. Therefore, Renamed and Created events matter too.
         _watcher.Changed += (_, _) => ScheduleReload();
         _watcher.Created += (_, _) => ScheduleReload();
         _watcher.Renamed += (_, _) => ScheduleReload();

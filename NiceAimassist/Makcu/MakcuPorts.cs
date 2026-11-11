@@ -6,7 +6,7 @@ internal static class MakcuPorts
 {
     private static readonly (int Vid, int Pid)[] Chips = [(0x1A86, 0x55D3), (0x1A86, 0x7523)];
 
-    /// <summary>COM ports of the CH340 chips that MAKCU uses, read from the USB device registry.</summary>
+    /// <summary>COM ports of the CH340 chips that MAKCU uses. The ports are read from the USB device registry.</summary>
     public static IReadOnlyList<string> Candidates()
     {
         var ports = new List<string>();

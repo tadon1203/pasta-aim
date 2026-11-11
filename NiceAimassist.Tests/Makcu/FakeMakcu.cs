@@ -3,7 +3,7 @@ using NiceAimassist.Makcu;
 
 namespace NiceAimassist.Tests.Makcu;
 
-/// <summary>A simulated MAKCU. It answers only on a port whose baud rate matches its own, as the device does.</summary>
+/// <summary>A simulated MAKCU. It answers only on a port whose baud rate matches its own. The device does the same.</summary>
 internal sealed class FakeMakcu
 {
     public int Baud { get; set; } = 115_200;

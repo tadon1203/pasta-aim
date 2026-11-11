@@ -20,7 +20,7 @@ internal sealed class PacketDecoder
             int header = rest.IndexOf(Header.AsSpan());
             if (header < 0)
             {
-                // A lone first header byte at the end is completed by the next feed.
+                // The next Feed call completes a lone first header byte at the end.
                 start = data.Length - (rest.Length > 0 && rest[^1] == Header[0] ? 1 : 0);
                 break;
             }
@@ -35,7 +35,7 @@ internal sealed class PacketDecoder
             int length = BinaryPrimitives.ReadUInt16LittleEndian(rest[2..]);
             if (length > Protocol.MaxPayload)
             {
-                // Skip only the header so that garbage cannot stall the stream.
+                // Skip only the header. Garbage data cannot stall the stream.
                 start += Header.Length;
                 continue;
             }

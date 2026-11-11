@@ -5,7 +5,7 @@ using Silk.NET.DXGI;
 
 namespace NiceAimassist.Gpu;
 
-// Dispose after the FrameSource and Preprocessor: Dispose waits for the compute queue to drain.
+// Dispose this after the FrameSource and the Preprocessor. Dispose waits for the compute queue to drain.
 public sealed unsafe class GpuContext : IDisposable
 {
     private const uint D3D11SdkVersion = 7;
@@ -134,7 +134,7 @@ public sealed unsafe class GpuContext : IDisposable
     {
         ulong value = ++_idleValue;
         Com.Check(_computeQueue->Signal(_idleFence, value), "Signal the idle fence");
-        NativeGpu.SpinUntil(_idleFence, value);
+        NativeGpu.WaitForFence(_idleFence, value);
     }
 
     private void ReleaseAll()

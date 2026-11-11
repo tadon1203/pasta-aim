@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace NiceAimassist.Config;
 
-/// <summary>How MAKCU smooths a move: the device's Auto mode, or a fixed percent in 0..100. The default value is Auto.</summary>
+/// <summary>How MAKCU smooths a move. The value is the device's Auto mode or a fixed percent in 0..100. The default value is Auto.</summary>
 [JsonConverter(typeof(InterpolationJsonConverter))]
 public readonly record struct Interpolation
 {

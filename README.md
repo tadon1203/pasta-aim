@@ -24,7 +24,7 @@ settings.json        created with the defaults on first start when missing
 models/
   {model}.onnx
 logs/                created on start; the last 10 log files are kept
-dataset/             created when collection saves its first shot
+dataset/             created when collection saves its first sample
 ```
 
 1. Build or publish the app (see [Development](#development)).
@@ -37,7 +37,7 @@ Settings are re-read when `settings.json` changes. `model`, `display_adapter` an
 ### Controls
 
 - **Hold key** (`hold_keys`, default `F8`): aim while any listed key is held.
-- **Collection**: saves training shots while a hold key is down. Off when `collect_enabled` is `false`.
+- **Collection**: saves training samples while a hold key is down. Off when `collect_enabled` is `false`.
 
 ### Settings
 

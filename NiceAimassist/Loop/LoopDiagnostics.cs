@@ -2,13 +2,13 @@ using System.Diagnostics;
 using NiceAimassist.Aim;
 using NiceAimassist.Pipeline;
 
-namespace NiceAimassist.Engine;
+namespace NiceAimassist.Loop;
 
 /// <summary>
-/// Counts what the held loop did and, once per second, logs it and publishes the window's latency to
-/// <see cref="EngineStats"/>, so that "no movement" can be traced to its stage. This is the only owner of the window.
+/// Counts what the held loop did. Once per second, it logs the counts and publishes the latency window to
+/// <see cref="LoopStats"/>. A "no movement" result can then be traced to its stage. This class is the only owner of the window.
 /// </summary>
-internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
+internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
 {
     private readonly LatencyWindow _latency = new();
     private long _windowStart = now();
@@ -27,7 +27,7 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
         Tick();
     }
 
-    /// <summary>Counts a wait that returned a frame without a new image, or a lost duplication.</summary>
+    /// <summary>Counts a wait that returned a frame without a new image. It also counts a lost duplication.</summary>
     public void RecordNoFrame()
     {
         _noFrames++;
@@ -60,7 +60,7 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
         Tick();
     }
 
-    /// <summary>Starts a new window, so that idle time is not counted as a slow second.</summary>
+    /// <summary>Starts a new window. Idle time is then not counted as a slow second.</summary>
     public void Restart()
     {
         _windowStart = now();
@@ -90,7 +90,7 @@ internal sealed class EngineDiagnostics(Func<long> now, EngineStats stats)
             StageTicks avg = latency.Average;
             StageTicks max = latency.Max;
             Log.Debug(
-                $"engine {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
+                $"loop {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
                 + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} best_score_any_row={_modelBestScore:F3}");
             Log.Debug(
                 $"latency avg/max ms: capture={StageTicks.PairMs(avg.Capture, max.Capture)} "

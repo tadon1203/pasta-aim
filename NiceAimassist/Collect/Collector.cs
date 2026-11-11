@@ -8,16 +8,16 @@ using D3D11Box = Silk.NET.Direct3D11.Box;
 namespace NiceAimassist.Collect;
 
 /// <summary>
-/// Copies the desktop into staging textures and reads them back later, so the engine thread never waits on the GPU.
-/// Every method except the readers runs on the engine thread, which owns the immediate context.
+/// Copies the desktop into staging textures. Reads them back later. The loop thread never waits on the GPU.
+/// Every method except the readers runs on the loop thread. That thread owns the immediate context.
 /// </summary>
-public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
+public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposable
 {
     private const uint DoNotWait = 0x100000;
 
     private readonly GpuContext _gpu;
     private readonly CollectSchedule _schedule;
-    private readonly ShotWriter _writer;
+    private readonly SampleWriter _writer;
     private readonly DatasetWriter _dataset;
     private volatile bool _active;
     private volatile string? _lastError;
@@ -34,7 +34,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
         _gpu = gpu;
         _dataset = new DatasetWriter(datasetRoot);
         _schedule = new CollectSchedule(now, ticksPerSecond);
-        _writer = new ShotWriter(Write, error => _lastError = error.Message);
+        _writer = new SampleWriter(Write, error => _lastError = error.Message);
     }
 
     public bool Active => _active;
@@ -46,8 +46,8 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
     public bool IsDue => _active && !_pending && _schedule.IsDue;
 
     /// <summary>
-    /// Sets whether collection runs. Called on the engine thread every loop. A failure stays latched
-    /// until <paramref name="enabled"/> is false, so a persistent error does not restart on every frame.
+    /// Sets whether collection runs. The loop thread calls it on every loop. A failure stays latched
+    /// until <paramref name="enabled"/> is false. A persistent error then does not restart on every frame.
     /// </summary>
     public void SetEnabled(bool enabled)
     {
@@ -75,21 +75,21 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
         _schedule.SetRate(perSecond);
     }
 
-    public void Capture(ID3D11Texture2D* desktop)
+    public void Observe(ID3D11Texture2D* desktop)
     {
         try
         {
             Texture2DDesc desc;
             desktop->GetDesc(&desc);
-            (_, _, int side) = CollectRoi.Square((int)desc.Width, (int)desc.Height, _size);
+            (_, _, int side) = CollectCrop.Square((int)desc.Width, (int)desc.Height, _size);
             EnsureStaging(desc, side);
 
             ID3D11DeviceContext* context = _gpu.CaptureContext;
             D3D11Box box = CenterCrop.Box((int)desc.Width, (int)desc.Height, side, side);
             context->CopySubresourceRegion((ID3D11Resource*)_stagingCrop, 0, 0, 0, 0, (ID3D11Resource*)desktop, 0, &box);
-            // The full copy goes last: once it is readable, the crop copy is too.
+            // The full copy goes last. When it is readable, the crop copy is readable too.
             context->CopyResource((ID3D11Resource*)_stagingFull, (ID3D11Resource*)desktop);
-            // Without a flush, a DoNotWait map may report "still drawing" until the driver flushes by itself.
+            // Without a flush, a DoNotWait map can report "still drawing" until the driver flushes.
             context->Flush();
             _pendingFileName = DatasetWriter.FileNameFor(DateTime.Now);
             _pending = true;
@@ -101,7 +101,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
         }
     }
 
-    public void CollectFinishedCopy()
+    public void SubmitReadySample()
     {
         if (!_pending)
         {
@@ -123,7 +123,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
                 return;
             }
 
-            if (!_writer.TrySubmit(new Shot(_pendingFileName, crop, original)))
+            if (!_writer.TrySubmit(new Sample(_pendingFileName, crop, original)))
             {
                 Release(crop);
                 Release(original);
@@ -150,16 +150,16 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
 
     private static void Release(BgraImage image) => ArrayPool<byte>.Shared.Return(image.Pixels);
 
-    private void Write(Shot shot)
+    private void Write(Sample sample)
     {
         try
         {
-            _dataset.Write(shot.FileNameWithoutExtension, shot.Crop, shot.Original);
+            _dataset.Write(sample.FileNameWithoutExtension, sample.Crop, sample.Original);
         }
         finally
         {
-            Release(shot.Crop);
-            Release(shot.Original);
+            Release(sample.Crop);
+            Release(sample.Original);
         }
     }
 
@@ -205,7 +205,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameTap, IDisposable
         }
     }
 
-    // A failed rebuild keeps the old textures, which still match the old sizes.
+    // A failed rebuild keeps the old textures. They still match the old sizes.
     private void EnsureStaging(Texture2DDesc desktop, int side)
     {
         if (_stagingFull != null && _stagingCrop != null)

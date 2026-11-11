@@ -1,17 +1,17 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using NiceAimassist.Config;
-using NiceAimassist.Engine;
 using NiceAimassist.Gpu;
+using NiceAimassist.Loop;
 using NiceAimassist.Pipeline;
 
-namespace NiceAimassist.Tests.Engine;
+namespace NiceAimassist.Tests.Loop;
 
-public class EngineTests
+public class LoopTests
 {
     private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(5);
 
-    // The target center is 100 px right of the input center (320), so the default aim moves dx = 100.
+    // The target center is 100 px right of the input center (320). The default aim moves dx = 100.
     private static readonly Detection Centered = new(400, 300, 440, 340, 0.9f, 0);
 
     [Fact]
@@ -20,10 +20,10 @@ public class EngineTests
         FakePipeline pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMoveSink sink = new();
-        AimLoop engine = Start(pipeline, sink, () => true);
+        AimLoop loop = Start(pipeline, sink, () => true);
 
         WaitUntil(() => sink.Moves.Count >= 1);
-        engine.Stop();
+        loop.Stop();
 
         (short Dx, short Dy) move = Assert.Single(sink.Moves);
         Assert.Equal((short)100, move.Dx);
@@ -37,10 +37,10 @@ public class EngineTests
         pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMoveSink sink = new();
         FakeHoldKey hold = new(false);
-        AimLoop engine = Start(pipeline, sink, hold.IsHeld);
+        AimLoop loop = Start(pipeline, sink, hold.IsHeld);
 
         WaitUntil(() => hold.Polls >= 3);
-        engine.Stop();
+        loop.Stop();
 
         Assert.True(sink.Moves.IsEmpty);
         Assert.Equal(0, pipeline.RunCalls);
@@ -49,17 +49,17 @@ public class EngineTests
     [Fact]
     public void ReleasingTheKeyResetsTheAimController()
     {
-        // Without the reset, the second frame sees the first move as target motion and aims past the target.
+        // Without the reset, the second frame reads the first move as target motion. The aim then overshoots the target.
         long first = Stopwatch.GetTimestamp();
         FakePipeline pipeline = new();
         pipeline.Enqueue(first, Centered);
         pipeline.Enqueue(first + Stopwatch.Frequency / 20, Centered);
         FakeMoveSink sink = new();
         FakeHoldKey hold = new(true, false, true);
-        AimLoop engine = Start(pipeline, sink, hold.IsHeld);
+        AimLoop loop = Start(pipeline, sink, hold.IsHeld);
 
         WaitUntil(() => sink.Moves.Count >= 2);
-        engine.Stop();
+        loop.Stop();
 
         (short Dx, short Dy)[] moves = sink.Moves.ToArray();
         Assert.Equal((short)100, moves[0].Dx);
@@ -72,10 +72,10 @@ public class EngineTests
         FakePipeline pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
         FakeMoveSink sink = new();
-        AimLoop engine = Start(pipeline, sink, () => true);
+        AimLoop loop = Start(pipeline, sink, () => true);
 
-        WaitUntil(() => engine.Stats.Frames >= 1);
-        engine.Stop();
+        WaitUntil(() => loop.Stats.Frames >= 1);
+        loop.Stop();
 
         Assert.True(sink.Moves.IsEmpty);
     }
@@ -83,21 +83,21 @@ public class EngineTests
     [Fact]
     public void InterpolationIsSentOnceUntilItChanges()
     {
-        // Frames are fed in two stages so that the setting change lands between them.
+        // The frames are fed in two stages. The setting change happens between the stages.
         FakePipeline pipeline = new();
         FakeMoveSink sink = new();
         Holder<Settings> settings = new(Snapshot(Interpolation.Percent(30)));
-        AimLoop engine = new(pipeline, sink, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
-        engine.Start();
+        AimLoop loop = new(pipeline, sink, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
+        loop.Start();
 
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
-        WaitUntil(() => engine.Stats.Frames >= 2);
+        WaitUntil(() => loop.Stats.Frames >= 2);
         settings.Value = Snapshot(Interpolation.Auto);
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
-        WaitUntil(() => engine.Stats.Frames >= 4);
-        engine.Stop();
+        WaitUntil(() => loop.Stats.Frames >= 4);
+        loop.Stop();
 
         Interpolation[] sent = sink.Interpolations.ToArray();
         Assert.Equal(2, sent.Length);
@@ -110,11 +110,11 @@ public class EngineTests
     {
         FakePipeline pipeline = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
-        AimLoop engine = new(pipeline, new FakeMoveSink(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
-        engine.Start();
+        AimLoop loop = new(pipeline, new FakeMoveSink(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
+        loop.Start();
 
         WaitUntil(() => faults.Count >= 1);
-        engine.Stop();
+        loop.Stop();
 
         Assert.Equal("device lost", Assert.Single(faults).Message);
         Assert.Equal(1, pipeline.RunCalls);
@@ -124,20 +124,20 @@ public class EngineTests
     public void StopReturnsPromptlyWhileWaitingForFrames()
     {
         FakePipeline pipeline = new();
-        AimLoop engine = Start(pipeline, new FakeMoveSink(), () => true);
+        AimLoop loop = Start(pipeline, new FakeMoveSink(), () => true);
 
         WaitUntil(() => pipeline.RunCalls >= 3);
         Stopwatch clock = Stopwatch.StartNew();
-        engine.Stop();
+        loop.Stop();
 
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(1), $"Stop took {clock.Elapsed}");
     }
 
     private static AimLoop Start(FakePipeline pipeline, FakeMoveSink sink, Func<bool> isHeld)
     {
-        AimLoop engine = new(pipeline, sink, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
-        engine.Start();
-        return engine;
+        AimLoop loop = new(pipeline, sink, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
+        loop.Start();
+        return loop;
     }
 
     private static Settings Snapshot() => Snapshot(Interpolation.Auto);
@@ -151,7 +151,7 @@ public class EngineTests
         {
             if (Stopwatch.GetTimestamp() > deadline)
             {
-                throw new TimeoutException("the engine did not reach the expected state");
+                throw new TimeoutException("the loop did not reach the expected state");
             }
 
             Thread.Sleep(1);
@@ -213,7 +213,7 @@ public class EngineTests
         public void SetInterpolation(Interpolation interpolation) => Interpolations.Enqueue(interpolation);
     }
 
-    /// <summary>Reports the scripted state for each poll; the last state repeats.</summary>
+    /// <summary>Reports the scripted state for each poll. The last state repeats.</summary>
     private sealed class FakeHoldKey(params bool[] script)
     {
         private int _polls;
