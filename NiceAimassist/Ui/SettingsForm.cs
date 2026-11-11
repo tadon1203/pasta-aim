@@ -7,6 +7,7 @@ using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
 using NiceAimassist.Hold;
+using NiceAimassist.Logging;
 using NiceAimassist.Mouse;
 using Timer = System.Windows.Forms.Timer;
 
@@ -191,7 +192,7 @@ internal sealed class SettingsForm : Form
         _collectRate.Value = settings.Collect.Rate;
         _collectEnabled.Checked = settings.Collect.Enabled;
         SetCollectInputsEnabled();
-        _logLevel.SelectedItem = settings.LogLevel;
+        _logLevel.SelectedItem = settings.Log.Level;
         UpdateKeyButtons();
     }
 
@@ -255,7 +256,10 @@ internal sealed class SettingsForm : Form
             Rate = (int)_collectRate.Value,
             Enabled = _collectEnabled.Checked,
         },
-        LogLevel = _logLevel.SelectedItem is LogLevel level ? level : _store.Current.LogLevel,
+        Log = _store.Current.Log with
+        {
+            Level = _logLevel.SelectedItem is LogLevel level ? level : _store.Current.Log.Level,
+        },
     };
 
     private void SettingChanged()

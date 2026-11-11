@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using NiceAimassist.Aim;
 using NiceAimassist.Detect;
+using NiceAimassist.Logging;
 
 namespace NiceAimassist.Loop;
 

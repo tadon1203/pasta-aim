@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NiceAimassist.Logging;
 
 namespace NiceAimassist.Config;
 

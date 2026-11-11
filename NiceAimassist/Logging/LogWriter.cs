@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 
-namespace NiceAimassist;
+namespace NiceAimassist.Logging;
 
 /// <summary>Writes lines to a file on its own thread. <see cref="Write"/> never blocks. A full queue drops the line.</summary>
 internal sealed class LogWriter : IDisposable

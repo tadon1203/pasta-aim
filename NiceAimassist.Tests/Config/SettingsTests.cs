@@ -37,25 +37,6 @@ public sealed class SettingsTests
         Assert.Equal(settings, Settings.Parse(json));
     }
 
-    [Theory]
-    [InlineData(@"{}", LogLevel.Info)]
-    [InlineData(@"{ ""log_level"": ""trace"" }", LogLevel.Trace)]
-    [InlineData(@"{ ""log_level"": ""Warn"" }", LogLevel.Warn)]
-    [InlineData(@"{ ""log_level"": 9 }", LogLevel.Info)]
-    public void Log_level_reads_a_name_and_falls_back_to_info_for_an_unknown_number(string json, LogLevel expected)
-    {
-        Assert.Equal(expected, Settings.Parse(json).LogLevel);
-    }
-
-    [Fact]
-    public void Log_level_serializes_as_a_name()
-    {
-        Settings settings = new() { LogLevel = LogLevel.Debug };
-
-        Assert.Contains("\"log_level\": \"Debug\"", settings.ToJson());
-        Assert.Equal(settings, Settings.Parse(settings.ToJson()));
-    }
-
     [Fact]
     public void Text_that_is_not_an_object_is_unparsable()
     {

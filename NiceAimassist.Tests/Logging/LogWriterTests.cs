@@ -1,4 +1,6 @@
-namespace NiceAimassist.Tests;
+using NiceAimassist.Logging;
+
+namespace NiceAimassist.Tests.Logging;
 
 public class LogWriterTests
 {

@@ -5,6 +5,7 @@ using NiceAimassist.Collect;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using NiceAimassist.Hold;
+using NiceAimassist.Logging;
 using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Config;
@@ -35,10 +36,8 @@ public sealed record Settings
     [JsonPropertyName("collect")]
     public CollectSettings Collect { get; init; } = new();
 
-    /// <summary>The most detailed level written to the log file: error, warn, info, debug or trace.</summary>
-    [JsonPropertyName("log_level")]
-    [JsonConverter(typeof(JsonStringEnumConverter<LogLevel>))]
-    public LogLevel LogLevel { get; init; } = LogLevel.Info;
+    [JsonPropertyName("log")]
+    public LogSettings Log { get; init; } = new();
 
     /// <summary>Parses a settings file and validates it. Throws <see cref="JsonException"/> when the text is not a settings object.</summary>
     public static Settings Parse(string json)
@@ -53,7 +52,7 @@ public sealed record Settings
     {
         Hold = Hold.Clamped(),
         Collect = Collect.Clamped(),
-        LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
+        Log = Log.Clamped(),
         Display = Display.Clamped(),
         Detect = Detect.Clamped(),
         Aim = Aim.Clamped(),

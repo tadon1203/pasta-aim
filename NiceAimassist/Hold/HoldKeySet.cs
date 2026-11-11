@@ -1,3 +1,5 @@
+using NiceAimassist.Logging;
+
 namespace NiceAimassist.Hold;
 
 /// <summary>The hold keys. The loop thread reads them. The settings change replaces them with <see cref="Update"/>.</summary>

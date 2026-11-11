@@ -1,12 +1,12 @@
 ﻿using System.Diagnostics;
 using System.Runtime;
 using System.Windows.Forms;
-using NiceAimassist;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using NiceAimassist.Hold;
+using NiceAimassist.Logging;
 using NiceAimassist.Loop;
 using NiceAimassist.Mouse;
 using NiceAimassist.Ui;
@@ -47,8 +47,8 @@ internal static class Program
         try
         {
             Settings startup = store.Current;
-            Log.Level = startup.LogLevel;
-            Log.Info($"log level {startup.LogLevel}; file {Log.FilePath ?? "(none)"}");
+            Log.Level = startup.Log.Level;
+            Log.Info($"log level {startup.Log.Level}; file {Log.FilePath ?? "(none)"}");
             ModelFolder.ModelLocation model = ModelFolder.Resolve(startup.Detect.Model);
             HoldKeySet holdKey = new(startup.Hold.Keys);
 
@@ -73,7 +73,7 @@ internal static class Program
                     if (!ReferenceEquals(settings, applied))
                     {
                         applied = settings;
-                        Log.Level = settings.LogLevel;
+                        Log.Level = settings.Log.Level;
                         holdKey.Update(settings.Hold.Keys);
                     }
 

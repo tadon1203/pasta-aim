@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using NiceAimassist.Capture;
 using NiceAimassist.Display;
+using NiceAimassist.Logging;
 
 namespace NiceAimassist.Detect;
 
