@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NiceAimassist.Detect;
 using NiceAimassist.Display;
 
 namespace NiceAimassist.Config;
@@ -19,7 +20,6 @@ public sealed record Settings
 
     public const int MinSensitivity = 1;
     public const int MaxSensitivity = 10_000;
-    public const int MaxConfidence = 100;
     public const int MaxTargetYOffset = 100;
     public const int MaxDeltaLimit = 32_767;
     public const int MaxVelocitySmoothing = 95;
@@ -28,9 +28,8 @@ public sealed record Settings
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
-    /// <summary>The .onnx file name inside models/ next to the executable. The value is null when no model is chosen.</summary>
-    [JsonPropertyName("model")]
-    public string? Model { get; init; }
+    [JsonPropertyName("detect")]
+    public DetectSettings Detect { get; init; } = new();
 
     [JsonPropertyName("display")]
     public DisplaySettings Display { get; init; } = new();
@@ -40,10 +39,6 @@ public sealed record Settings
 
     [JsonPropertyName("sensitivity_y")]
     public int SensitivityY { get; init; } = 100;
-
-    /// <summary>Minimum detection confidence in percent.</summary>
-    [JsonPropertyName("confidence")]
-    public int Confidence { get; init; } = 50;
 
     /// <summary>Aim point inside the target box in percent of its height. 0 is the top edge.</summary>
     [JsonPropertyName("target_y_offset")]
@@ -95,16 +90,15 @@ public sealed record Settings
     {
         SensitivityX = Math.Clamp(SensitivityX, MinSensitivity, MaxSensitivity),
         SensitivityY = Math.Clamp(SensitivityY, MinSensitivity, MaxSensitivity),
-        Confidence = Math.Clamp(Confidence, 0, MaxConfidence),
         TargetYOffset = Math.Clamp(TargetYOffset, 0, MaxTargetYOffset),
         MaxDelta = Math.Clamp(MaxDelta, 0, MaxDeltaLimit),
         VelocitySmoothing = Math.Clamp(VelocitySmoothing, 0, MaxVelocitySmoothing),
-        Model = string.IsNullOrWhiteSpace(Model) ? null : Model,
         HoldKeys = NormalizedKeys(HoldKeys),
         CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
         CollectRate = Math.Clamp(CollectRate, MinCollectRate, MaxCollectRate),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
         Display = Display.Clamped(),
+        Detect = Detect.Clamped(),
     };
 
     private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using NiceAimassist.Aim;
 using NiceAimassist.Loop;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
 namespace NiceAimassist.Tests.Loop;
 
@@ -34,7 +34,7 @@ public class LoopDiagnosticsTests
         long clock = 0;
         LoopStats stats = new();
         LoopDiagnostics diagnostics = new(() => clock, stats);
-        FrameResult frame = new(0, 0, 0, null, 0f);
+        DetectedFrame frame = new(0, 0, 0, null, 0f);
         AimResult move = new(AimOutcome.Move, 0, 0);
 
         diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);

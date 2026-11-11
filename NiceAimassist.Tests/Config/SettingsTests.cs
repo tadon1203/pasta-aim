@@ -1,6 +1,7 @@
 using System.Text.Json;
 
 using NiceAimassist.Config;
+using NiceAimassist.Detect;
 using NiceAimassist.Display;
 
 namespace NiceAimassist.Tests.Config;
@@ -14,13 +15,13 @@ public sealed class SettingsTests
 
         Assert.Equal(250, settings.SensitivityX);
         Assert.Equal(100, settings.SensitivityY);
-        Assert.Equal(50, settings.Confidence);
+        Assert.Equal(50, settings.Detect.Confidence);
         Assert.Equal(50, settings.TargetYOffset);
         Assert.Equal(512, settings.MaxDelta);
         Assert.Equal(50, settings.VelocitySmoothing);
         Assert.Equal(Interpolation.Auto, settings.Interpolation);
         Assert.Equal(["F8"], settings.HoldKeys);
-        Assert.Null(settings.Model);
+        Assert.Null(settings.Detect.Model);
         Assert.Equal(0, settings.Display.Adapter);
         Assert.Equal(0, settings.Display.Output);
     }
@@ -29,12 +30,12 @@ public sealed class SettingsTests
     public void Out_of_range_values_are_clamped_into_their_range()
     {
         Settings settings = Settings.Parse(
-            @"{ ""sensitivity_x"": 0, ""sensitivity_y"": 20000, ""confidence"": 150,
+            @"{ ""sensitivity_x"": 0, ""sensitivity_y"": 20000, ""detect"": { ""confidence"": 150 },
                 ""target_y_offset"": -1, ""max_delta"": -5, ""velocity_smoothing"": 200 }");
 
         Assert.Equal(1, settings.SensitivityX);
         Assert.Equal(10_000, settings.SensitivityY);
-        Assert.Equal(100, settings.Confidence);
+        Assert.Equal(100, settings.Detect.Confidence);
         Assert.Equal(0, settings.TargetYOffset);
         Assert.Equal(0, settings.MaxDelta);
         Assert.Equal(95, settings.VelocitySmoothing);
@@ -64,7 +65,7 @@ public sealed class SettingsTests
         Settings settings = Settings.Parse(@"{ ""hold_keys"": [""  ""], ""model"": """" }");
 
         Assert.Equal(["F8"], settings.HoldKeys);
-        Assert.Null(settings.Model);
+        Assert.Null(settings.Detect.Model);
     }
 
     [Fact]
@@ -101,7 +102,7 @@ public sealed class SettingsTests
     {
         Settings settings = new()
         {
-            Model = "yolo.onnx",
+            Detect = new DetectSettings { Model = "yolo.onnx" },
             Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
             Interpolation = Interpolation.Percent(30),
             HoldKeys = ["F9", "xinput:a"],

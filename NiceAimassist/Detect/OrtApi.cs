@@ -1,12 +1,12 @@
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Pipeline;
+namespace NiceAimassist.Detect;
 
 internal readonly record struct TensorIo(string Name, long[] Dims, int ElementType);
 
 // The slot numbers are positions in the OrtApi and OrtDmlApi tables. Members are only appended.
 // The numbers stay valid for every later version.
-internal static unsafe partial class OrtNative
+internal static unsafe partial class OrtApi
 {
     private const uint ApiVersion = 17;
 

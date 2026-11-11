@@ -1,8 +1,8 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
-namespace NiceAimassist.Tests.Pipeline;
+namespace NiceAimassist.Tests.Detect;
 
 public class DetectionDecoderTests
 {
@@ -137,7 +137,7 @@ public class DetectionDecoderTests
     }
 
     [Fact]
-    public void MaxScoreIgnoresTheBoxAndNonFiniteScores()
+    public void TopScoreIgnoresTheBoxAndNonFiniteScores()
     {
         float[] rows =
         [
@@ -146,11 +146,11 @@ public class DetectionDecoderTests
             0f, 0f, 10f, 10f, 0.1f, 0f,
         ];
 
-        Assert.Equal(0.4f, DetectionDecoder.Decode(Bytes(rows), Output(3), Input, 0f).MaxScore);
+        Assert.Equal(0.4f, DetectionDecoder.Decode(Bytes(rows), Output(3), Input, 0f).TopScore);
     }
 
     [Fact]
-    public void MaxScoreCountsRowsThatFailTheConfidenceFilter()
+    public void TopScoreCountsRowsThatFailTheConfidenceFilter()
     {
         float[] rows =
         [
@@ -161,7 +161,7 @@ public class DetectionDecoderTests
         DecodeResult result = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0.25f);
 
         Assert.Null(result.Nearest);
-        Assert.Equal(0.2f, result.MaxScore);
+        Assert.Equal(0.2f, result.TopScore);
     }
 
     private static ModelOutput Output(int rows, TensorPrecision precision = TensorPrecision.Fp32) => new(rows, precision);

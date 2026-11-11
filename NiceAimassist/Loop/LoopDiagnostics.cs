@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using NiceAimassist.Aim;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
 namespace NiceAimassist.Loop;
 
@@ -19,7 +19,7 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
     private int _aimed;
     private int _sent;
     private float _bestScore;
-    private float _modelBestScore;
+    private float _topScore;
 
     public void RecordTimeout()
     {
@@ -34,11 +34,11 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
         Tick();
     }
 
-    public void RecordFrame(in FrameResult frame, in FrameTimings timings, AimResult aim, bool sent)
+    public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, AimResult aim, bool sent)
     {
         _frames++;
         _latency.Add(timings);
-        _modelBestScore = MathF.Max(_modelBestScore, frame.ModelBestScore);
+        _topScore = MathF.Max(_topScore, frame.TopScore);
         if (frame.Target is { } detection)
         {
             _targets++;
@@ -66,7 +66,7 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
         _windowStart = now();
         _frames = _timeouts = _noFrames = _targets = _aimed = _sent = 0;
         _bestScore = 0;
-        _modelBestScore = 0;
+        _topScore = 0;
         _latency.Reset();
     }
 
@@ -91,7 +91,7 @@ internal sealed class LoopDiagnostics(Func<long> now, LoopStats stats)
             StageTicks max = latency.Max;
             Log.Debug(
                 $"loop {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
-                + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} best_score_any_row={_modelBestScore:F3}");
+                + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} best_score_any_row={_topScore:F3}");
             Log.Debug(
                 $"latency avg/max ms: capture={StageTicks.PairMs(avg.Capture, max.Capture)} "
                 + $"infer={StageTicks.PairMs(avg.Infer, max.Infer)} "

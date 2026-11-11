@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 using NiceAimassist.Config;
+using NiceAimassist.Detect;
 using NiceAimassist.Loop;
 using NiceAimassist.Input;
 using Timer = System.Windows.Forms.Timer;
@@ -104,7 +105,7 @@ internal sealed class SettingsForm : Form
 
         ConfigureNumber(_sensitivityX, Settings.MinSensitivity, Settings.MaxSensitivity);
         ConfigureNumber(_sensitivityY, Settings.MinSensitivity, Settings.MaxSensitivity);
-        ConfigureNumber(_confidence, 0, Settings.MaxConfidence);
+        ConfigureNumber(_confidence, 0, DetectSettings.MaxConfidence);
         ConfigureNumber(_targetYOffset, 0, Settings.MaxTargetYOffset);
         ConfigureNumber(_maxDelta, 0, Settings.MaxDeltaLimit);
         ConfigureNumber(_velocitySmoothing, 0, Settings.MaxVelocitySmoothing);
@@ -167,16 +168,16 @@ internal sealed class SettingsForm : Form
             ? [.. Directory.GetFiles(_modelsDirectory, "*.onnx").Select(Path.GetFileName).OfType<string>().Order()]
             : [];
         _model.Items.AddRange(models);
-        if (settings.Model is { } current && !_model.Items.Contains(current))
+        if (settings.Detect.Model is { } current && !_model.Items.Contains(current))
         {
             _model.Items.Add(current);
         }
 
-        _model.SelectedItem = settings.Model;
+        _model.SelectedItem = settings.Detect.Model;
         _holdKeys.Items.AddRange([.. settings.HoldKeys]);
         _sensitivityX.Value = settings.SensitivityX;
         _sensitivityY.Value = settings.SensitivityY;
-        _confidence.Value = settings.Confidence;
+        _confidence.Value = settings.Detect.Confidence;
         _targetYOffset.Value = settings.TargetYOffset;
         _maxDelta.Value = settings.MaxDelta;
         _velocitySmoothing.Value = settings.VelocitySmoothing;
@@ -225,11 +226,14 @@ internal sealed class SettingsForm : Form
 
     private Settings ReadSettings() => _store.Current with
     {
-        Model = _model.SelectedItem as string,
+        Detect = _store.Current.Detect with
+        {
+            Model = _model.SelectedItem as string,
+            Confidence = (int)_confidence.Value,
+        },
         HoldKeys = [.. _holdKeys.Items.Cast<string>()],
         SensitivityX = (int)_sensitivityX.Value,
         SensitivityY = (int)_sensitivityY.Value,
-        Confidence = (int)_confidence.Value,
         TargetYOffset = (int)_targetYOffset.Value,
         MaxDelta = (int)_maxDelta.Value,
         VelocitySmoothing = (int)_velocitySmoothing.Value,

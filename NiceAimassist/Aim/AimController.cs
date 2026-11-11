@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Numerics;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
 namespace NiceAimassist.Aim;
 

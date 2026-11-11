@@ -3,7 +3,7 @@ using NiceAimassist.Aim;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
 using NiceAimassist.Capture;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
 namespace NiceAimassist.Loop;
 
@@ -12,7 +12,7 @@ public sealed class AimLoop
 {
     private const int IdleSleepMs = 1;
 
-    private readonly IFramePipeline _pipeline;
+    private readonly IDetector _detector;
     private readonly IMoveSink _sink;
     private readonly Func<bool> _isHeld;
     private readonly Func<Settings> _currentSettings;
@@ -31,7 +31,7 @@ public sealed class AimLoop
     /// <param name="now">Source of the Stopwatch timestamps. Usually <c>Stopwatch.GetTimestamp</c>.</param>
     /// <param name="onFault">Called on the loop thread when the pipeline or the sink throws. The loop ends after the call.</param>
     public AimLoop(
-        IFramePipeline pipeline,
+        IDetector detector,
         IMoveSink sink,
         Func<bool> isHeld,
         Func<Settings> currentSettings,
@@ -40,7 +40,7 @@ public sealed class AimLoop
         ICollectControl? collector = null)
     {
         _collector = collector;
-        _pipeline = pipeline ?? throw new ArgumentNullException(nameof(pipeline));
+        _detector = detector ?? throw new ArgumentNullException(nameof(detector));
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _isHeld = isHeld ?? throw new ArgumentNullException(nameof(isHeld));
         _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
@@ -110,14 +110,14 @@ public sealed class AimLoop
 
             if (!_wasHeld)
             {
-                Log.Debug($"hold key pressed; confidence={settings.Confidence}% input={_pipeline.InputWidth}x{_pipeline.InputHeight}");
+                Log.Debug($"hold key pressed; confidence={settings.Detect.Confidence}% input={_detector.InputWidth}x{_detector.InputHeight}");
                 _diagnostics.Restart();
                 _wasHeld = true;
             }
 
             _stats.SetHeld(true);
             SendInterpolation(settings.Interpolation);
-            CaptureStatus status = _pipeline.TryRun(settings.Confidence / 100f, out FrameResult frame);
+            CaptureStatus status = _detector.TryDetect(settings.Detect.Confidence / 100f, out DetectedFrame frame);
             if (status == CaptureStatus.Timeout)
             {
                 _diagnostics.RecordTimeout();
@@ -140,7 +140,7 @@ public sealed class AimLoop
                 frame.Target,
                 frame.DesktopTimestamp,
                 _now(),
-                new Size(_pipeline.InputWidth, _pipeline.InputHeight),
+                new Size(_detector.InputWidth, _detector.InputHeight),
                 parameters);
             long aimedAt = _now();
             // Read the flag after the aim. A stop during the frame then suppresses its move.
@@ -151,7 +151,7 @@ public sealed class AimLoop
             }
 
             long sentAt = sent ? _now() : aimedAt;
-            FrameTimings timings = new(frame.DesktopTimestamp, frame.AcquiredTimestamp, frame.InferredTimestamp, aimedAt, sentAt);
+            FrameTimings timings = new(frame.DesktopTimestamp, frame.CapturedTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
             _stats.RecordFrame();
             _diagnostics.RecordFrame(frame, timings, aim, sent);
         }

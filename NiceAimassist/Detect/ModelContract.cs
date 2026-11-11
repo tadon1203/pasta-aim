@@ -1,4 +1,4 @@
-namespace NiceAimassist.Pipeline;
+namespace NiceAimassist.Detect;
 
 internal enum TensorPrecision
 {

@@ -1,6 +1,6 @@
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
-namespace NiceAimassist.Tests.Pipeline;
+namespace NiceAimassist.Tests.Detect;
 
 public class ModelContractTests
 {

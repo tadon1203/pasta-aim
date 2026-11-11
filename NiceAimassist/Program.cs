@@ -5,11 +5,10 @@ using NiceAimassist;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
 using NiceAimassist.Loop;
+using NiceAimassist.Detect;
 using NiceAimassist.Display;
-using NiceAimassist.Gpu;
 using NiceAimassist.Input;
 using NiceAimassist.Makcu;
-using NiceAimassist.Pipeline;
 using NiceAimassist.Ui;
 using Application = System.Windows.Forms.Application;
 
@@ -41,7 +40,7 @@ internal static class Program
         SettingsStore store = new(SettingsStore.DefaultPath);
         DisplayDevices? gpu = null;
         Collector? collector = null;
-        IFramePipeline? pipeline = null;
+        IDetector? detector = null;
         MakcuDevice? device = null;
         AimLoop? loop = null;
         ConsoleCancelEventHandler? onCancel = null;
@@ -50,13 +49,13 @@ internal static class Program
             Settings startup = store.Current;
             Log.Level = startup.LogLevel;
             Log.Info($"log level {startup.LogLevel}; file {Log.FilePath ?? "(none)"}");
-            ModelLocation model = ResolveModel(startup.Model);
+            ModelFolder.ModelLocation model = ModelFolder.Resolve(startup.Detect.Model);
             HoldKeySource holdKey = new(startup.HoldKeys);
 
             gpu = new DisplayDevices(startup.Display.Adapter, startup.Display.Output);
             collector = new Collector(
                 gpu, Path.Combine(AppContext.BaseDirectory, "dataset"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
-            pipeline = new FramePipeline(gpu, model.FilePath, collector);
+            detector = new Detector(gpu, model.FilePath, collector);
             device = MakcuDevice.Connect();
             Log.Info($"MAKCU on {device.PortName} at {device.BaudRate} baud");
 
@@ -65,7 +64,7 @@ internal static class Program
             // Only the loop thread reads this. The loop applies a new snapshot from the store once. It does not apply it on every loop.
             Settings? applied = null;
             loop = new AimLoop(
-                pipeline,
+                detector,
                 new MakcuSink(device),
                 holdKey.IsHeld,
                 () =>
@@ -119,34 +118,12 @@ internal static class Program
             }
 
             loop?.Stop();
-            pipeline?.Dispose();
+            detector?.Dispose();
             collector?.Dispose();
             gpu?.Dispose();
             device?.Dispose();
             store.Dispose();
         }
-    }
-
-    /// <summary>The model file and its folder. The settings window lists the models in that folder.</summary>
-    private sealed record ModelLocation(string Directory, string FilePath);
-
-    private static ModelLocation ResolveModel(string? model)
-    {
-        string directory = Path.Combine(AppContext.BaseDirectory, "models");
-        Directory.CreateDirectory(directory);
-
-        if (model is null)
-        {
-            throw new InvalidOperationException("no model is selected; set \"model\" in settings.json to a .onnx file name in models/");
-        }
-
-        string path = Path.Combine(directory, model);
-        if (!File.Exists(path))
-        {
-            throw new InvalidOperationException($"model file not found: {path}");
-        }
-
-        return new ModelLocation(Path.GetDirectoryName(path) ?? directory, path);
     }
 
     private sealed record HoldBinding(IReadOnlyList<string> Names, HoldKey[] Keys);

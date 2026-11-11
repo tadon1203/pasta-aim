@@ -2,10 +2,10 @@ using System.Drawing;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
-namespace NiceAimassist.Pipeline;
+namespace NiceAimassist.Detect;
 
 /// <summary>The output of one decode pass. It holds the nearest accepted detection and the highest finite score of any row.</summary>
-internal readonly record struct DecodeResult(Detection? Nearest, float MaxScore);
+internal readonly record struct DecodeResult(Detection? Nearest, float TopScore);
 
 internal static class DetectionDecoder
 {

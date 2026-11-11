@@ -3,7 +3,7 @@ using System.Diagnostics;
 using NiceAimassist.Config;
 using NiceAimassist.Capture;
 using NiceAimassist.Loop;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 
 namespace NiceAimassist.Tests.Loop;
 
@@ -17,7 +17,7 @@ public class LoopTests
     [Fact]
     public void HeldKeyWithTargetSendsMove()
     {
-        FakePipeline pipeline = new();
+        FakeDetector pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMoveSink sink = new();
         AimLoop loop = Start(pipeline, sink, () => true);
@@ -33,7 +33,7 @@ public class LoopTests
     [Fact]
     public void ReleasedKeySendsNoMoveAndDoesNotRunThePipeline()
     {
-        FakePipeline pipeline = new();
+        FakeDetector pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMoveSink sink = new();
         FakeHoldKey hold = new(false);
@@ -51,7 +51,7 @@ public class LoopTests
     {
         // Without the reset, the second frame reads the first move as target motion. The aim then overshoots the target.
         long first = Stopwatch.GetTimestamp();
-        FakePipeline pipeline = new();
+        FakeDetector pipeline = new();
         pipeline.Enqueue(first, Centered);
         pipeline.Enqueue(first + Stopwatch.Frequency / 20, Centered);
         FakeMoveSink sink = new();
@@ -69,7 +69,7 @@ public class LoopTests
     [Fact]
     public void FrameWithoutTargetSendsNoMove()
     {
-        FakePipeline pipeline = new();
+        FakeDetector pipeline = new();
         pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
         FakeMoveSink sink = new();
         AimLoop loop = Start(pipeline, sink, () => true);
@@ -84,7 +84,7 @@ public class LoopTests
     public void InterpolationIsSentOnceUntilItChanges()
     {
         // The frames are fed in two stages. The setting change happens between the stages.
-        FakePipeline pipeline = new();
+        FakeDetector pipeline = new();
         FakeMoveSink sink = new();
         Holder<Settings> settings = new(Snapshot(Interpolation.Percent(30)));
         AimLoop loop = new(pipeline, sink, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
@@ -108,7 +108,7 @@ public class LoopTests
     [Fact]
     public void PipelineExceptionReportsFaultAndEndsTheLoop()
     {
-        FakePipeline pipeline = new() { Fault = new InvalidOperationException("device lost") };
+        FakeDetector pipeline = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
         AimLoop loop = new(pipeline, new FakeMoveSink(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
         loop.Start();
@@ -123,7 +123,7 @@ public class LoopTests
     [Fact]
     public void StopReturnsPromptlyWhileWaitingForFrames()
     {
-        FakePipeline pipeline = new();
+        FakeDetector pipeline = new();
         AimLoop loop = Start(pipeline, new FakeMoveSink(), () => true);
 
         WaitUntil(() => pipeline.RunCalls >= 3);
@@ -133,7 +133,7 @@ public class LoopTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(1), $"Stop took {clock.Elapsed}");
     }
 
-    private static AimLoop Start(FakePipeline pipeline, FakeMoveSink sink, Func<bool> isHeld)
+    private static AimLoop Start(FakeDetector pipeline, FakeMoveSink sink, Func<bool> isHeld)
     {
         AimLoop loop = new(pipeline, sink, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
@@ -163,7 +163,7 @@ public class LoopTests
         public volatile T Value = value;
     }
 
-    private sealed class FakePipeline : IFramePipeline
+    private sealed class FakeDetector : IDetector
     {
         private readonly ConcurrentQueue<(long Qpc, Detection? Target)> _frames = new();
         private int _runCalls;
@@ -178,7 +178,7 @@ public class LoopTests
 
         public void Enqueue(long presentQpc, Detection? target) => _frames.Enqueue((presentQpc, target));
 
-        public CaptureStatus TryRun(float confidence, out FrameResult result)
+        public CaptureStatus TryDetect(float confidence, out DetectedFrame result)
         {
             Interlocked.Increment(ref _runCalls);
             if (Fault is { } fault)
@@ -188,7 +188,7 @@ public class LoopTests
 
             if (_frames.TryDequeue(out var frame))
             {
-                result = new FrameResult(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f);
+                result = new DetectedFrame(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f);
                 return CaptureStatus.Ready;
             }
 

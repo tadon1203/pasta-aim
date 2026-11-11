@@ -1,13 +1,12 @@
 using System.Text;
 using NiceAimassist.Capture;
 using NiceAimassist.Display;
-using NiceAimassist.Pipeline;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D.Compilers;
 using Silk.NET.Direct3D12;
 using Silk.NET.DXGI;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Detect;
 
 public sealed unsafe class Preprocessor : IDisposable
 {

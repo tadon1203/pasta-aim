@@ -2,7 +2,7 @@ using NiceAimassist.Display;
 using Silk.NET.Direct3D12;
 using Silk.NET.DXGI;
 
-namespace NiceAimassist.Pipeline;
+namespace NiceAimassist.Detect;
 
 // The copy is recorded on the compute queue. It runs after any model run submitted to that queue.
 internal sealed unsafe class OutputReader : IDisposable

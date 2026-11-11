@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using NiceAimassist.Display;
 using Silk.NET.Direct3D12;
 
-namespace NiceAimassist.Pipeline;
+namespace NiceAimassist.Detect;
 
 internal static unsafe partial class DirectMl
 {

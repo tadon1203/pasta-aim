@@ -134,7 +134,7 @@ public sealed class SettingsStore : IDisposable
             }
 
             Settings previous = _current;
-            if (updated.Model != previous.Model || updated.Display != previous.Display)
+            if (updated.Detect.Model != previous.Detect.Model || updated.Display != previous.Display)
             {
                 Log.Warn("model and display take effect after a restart");
             }

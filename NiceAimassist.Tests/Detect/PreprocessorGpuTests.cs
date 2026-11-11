@@ -1,11 +1,10 @@
 using NiceAimassist.Capture;
 using NiceAimassist.Display;
-using NiceAimassist.Gpu;
-using NiceAimassist.Pipeline;
+using NiceAimassist.Detect;
 using Silk.NET.Direct3D12;
 using Silk.NET.DXGI;
 
-namespace NiceAimassist.Tests.Gpu;
+namespace NiceAimassist.Tests.Detect;
 
 public unsafe class PreprocessorGpuTests
 {
