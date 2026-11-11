@@ -1,4 +1,5 @@
 using System.Drawing;
+using NiceAimassist.Capture;
 using NiceAimassist.Collect;
 
 namespace NiceAimassist.Tests.Collect;
@@ -21,7 +22,7 @@ public class CollectTests : IDisposable
     [InlineData(1920, 1080, 4096, 1080)]
     public void CropIsACenteredSquareThatFitsTheDesktop(int dw, int dh, int size, int expectedSide)
     {
-        (int left, int top, int side) = CollectCrop.Square(dw, dh, size);
+        (int left, int top, int side) = CenterCrop.Square(dw, dh, size);
 
         Assert.Equal(expectedSide, side);
         Assert.Equal((dw - side) / 2, left);

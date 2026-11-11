@@ -1,6 +1,6 @@
-using NiceAimassist.Gpu;
+using NiceAimassist.Capture;
 
-namespace NiceAimassist.Tests.Gpu;
+namespace NiceAimassist.Tests.Capture;
 
 public class CenterCropTests
 {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using NiceAimassist.Capture;
 using NiceAimassist.Display;
 using NiceAimassist.Gpu;
 using Silk.NET.Direct3D12;
@@ -26,7 +27,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private ID3D12Resource* _outputResource;
     private OutputReader? _outputReader;
     private Preprocessor? _preprocessor;
-    private FrameSource? _frames;
+    private DesktopCapture? _frames;
     private bool _disposed;
 
     public FramePipeline(DisplayDevices gpu, string modelPath, IFrameObserver? observer = null)
@@ -73,7 +74,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
             _outputValue = OrtNative.CreateTensor(_allocator, outputShape, output.ElementType);
             _outputResource = DirectMlBuffer(_outputValue, _output.ByteLength, "output");
 
-            _frames = new FrameSource(gpu, InputWidth, InputHeight);
+            _frames = new DesktopCapture(gpu, InputWidth, InputHeight);
             _preprocessor = new Preprocessor(gpu, _frames, inputSpec.Precision);
             _outputReader = new OutputReader(gpu, _outputResource, checked((int)_output.ByteLength));
 
@@ -101,12 +102,12 @@ public sealed unsafe class FramePipeline : IFramePipeline
 
     public int InputHeight { get; }
 
-    public AcquireResult TryRun(float confidence, out FrameResult result)
+    public CaptureStatus TryRun(float confidence, out FrameResult result)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         result = default;
-        AcquireResult status = _frames!.TryAcquire(AcquireTimeoutMs, out CapturedFrame frame);
-        if (status != AcquireResult.Frame)
+        CaptureStatus status = _frames!.TryAcquire(AcquireTimeoutMs, out CapturedFrame frame);
+        if (status != CaptureStatus.Ready)
         {
             return status;
         }
@@ -118,7 +119,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
         DecodeResult decoded = DetectionDecoder.Decode(output, _output, new Size(InputWidth, InputHeight), confidence);
         long inferredTimestamp = Stopwatch.GetTimestamp();
         result = new FrameResult(frame.DesktopTimestamp, acquiredTimestamp, inferredTimestamp, decoded.Nearest, decoded.MaxScore);
-        return AcquireResult.Frame;
+        return CaptureStatus.Ready;
     }
 
     private void CollectHeldFrame()

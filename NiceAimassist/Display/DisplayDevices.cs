@@ -5,7 +5,7 @@ using Silk.NET.DXGI;
 
 namespace NiceAimassist.Display;
 
-// Dispose this after the FrameSource and the Preprocessor. Dispose waits for the compute queue to drain.
+// Dispose this after the DesktopCapture and the Preprocessor. Dispose waits for the compute queue to drain.
 public sealed unsafe class DisplayDevices : IDisposable
 {
     private const uint D3D11SdkVersion = 7;

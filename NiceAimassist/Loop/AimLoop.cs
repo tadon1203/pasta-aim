@@ -2,7 +2,7 @@ using System.Drawing;
 using NiceAimassist.Aim;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
-using NiceAimassist.Gpu;
+using NiceAimassist.Capture;
 using NiceAimassist.Pipeline;
 
 namespace NiceAimassist.Loop;
@@ -117,14 +117,14 @@ public sealed class AimLoop
 
             _stats.SetHeld(true);
             SendInterpolation(settings.Interpolation);
-            AcquireResult status = _pipeline.TryRun(settings.Confidence / 100f, out FrameResult frame);
-            if (status == AcquireResult.Timeout)
+            CaptureStatus status = _pipeline.TryRun(settings.Confidence / 100f, out FrameResult frame);
+            if (status == CaptureStatus.Timeout)
             {
                 _diagnostics.RecordTimeout();
                 continue;
             }
 
-            if (status != AcquireResult.Frame)
+            if (status != CaptureStatus.Ready)
             {
                 _diagnostics.RecordNoFrame();
                 continue;

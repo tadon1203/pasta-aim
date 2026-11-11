@@ -1,4 +1,5 @@
 using System.Text;
+using NiceAimassist.Capture;
 using NiceAimassist.Display;
 using NiceAimassist.Pipeline;
 using Silk.NET.Core.Native;
@@ -33,7 +34,7 @@ public sealed unsafe class Preprocessor : IDisposable
     private static readonly D3D12 D3D12Api = D3D12.GetApi();
     private static readonly D3DCompiler Compiler = D3DCompiler.GetApi();
 
-    private readonly FrameSource _frames;
+    private readonly DesktopCapture _frames;
     private readonly DisplayDevices _gpu;
     private readonly ID3D12Device* _device;
     private readonly ID3D12CommandQueue* _queue;
@@ -55,7 +56,7 @@ public sealed unsafe class Preprocessor : IDisposable
     private ID3D12Resource* _destination;
     private bool _disposed;
 
-    internal Preprocessor(DisplayDevices gpu, FrameSource frames, TensorPrecision precision)
+    internal Preprocessor(DisplayDevices gpu, DesktopCapture frames, TensorPrecision precision)
     {
         _gpu = gpu;
         _frames = frames;
@@ -157,7 +158,7 @@ public sealed unsafe class Preprocessor : IDisposable
         }
 
         _disposed = true;
-        // The queue can still read the source and the descriptor heap. Dispose this object before its FrameSource.
+        // The queue can still read the source and the descriptor heap. Dispose this object before its DesktopCapture.
         NativeGpu.WaitForFence(_frames.ComputeDoneFence, _frames.SubmittedSequence);
         ReleaseAll();
     }

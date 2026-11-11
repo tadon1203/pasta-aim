@@ -1,3 +1,4 @@
+using NiceAimassist.Capture;
 using NiceAimassist.Display;
 using NiceAimassist.Gpu;
 using NiceAimassist.Pipeline;
@@ -14,7 +15,7 @@ public unsafe class PreprocessorGpuTests
     public void PreprocessWritesTheCapturedFrameIntoTheTensor()
     {
         using DisplayDevices gpu = new(0, 0);
-        using FrameSource frames = new(gpu, Size, Size);
+        using DesktopCapture frames = new(gpu, Size, Size);
         int bytes = 3 * Size * Size * sizeof(float);
 
         HeapProperties heap = new() { Type = HeapType.Default, CreationNodeMask = 1, VisibleNodeMask = 1 };
@@ -44,7 +45,7 @@ public unsafe class PreprocessorGpuTests
             bool acquired = false;
             for (int attempt = 0; attempt < 100 && !acquired; attempt++)
             {
-                acquired = frames.TryAcquire(50, out frame) == AcquireResult.Frame;
+                acquired = frames.TryAcquire(50, out frame) == CaptureStatus.Ready;
             }
 
             Assert.True(acquired, "no desktop frame");

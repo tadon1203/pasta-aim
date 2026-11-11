@@ -1,6 +1,6 @@
 using Silk.NET.Direct3D11;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Capture;
 
 /// <summary>Receives the held desktop frame on the loop thread. Collection uses it to save training samples.</summary>
 public interface IFrameObserver

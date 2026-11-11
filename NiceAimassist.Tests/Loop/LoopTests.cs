@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using NiceAimassist.Config;
-using NiceAimassist.Gpu;
+using NiceAimassist.Capture;
 using NiceAimassist.Loop;
 using NiceAimassist.Pipeline;
 
@@ -178,7 +178,7 @@ public class LoopTests
 
         public void Enqueue(long presentQpc, Detection? target) => _frames.Enqueue((presentQpc, target));
 
-        public AcquireResult TryRun(float confidence, out FrameResult result)
+        public CaptureStatus TryRun(float confidence, out FrameResult result)
         {
             Interlocked.Increment(ref _runCalls);
             if (Fault is { } fault)
@@ -189,12 +189,12 @@ public class LoopTests
             if (_frames.TryDequeue(out var frame))
             {
                 result = new FrameResult(frame.Qpc, frame.Qpc, frame.Qpc, frame.Target, 0f);
-                return AcquireResult.Frame;
+                return CaptureStatus.Ready;
             }
 
             Thread.Sleep(1);
             result = default;
-            return AcquireResult.Timeout;
+            return CaptureStatus.Timeout;
         }
 
         public void Dispose()

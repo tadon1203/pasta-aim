@@ -1,9 +1,17 @@
 using D3D11Box = Silk.NET.Direct3D11.Box;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Capture;
 
 public static class CenterCrop
 {
+    /// <summary>The centered square of <paramref name="size"/> px. The square shrinks to fit the desktop.</summary>
+    public static (int Left, int Top, int Side) Square(int desktopWidth, int desktopHeight, int size)
+    {
+        int side = Math.Min(size, Math.Min(desktopWidth, desktopHeight));
+        (int left, int top) = Origin(desktopWidth, desktopHeight, side, side);
+        return (left, top, side);
+    }
+
     public static (int Left, int Top) Origin(int desktopWidth, int desktopHeight, int inputWidth, int inputHeight)
     {
         if (inputWidth > desktopWidth || inputHeight > desktopHeight)

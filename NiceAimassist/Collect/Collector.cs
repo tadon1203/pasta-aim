@@ -1,6 +1,6 @@
 using System.Buffers;
+using NiceAimassist.Capture;
 using NiceAimassist.Display;
-using NiceAimassist.Gpu;
 using Silk.NET.Direct3D11;
 using Silk.NET.DXGI;
 using D3D11Box = Silk.NET.Direct3D11.Box;
@@ -81,7 +81,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposa
         {
             Texture2DDesc desc;
             desktop->GetDesc(&desc);
-            (_, _, int side) = CollectCrop.Square((int)desc.Width, (int)desc.Height, _size);
+            (_, _, int side) = CenterCrop.Square((int)desc.Width, (int)desc.Height, _size);
             EnsureStaging(desc, side);
 
             ID3D11DeviceContext* context = _gpu.CaptureContext;

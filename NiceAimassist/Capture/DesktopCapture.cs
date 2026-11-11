@@ -6,10 +6,10 @@ using Silk.NET.DXGI;
 using D3D11Box = Silk.NET.Direct3D11.Box;
 using D3D12FenceFlags = Silk.NET.Direct3D12.FenceFlags;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Capture;
 
 // A frame that is not submitted to the Preprocessor is dropped. The next copy then waits only for the last submitted frame.
-public sealed unsafe class FrameSource : IDisposable
+public sealed unsafe class DesktopCapture : IDisposable
 {
     private readonly DisplayDevices _gpu;
     private ID3D11Texture2D* _sharedTexture;
@@ -28,7 +28,7 @@ public sealed unsafe class FrameSource : IDisposable
     private ulong _submittedSequence;
     private bool _disposed;
 
-    public FrameSource(DisplayDevices gpu, int inputWidth, int inputHeight)
+    public DesktopCapture(DisplayDevices gpu, int inputWidth, int inputHeight)
     {
         _gpu = gpu;
         InputWidth = inputWidth;
@@ -119,7 +119,7 @@ public sealed unsafe class FrameSource : IDisposable
 
     internal void MarkSubmitted(ulong sequence) => _submittedSequence = sequence;
 
-    internal AcquireResult TryAcquire(int timeoutMs, out CapturedFrame frame)
+    internal CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         frame = default;
@@ -133,7 +133,7 @@ public sealed unsafe class FrameSource : IDisposable
             if (release == Com.DxgiAccessLost)
             {
                 RecreateDuplication();
-                return AcquireResult.DeviceLost;
+                return CaptureStatus.Lost;
             }
 
             Com.Check(release, "ReleaseFrame");
@@ -144,13 +144,13 @@ public sealed unsafe class FrameSource : IDisposable
         int acquire = _duplication->AcquireNextFrame((uint)timeoutMs, &frameInfo, &resource);
         if (acquire == Com.DxgiWaitTimeout)
         {
-            return AcquireResult.Timeout;
+            return CaptureStatus.Timeout;
         }
 
         if (acquire == Com.DxgiAccessLost)
         {
             RecreateDuplication();
-            return AcquireResult.DeviceLost;
+            return CaptureStatus.Lost;
         }
 
         Com.Check(acquire, "AcquireNextFrame");
@@ -159,7 +159,7 @@ public sealed unsafe class FrameSource : IDisposable
         if (frameInfo.LastPresentTime == 0)
         {
             Com.Release(ref resource);
-            return AcquireResult.NoNewImage;
+            return CaptureStatus.Unchanged;
         }
 
         _desktopResource = resource;
@@ -184,7 +184,7 @@ public sealed unsafe class FrameSource : IDisposable
         ((ID3D11DeviceContext*)context)->Flush();
 
         frame = new CapturedFrame(_sequence, frameInfo.LastPresentTime);
-        return AcquireResult.Frame;
+        return CaptureStatus.Ready;
     }
 
     public void Dispose()
