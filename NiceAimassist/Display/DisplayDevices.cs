@@ -3,10 +3,10 @@ using Silk.NET.Direct3D11;
 using Silk.NET.Direct3D12;
 using Silk.NET.DXGI;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Display;
 
 // Dispose this after the FrameSource and the Preprocessor. Dispose waits for the compute queue to drain.
-public sealed unsafe class GpuContext : IDisposable
+public sealed unsafe class DisplayDevices : IDisposable
 {
     private const uint D3D11SdkVersion = 7;
 
@@ -24,7 +24,7 @@ public sealed unsafe class GpuContext : IDisposable
     private ulong _idleValue;
     private bool _disposed;
 
-    public GpuContext(long adapterLuid, int outputIndex)
+    public DisplayDevices(long adapterLuid, int outputIndex)
     {
         try
         {

@@ -1,4 +1,5 @@
 using System.Text;
+using NiceAimassist.Display;
 using NiceAimassist.Pipeline;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D.Compilers;
@@ -33,7 +34,7 @@ public sealed unsafe class Preprocessor : IDisposable
     private static readonly D3DCompiler Compiler = D3DCompiler.GetApi();
 
     private readonly FrameSource _frames;
-    private readonly GpuContext _gpu;
+    private readonly DisplayDevices _gpu;
     private readonly ID3D12Device* _device;
     private readonly ID3D12CommandQueue* _queue;
     private readonly ID3D12Resource* _source;
@@ -54,7 +55,7 @@ public sealed unsafe class Preprocessor : IDisposable
     private ID3D12Resource* _destination;
     private bool _disposed;
 
-    internal Preprocessor(GpuContext gpu, FrameSource frames, TensorPrecision precision)
+    internal Preprocessor(DisplayDevices gpu, FrameSource frames, TensorPrecision precision)
     {
         _gpu = gpu;
         _frames = frames;

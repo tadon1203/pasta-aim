@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NiceAimassist.Display;
 
 namespace NiceAimassist.Config;
 
@@ -31,12 +32,8 @@ public sealed record Settings
     [JsonPropertyName("model")]
     public string? Model { get; init; }
 
-    /// <summary>The DirectX adapter LUID used by capture.</summary>
-    [JsonPropertyName("display_adapter")]
-    public long DisplayAdapter { get; init; }
-
-    [JsonPropertyName("display_output")]
-    public int DisplayOutput { get; init; }
+    [JsonPropertyName("display")]
+    public DisplaySettings Display { get; init; } = new();
 
     [JsonPropertyName("sensitivity_x")]
     public int SensitivityX { get; init; } = 100;
@@ -107,6 +104,7 @@ public sealed record Settings
         CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
         CollectRate = Math.Clamp(CollectRate, MinCollectRate, MaxCollectRate),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
+        Display = Display.Clamped(),
     };
 
     private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using NiceAimassist.Display;
 using NiceAimassist.Gpu;
 using Silk.NET.Direct3D12;
 
@@ -10,7 +11,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private const int WarmUpRuns = 3;
     private const int AcquireTimeoutMs = 100;
 
-    private readonly GpuContext _gpu;
+    private readonly DisplayDevices _gpu;
     private readonly ModelOutput _output;
     private readonly IFrameObserver? _observer;
 
@@ -28,7 +29,7 @@ public sealed unsafe class FramePipeline : IFramePipeline
     private FrameSource? _frames;
     private bool _disposed;
 
-    public FramePipeline(GpuContext gpu, string modelPath, IFrameObserver? observer = null)
+    public FramePipeline(DisplayDevices gpu, string modelPath, IFrameObserver? observer = null)
     {
         ArgumentNullException.ThrowIfNull(gpu);
         ArgumentNullException.ThrowIfNull(modelPath);

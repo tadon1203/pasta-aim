@@ -1,5 +1,5 @@
 using System.Buffers;
-using Com = NiceAimassist.Gpu.Com;
+using NiceAimassist.Display;
 using NiceAimassist.Gpu;
 using Silk.NET.Direct3D11;
 using Silk.NET.DXGI;
@@ -15,7 +15,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposa
 {
     private const uint DoNotWait = 0x100000;
 
-    private readonly GpuContext _gpu;
+    private readonly DisplayDevices _gpu;
     private readonly CollectSchedule _schedule;
     private readonly SampleWriter _writer;
     private readonly DatasetWriter _dataset;
@@ -29,7 +29,7 @@ public sealed unsafe class Collector : ICollectControl, IFrameObserver, IDisposa
     private string _pendingFileName = string.Empty;
     private bool _disposed;
 
-    public Collector(GpuContext gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
+    public Collector(DisplayDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
     {
         _gpu = gpu;
         _dataset = new DatasetWriter(datasetRoot);

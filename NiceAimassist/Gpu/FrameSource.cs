@@ -1,3 +1,4 @@
+using NiceAimassist.Display;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D11;
 using Silk.NET.Direct3D12;
@@ -10,7 +11,7 @@ namespace NiceAimassist.Gpu;
 // A frame that is not submitted to the Preprocessor is dropped. The next copy then waits only for the last submitted frame.
 public sealed unsafe class FrameSource : IDisposable
 {
-    private readonly GpuContext _gpu;
+    private readonly DisplayDevices _gpu;
     private ID3D11Texture2D* _sharedTexture;
     private ID3D11Fence* _copyDoneFence11;
     private ID3D11Fence* _computeDoneFence11;
@@ -27,7 +28,7 @@ public sealed unsafe class FrameSource : IDisposable
     private ulong _submittedSequence;
     private bool _disposed;
 
-    public FrameSource(GpuContext gpu, int inputWidth, int inputHeight)
+    public FrameSource(DisplayDevices gpu, int inputWidth, int inputHeight)
     {
         _gpu = gpu;
         InputWidth = inputWidth;

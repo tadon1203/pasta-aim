@@ -1,6 +1,7 @@
 using System.Text.Json;
 
 using NiceAimassist.Config;
+using NiceAimassist.Display;
 
 namespace NiceAimassist.Tests.Config;
 
@@ -20,8 +21,8 @@ public sealed class SettingsTests
         Assert.Equal(Interpolation.Auto, settings.Interpolation);
         Assert.Equal(["F8"], settings.HoldKeys);
         Assert.Null(settings.Model);
-        Assert.Equal(0, settings.DisplayAdapter);
-        Assert.Equal(0, settings.DisplayOutput);
+        Assert.Equal(0, settings.Display.Adapter);
+        Assert.Equal(0, settings.Display.Output);
     }
 
     [Fact]
@@ -101,8 +102,7 @@ public sealed class SettingsTests
         Settings settings = new()
         {
             Model = "yolo.onnx",
-            DisplayAdapter = 1L << 32 | 7,
-            DisplayOutput = 2,
+            Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
             Interpolation = Interpolation.Percent(30),
             HoldKeys = ["F9", "xinput:a"],
         };

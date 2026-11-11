@@ -1,4 +1,4 @@
-using NiceAimassist.Gpu;
+using NiceAimassist.Display;
 using Silk.NET.Direct3D12;
 using Silk.NET.DXGI;
 
@@ -18,7 +18,7 @@ internal sealed unsafe class OutputReader : IDisposable
     private bool _disposed;
 
     // This object does not own the source. The source must stay alive, in the unordered access state, for the life of this object.
-    public OutputReader(GpuContext gpu, ID3D12Resource* source, int length)
+    public OutputReader(DisplayDevices gpu, ID3D12Resource* source, int length)
     {
         ID3D12Device* device = gpu.Device;
         if (length <= 0 || source->GetDesc().Width < (ulong)length)

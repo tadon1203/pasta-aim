@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using NiceAimassist.Gpu;
+using NiceAimassist.Display;
 using Silk.NET.Direct3D12;
 
 namespace NiceAimassist.Pipeline;

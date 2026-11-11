@@ -5,6 +5,7 @@ using NiceAimassist;
 using NiceAimassist.Collect;
 using NiceAimassist.Config;
 using NiceAimassist.Loop;
+using NiceAimassist.Display;
 using NiceAimassist.Gpu;
 using NiceAimassist.Input;
 using NiceAimassist.Makcu;
@@ -38,7 +39,7 @@ internal static class Program
     private static int Run()
     {
         SettingsStore store = new(SettingsStore.DefaultPath);
-        GpuContext? gpu = null;
+        DisplayDevices? gpu = null;
         Collector? collector = null;
         IFramePipeline? pipeline = null;
         MakcuDevice? device = null;
@@ -52,7 +53,7 @@ internal static class Program
             ModelLocation model = ResolveModel(startup.Model);
             HoldKeySource holdKey = new(startup.HoldKeys);
 
-            gpu = new GpuContext(startup.DisplayAdapter, startup.DisplayOutput);
+            gpu = new DisplayDevices(startup.Display.Adapter, startup.Display.Output);
             collector = new Collector(
                 gpu, Path.Combine(AppContext.BaseDirectory, "dataset"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
             pipeline = new FramePipeline(gpu, model.FilePath, collector);

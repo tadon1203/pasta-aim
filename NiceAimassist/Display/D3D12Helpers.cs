@@ -3,7 +3,7 @@ using Silk.NET.Core.Native;
 using Silk.NET.Direct3D.Compilers;
 using Silk.NET.Direct3D12;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Display;
 
 internal static unsafe class D3D12Helpers
 {

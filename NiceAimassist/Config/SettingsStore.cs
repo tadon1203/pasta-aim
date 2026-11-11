@@ -134,11 +134,9 @@ public sealed class SettingsStore : IDisposable
             }
 
             Settings previous = _current;
-            if (updated.Model != previous.Model
-                || updated.DisplayAdapter != previous.DisplayAdapter
-                || updated.DisplayOutput != previous.DisplayOutput)
+            if (updated.Model != previous.Model || updated.Display != previous.Display)
             {
-                Log.Warn("model, display_adapter and display_output take effect after a restart");
+                Log.Warn("model and display take effect after a restart");
             }
 
             Volatile.Write(ref _current, updated);

@@ -1,3 +1,4 @@
+using NiceAimassist.Display;
 using NiceAimassist.Gpu;
 using NiceAimassist.Pipeline;
 using Silk.NET.Direct3D12;
@@ -12,7 +13,7 @@ public unsafe class PreprocessorGpuTests
     [Fact(Skip = "needs an interactive desktop session and a GPU")]
     public void PreprocessWritesTheCapturedFrameIntoTheTensor()
     {
-        using GpuContext gpu = new(0, 0);
+        using DisplayDevices gpu = new(0, 0);
         using FrameSource frames = new(gpu, Size, Size);
         int bytes = 3 * Size * Size * sizeof(float);
 

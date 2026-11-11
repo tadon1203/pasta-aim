@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Display;
 
 internal static unsafe class Com
 {

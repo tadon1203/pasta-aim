@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Silk.NET.Direct3D12;
 
-namespace NiceAimassist.Gpu;
+namespace NiceAimassist.Display;
 
 internal static unsafe partial class NativeGpu
 {
