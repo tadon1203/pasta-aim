@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NiceAimassist.Aim;
+using NiceAimassist.Collect;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using NiceAimassist.Hold;
@@ -14,11 +15,6 @@ namespace NiceAimassist.Config;
 /// </summary>
 public sealed record Settings
 {
-    public const int MinCollectSize = 64;
-    public const int MaxCollectSize = 4096;
-    public const int MaxCollectRate = 2;
-    public const int MinCollectRate = 1;
-
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
     [JsonPropertyName("detect")]
@@ -36,17 +32,8 @@ public sealed record Settings
     [JsonPropertyName("hold")]
     public HoldSettings Hold { get; init; } = new();
 
-    /// <summary>Whether collection runs while the hold key is down.</summary>
-    [JsonPropertyName("collect_enabled")]
-    public bool CollectEnabled { get; init; } = true;
-
-    /// <summary>Side of the centered square saved as the training image, in pixels.</summary>
-    [JsonPropertyName("collect_size")]
-    public int CollectSize { get; init; } = 640;
-
-    /// <summary>Training images saved per second while collecting.</summary>
-    [JsonPropertyName("collect_rate")]
-    public int CollectRate { get; init; } = 2;
+    [JsonPropertyName("collect")]
+    public CollectSettings Collect { get; init; } = new();
 
     /// <summary>The most detailed level written to the log file: error, warn, info, debug or trace.</summary>
     [JsonPropertyName("log_level")]
@@ -65,8 +52,7 @@ public sealed record Settings
     public Settings WithClampedRanges() => this with
     {
         Hold = Hold.Clamped(),
-        CollectSize = Math.Clamp(CollectSize, MinCollectSize, MaxCollectSize),
-        CollectRate = Math.Clamp(CollectRate, MinCollectRate, MaxCollectRate),
+        Collect = Collect.Clamped(),
         LogLevel = Enum.IsDefined(LogLevel) ? LogLevel : LogLevel.Info,
         Display = Display.Clamped(),
         Detect = Detect.Clamped(),

@@ -6,21 +6,21 @@ namespace NiceAimassist.Collect;
 /// Hands samples to a writer thread through a bounded queue. A full queue rejects the sample.
 /// It does not block the caller. The caller is the loop thread.
 /// </summary>
-public sealed class SampleWriter : IDisposable
+public sealed class SampleQueue : IDisposable
 {
     public const int QueueCapacity = 2;
 
     private readonly BlockingCollection<Sample> _queue = new(QueueCapacity);
-    private readonly Action<Sample> _sink;
+    private readonly Action<Sample> _write;
     private readonly Action<Exception> _onError;
     private readonly Thread _thread;
     private long _saved;
 
-    /// <param name="sink">Runs on the writer thread. It owns the buffers of the sample only while it runs.</param>
-    /// <param name="onError">Called on the writer thread when <paramref name="sink"/> throws. The thread keeps running.</param>
-    public SampleWriter(Action<Sample> sink, Action<Exception> onError)
+    /// <param name="write">Runs on the writer thread. It owns the buffers of the sample only while it runs.</param>
+    /// <param name="onError">Called on the writer thread when <paramref name="write"/> throws. The thread keeps running.</param>
+    public SampleQueue(Action<Sample> write, Action<Exception> onError)
     {
-        _sink = sink;
+        _write = write;
         _onError = onError;
         _thread = new Thread(Run) { Name = "collect-writer", IsBackground = true };
         _thread.Start();
@@ -44,7 +44,7 @@ public sealed class SampleWriter : IDisposable
         {
             try
             {
-                _sink(sample);
+                _write(sample);
                 Interlocked.Increment(ref _saved);
             }
             catch (Exception error)

@@ -20,24 +20,6 @@ public sealed class SettingsTests
     }
 
     [Fact]
-    public void Collect_settings_default_and_clamp()
-    {
-        Settings defaults = Settings.Parse("{}");
-        Settings clamped = Settings.Parse(@"{ ""collect_size"": 8, ""collect_rate"": 9 }");
-
-        Assert.Equal((640, 2), (defaults.CollectSize, defaults.CollectRate));
-        Assert.Equal((Settings.MinCollectSize, Settings.MaxCollectRate), (clamped.CollectSize, clamped.CollectRate));
-        Assert.Equal(Settings.MaxCollectSize, Settings.Parse(@"{ ""collect_size"": 99999 }").CollectSize);
-    }
-
-    [Fact]
-    public void Collect_is_enabled_by_default_and_can_be_turned_off()
-    {
-        Assert.True(Settings.Parse("{}").CollectEnabled);
-        Assert.False(Settings.Parse(@"{ ""collect_enabled"": false }").CollectEnabled);
-    }
-
-    [Fact]
     public void Serialized_settings_use_snake_case_names_and_read_back_equal()
     {
         Settings settings = new()

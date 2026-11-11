@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 using NiceAimassist.Aim;
+using NiceAimassist.Collect;
 using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
@@ -132,8 +133,8 @@ internal sealed class SettingsForm : Form
         _logLevel.Items.AddRange([.. Enum.GetValues<LogLevel>().Cast<object>()]);
         AddRow("Log level", _logLevel);
 
-        ConfigureNumber(_collectSize, Settings.MinCollectSize, Settings.MaxCollectSize);
-        ConfigureNumber(_collectRate, Settings.MinCollectRate, Settings.MaxCollectRate);
+        ConfigureNumber(_collectSize, CollectSettings.MinSize, CollectSettings.MaxSize);
+        ConfigureNumber(_collectRate, CollectSettings.MinRate, CollectSettings.MaxRate);
         _collectEnabled.Text = "Enabled (while hold key is down)";
         _collectEnabled.AutoSize = true;
         AddRow("Collect", _collectEnabled);
@@ -186,9 +187,9 @@ internal sealed class SettingsForm : Form
         _interpolationAuto.Checked = settings.Mouse.Interpolation.IsAuto;
         _interpolationPercent.Value = settings.Mouse.Interpolation.FixedPercent ?? 0;
         _interpolationPercent.Enabled = !_interpolationAuto.Checked;
-        _collectSize.Value = settings.CollectSize;
-        _collectRate.Value = settings.CollectRate;
-        _collectEnabled.Checked = settings.CollectEnabled;
+        _collectSize.Value = settings.Collect.Size;
+        _collectRate.Value = settings.Collect.Rate;
+        _collectEnabled.Checked = settings.Collect.Enabled;
         SetCollectInputsEnabled();
         _logLevel.SelectedItem = settings.LogLevel;
         UpdateKeyButtons();
@@ -248,9 +249,12 @@ internal sealed class SettingsForm : Form
                 ? Interpolation.Auto
                 : Interpolation.Percent((int)_interpolationPercent.Value),
         },
-        CollectSize = (int)_collectSize.Value,
-        CollectRate = (int)_collectRate.Value,
-        CollectEnabled = _collectEnabled.Checked,
+        Collect = _store.Current.Collect with
+        {
+            Size = (int)_collectSize.Value,
+            Rate = (int)_collectRate.Value,
+            Enabled = _collectEnabled.Checked,
+        },
         LogLevel = _logLevel.SelectedItem is LogLevel level ? level : _store.Current.LogLevel,
     };
 

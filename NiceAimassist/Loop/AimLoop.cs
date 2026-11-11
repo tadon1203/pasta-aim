@@ -160,10 +160,8 @@ public sealed class AimLoop
             return;
         }
 
-        _collector.SetEnabled(held && settings.CollectEnabled);
-        _collector.Configure(settings.CollectSize, settings.CollectRate);
-        _collector.SubmitReadySample();
-        _stats.SetCollect(_collector.Active, _collector.Saved, _collector.LastError);
+        CollectStatus status = _collector.Update(settings.Collect, held);
+        _stats.SetCollect(status.Active, status.Saved, status.LastError);
     }
 
     private void SendInterpolation(Interpolation interpolation)

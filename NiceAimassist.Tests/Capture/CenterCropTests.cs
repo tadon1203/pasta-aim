@@ -21,4 +21,17 @@ public class CenterCropTests
     {
         Assert.Throws<ArgumentException>(() => CenterCrop.Origin(640, 480, 641, 480));
     }
+
+    [Theory]
+    [InlineData(1920, 1080, 640, 640)]
+    [InlineData(1920, 1080, 641, 641)]
+    [InlineData(1920, 1080, 4096, 1080)]
+    public void SquareIsCenteredAndFitsTheDesktop(int desktopWidth, int desktopHeight, int size, int expectedSide)
+    {
+        (int left, int top, int side) = CenterCrop.Square(desktopWidth, desktopHeight, size);
+
+        Assert.Equal(expectedSide, side);
+        Assert.Equal(((desktopWidth - side) / 2, (desktopHeight - side) / 2), (left, top));
+        Assert.True(left >= 0 && top >= 0 && left + side <= desktopWidth && top + side <= desktopHeight);
+    }
 }
