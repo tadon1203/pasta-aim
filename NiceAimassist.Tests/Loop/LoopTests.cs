@@ -3,6 +3,7 @@ using System.Diagnostics;
 using NiceAimassist.Config;
 using NiceAimassist.Capture;
 using NiceAimassist.Loop;
+using NiceAimassist.Mouse;
 using NiceAimassist.Detect;
 
 namespace NiceAimassist.Tests.Loop;
@@ -17,15 +18,15 @@ public class LoopTests
     [Fact]
     public void HeldKeyWithTargetSendsMove()
     {
-        FakeDetector pipeline = new();
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
-        FakeMoveSink sink = new();
-        AimLoop loop = Start(pipeline, sink, () => true);
+        FakeDetector detector = new();
+        detector.Enqueue(Stopwatch.GetTimestamp(), Centered);
+        FakeMouse mouse = new();
+        AimLoop loop = Start(detector, mouse, () => true);
 
-        WaitUntil(() => sink.Moves.Count >= 1);
+        WaitUntil(() => mouse.Moves.Count >= 1);
         loop.Stop();
 
-        (short Dx, short Dy) move = Assert.Single(sink.Moves);
+        (short Dx, short Dy) move = Assert.Single(mouse.Moves);
         Assert.Equal((short)100, move.Dx);
         Assert.Equal((short)0, move.Dy);
     }
@@ -33,17 +34,17 @@ public class LoopTests
     [Fact]
     public void ReleasedKeySendsNoMoveAndDoesNotRunThePipeline()
     {
-        FakeDetector pipeline = new();
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), Centered);
-        FakeMoveSink sink = new();
+        FakeDetector detector = new();
+        detector.Enqueue(Stopwatch.GetTimestamp(), Centered);
+        FakeMouse mouse = new();
         FakeHoldKey hold = new(false);
-        AimLoop loop = Start(pipeline, sink, hold.IsHeld);
+        AimLoop loop = Start(detector, mouse, hold.IsHeld);
 
         WaitUntil(() => hold.Polls >= 3);
         loop.Stop();
 
-        Assert.True(sink.Moves.IsEmpty);
-        Assert.Equal(0, pipeline.RunCalls);
+        Assert.True(mouse.Moves.IsEmpty);
+        Assert.Equal(0, detector.RunCalls);
     }
 
     [Fact]
@@ -51,17 +52,17 @@ public class LoopTests
     {
         // Without the reset, the second frame reads the first move as target motion. The aim then overshoots the target.
         long first = Stopwatch.GetTimestamp();
-        FakeDetector pipeline = new();
-        pipeline.Enqueue(first, Centered);
-        pipeline.Enqueue(first + Stopwatch.Frequency / 20, Centered);
-        FakeMoveSink sink = new();
+        FakeDetector detector = new();
+        detector.Enqueue(first, Centered);
+        detector.Enqueue(first + Stopwatch.Frequency / 20, Centered);
+        FakeMouse mouse = new();
         FakeHoldKey hold = new(true, false, true);
-        AimLoop loop = Start(pipeline, sink, hold.IsHeld);
+        AimLoop loop = Start(detector, mouse, hold.IsHeld);
 
-        WaitUntil(() => sink.Moves.Count >= 2);
+        WaitUntil(() => mouse.Moves.Count >= 2);
         loop.Stop();
 
-        (short Dx, short Dy)[] moves = sink.Moves.ToArray();
+        (short Dx, short Dy)[] moves = mouse.Moves.ToArray();
         Assert.Equal((short)100, moves[0].Dx);
         Assert.Equal((short)100, moves[1].Dx);
     }
@@ -69,37 +70,37 @@ public class LoopTests
     [Fact]
     public void FrameWithoutTargetSendsNoMove()
     {
-        FakeDetector pipeline = new();
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
-        FakeMoveSink sink = new();
-        AimLoop loop = Start(pipeline, sink, () => true);
+        FakeDetector detector = new();
+        detector.Enqueue(Stopwatch.GetTimestamp(), null);
+        FakeMouse mouse = new();
+        AimLoop loop = Start(detector, mouse, () => true);
 
         WaitUntil(() => loop.Stats.Frames >= 1);
         loop.Stop();
 
-        Assert.True(sink.Moves.IsEmpty);
+        Assert.True(mouse.Moves.IsEmpty);
     }
 
     [Fact]
     public void InterpolationIsSentOnceUntilItChanges()
     {
         // The frames are fed in two stages. The setting change happens between the stages.
-        FakeDetector pipeline = new();
-        FakeMoveSink sink = new();
+        FakeDetector detector = new();
+        FakeMouse mouse = new();
         Holder<Settings> settings = new(Snapshot(Interpolation.Percent(30)));
-        AimLoop loop = new(pipeline, sink, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
+        AimLoop loop = new(detector, mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
 
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
+        detector.Enqueue(Stopwatch.GetTimestamp(), null);
+        detector.Enqueue(Stopwatch.GetTimestamp(), null);
         WaitUntil(() => loop.Stats.Frames >= 2);
         settings.Value = Snapshot(Interpolation.Auto);
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
-        pipeline.Enqueue(Stopwatch.GetTimestamp(), null);
+        detector.Enqueue(Stopwatch.GetTimestamp(), null);
+        detector.Enqueue(Stopwatch.GetTimestamp(), null);
         WaitUntil(() => loop.Stats.Frames >= 4);
         loop.Stop();
 
-        Interpolation[] sent = sink.Interpolations.ToArray();
+        Interpolation[] sent = mouse.Interpolations.ToArray();
         Assert.Equal(2, sent.Length);
         Assert.Equal(Interpolation.Percent(30), sent[0]);
         Assert.Equal(Interpolation.Auto, sent[1]);
@@ -108,41 +109,41 @@ public class LoopTests
     [Fact]
     public void PipelineExceptionReportsFaultAndEndsTheLoop()
     {
-        FakeDetector pipeline = new() { Fault = new InvalidOperationException("device lost") };
+        FakeDetector detector = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
-        AimLoop loop = new(pipeline, new FakeMoveSink(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
+        AimLoop loop = new(detector, new FakeMouse(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
         loop.Start();
 
         WaitUntil(() => faults.Count >= 1);
         loop.Stop();
 
         Assert.Equal("device lost", Assert.Single(faults).Message);
-        Assert.Equal(1, pipeline.RunCalls);
+        Assert.Equal(1, detector.RunCalls);
     }
 
     [Fact]
     public void StopReturnsPromptlyWhileWaitingForFrames()
     {
-        FakeDetector pipeline = new();
-        AimLoop loop = Start(pipeline, new FakeMoveSink(), () => true);
+        FakeDetector detector = new();
+        AimLoop loop = Start(detector, new FakeMouse(), () => true);
 
-        WaitUntil(() => pipeline.RunCalls >= 3);
+        WaitUntil(() => detector.RunCalls >= 3);
         Stopwatch clock = Stopwatch.StartNew();
         loop.Stop();
 
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(1), $"Stop took {clock.Elapsed}");
     }
 
-    private static AimLoop Start(FakeDetector pipeline, FakeMoveSink sink, Func<bool> isHeld)
+    private static AimLoop Start(FakeDetector detector, FakeMouse mouse, Func<bool> isHeld)
     {
-        AimLoop loop = new(pipeline, sink, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
+        AimLoop loop = new(detector, mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
         return loop;
     }
 
     private static Settings Snapshot() => Snapshot(Interpolation.Auto);
 
-    private static Settings Snapshot(Interpolation interpolation) => new() { Interpolation = interpolation };
+    private static Settings Snapshot(Interpolation interpolation) => new() { Mouse = new MouseSettings { Interpolation = interpolation } };
 
     private static void WaitUntil(Func<bool> condition)
     {
@@ -202,7 +203,7 @@ public class LoopTests
         }
     }
 
-    private sealed class FakeMoveSink : IMoveSink
+    private sealed class FakeMouse : IMouse
     {
         public ConcurrentQueue<(short Dx, short Dy)> Moves { get; } = new();
 

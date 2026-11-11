@@ -1,6 +1,6 @@
 using Microsoft.Win32;
 
-namespace NiceAimassist.Makcu;
+namespace NiceAimassist.Mouse;
 
 internal static class MakcuPorts
 {

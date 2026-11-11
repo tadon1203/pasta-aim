@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using NiceAimassist.Aim;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
+using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Config;
 
@@ -32,8 +33,8 @@ public sealed record Settings
     [JsonPropertyName("aim")]
     public AimSettings Aim { get; init; } = new();
 
-    [JsonPropertyName("interpolation")]
-    public Interpolation Interpolation { get; init; }
+    [JsonPropertyName("mouse")]
+    public MouseSettings Mouse { get; init; } = new();
 
     /// <summary>
     /// The key names that hold the aim, such as "F8". The aim is held while any of them is down.
@@ -76,6 +77,7 @@ public sealed record Settings
         Display = Display.Clamped(),
         Detect = Detect.Clamped(),
         Aim = Aim.Clamped(),
+        Mouse = Mouse.Clamped(),
     };
 
     private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)

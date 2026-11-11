@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
-using NiceAimassist.Makcu;
+using NiceAimassist.Mouse;
 
-namespace NiceAimassist.Tests.Makcu;
+namespace NiceAimassist.Tests.Mouse;
 
 /// <summary>A simulated MAKCU. It answers only on a port whose baud rate matches its own. The device does the same.</summary>
 internal sealed class FakeMakcu
@@ -21,11 +21,11 @@ internal sealed class FakeMakcu
         byte command = frame[4];
         switch (command)
         {
-            case Protocol.CommandDevice:
+            case MakcuProtocol.CommandDevice:
                 return Reply(command, [Kinds]);
-            case Protocol.CommandInterpolate:
+            case MakcuProtocol.CommandInterpolate:
                 return Reply(command, [frame[5]]);
-            case Protocol.CommandSetBaud:
+            case MakcuProtocol.CommandSetBaud:
                 int baud = (int)BinaryPrimitives.ReadUInt32LittleEndian(frame[5..9]);
                 if (AcceptedBauds.Contains(baud))
                 {
@@ -33,7 +33,7 @@ internal sealed class FakeMakcu
                     return [];
                 }
 
-                return Reply(command, [Protocol.Reject]);
+                return Reply(command, [MakcuProtocol.Reject]);
             default:
                 return [];
         }

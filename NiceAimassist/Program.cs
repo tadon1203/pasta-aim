@@ -8,7 +8,7 @@ using NiceAimassist.Loop;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
 using NiceAimassist.Input;
-using NiceAimassist.Makcu;
+using NiceAimassist.Mouse;
 using NiceAimassist.Ui;
 using Application = System.Windows.Forms.Application;
 
@@ -65,7 +65,7 @@ internal static class Program
             Settings? applied = null;
             loop = new AimLoop(
                 detector,
-                new MakcuSink(device),
+                device,
                 holdKey.IsHeld,
                 () =>
                 {
@@ -186,12 +186,5 @@ internal static class Program
         private static HoldKey[] Parse(IReadOnlyList<string> names) =>
             [.. names.Select(name => HoldKey.TryParse(name, out HoldKey key) ? (HoldKey?)key : null)
                 .OfType<HoldKey>()];
-    }
-
-    private sealed class MakcuSink(MakcuDevice device) : IMoveSink
-    {
-        public void Move(short dx, short dy) => device.Move(dx, dy);
-
-        public void SetInterpolation(Interpolation interpolation) => device.SetInterpolation(interpolation);
     }
 }

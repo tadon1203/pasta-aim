@@ -3,6 +3,7 @@ using System.Text.Json;
 using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Display;
+using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Tests.Config;
 
@@ -13,7 +14,6 @@ public sealed class SettingsTests
     {
         Settings settings = Settings.Parse(@"{ ""version"": 2 }");
 
-        Assert.Equal(Interpolation.Auto, settings.Interpolation);
         Assert.Equal(["F8"], settings.HoldKeys);
         Assert.Equal(0, settings.Display.Adapter);
         Assert.Equal(0, settings.Display.Output);
@@ -53,27 +53,6 @@ public sealed class SettingsTests
         Assert.Equal(["F9", "MouseX1"], settings.HoldKeys);
     }
 
-    [Theory]
-    [InlineData(@"{ ""interpolation"": ""auto"" }", -1)]
-    [InlineData(@"{ ""interpolation"": ""AUTO"" }", -1)]
-    [InlineData(@"{ ""interpolation"": 40 }", 40)]
-    [InlineData(@"{ ""interpolation"": 39.6 }", 40)]
-    [InlineData(@"{ ""interpolation"": 150 }", 100)]
-    [InlineData(@"{ ""interpolation"": -3 }", 0)]
-    public void Interpolation_reads_auto_or_a_clamped_percent(string json, int expectedWire)
-    {
-        Settings settings = Settings.Parse(json);
-
-        Assert.Equal(expectedWire == -1, settings.Interpolation.IsAuto);
-        Assert.Equal(expectedWire == -1 ? null : expectedWire, settings.Interpolation.FixedPercent);
-    }
-
-    [Fact]
-    public void Interpolation_of_another_kind_makes_the_file_unparsable()
-    {
-        Assert.Throws<JsonException>(() => Settings.Parse(@"{ ""interpolation"": ""fast"" }"));
-    }
-
     [Fact]
     public void Serialized_settings_use_snake_case_names_and_read_back_equal()
     {
@@ -81,7 +60,7 @@ public sealed class SettingsTests
         {
             Detect = new DetectSettings { Model = "yolo.onnx" },
             Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
-            Interpolation = Interpolation.Percent(30),
+            Mouse = new MouseSettings { Interpolation = Interpolation.Percent(30) },
             HoldKeys = ["F9", "xinput:a"],
         };
 
@@ -90,16 +69,6 @@ public sealed class SettingsTests
         Assert.Contains("\"target_y_offset\"", json);
         Assert.Contains("\"interpolation\": 30", json);
         Assert.Equal(settings, Settings.Parse(json));
-    }
-
-    [Fact]
-    public void Auto_serializes_as_the_string_auto()
-    {
-        string json = new Settings().ToJson();
-
-        Assert.Contains("\"interpolation\": \"auto\"", json);
-        using JsonDocument document = JsonDocument.Parse(json);
-        Assert.Equal(JsonValueKind.String, document.RootElement.GetProperty("interpolation").ValueKind);
     }
 
     [Theory]

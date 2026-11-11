@@ -1,17 +1,16 @@
 using System.Diagnostics;
-using NiceAimassist.Config;
 
-namespace NiceAimassist.Makcu;
+namespace NiceAimassist.Mouse;
 
 /// <summary>An open link to a MAKCU device. Only the loop thread may use it.</summary>
-public sealed class MakcuDevice : IDisposable
+public sealed class MakcuDevice : IMouse, IDisposable
 {
     private const int HighBaud = 4_000_000;
     private const int LowBaud = 115_200;
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromMilliseconds(100);
 
     private readonly IMakcuPort _port;
-    private readonly byte[] _request = new byte[Protocol.MaxRequestLength];
+    private readonly byte[] _request = new byte[MakcuProtocol.MaxRequestLength];
     private bool _closed;
 
     private MakcuDevice(IMakcuPort port, string portName, int baudRate)
@@ -52,7 +51,7 @@ public sealed class MakcuDevice : IDisposable
     public void Move(short dx, short dy)
     {
         ThrowIfClosed();
-        int length = Protocol.EncodeMove(_request, dx, dy);
+        int length = MakcuProtocol.EncodeMove(_request, dx, dy);
         try
         {
             _port.Write(_request.AsSpan(0, length));
@@ -69,13 +68,13 @@ public sealed class MakcuDevice : IDisposable
     public void SetInterpolation(Interpolation interpolation)
     {
         ThrowIfClosed();
-        byte value = interpolation.FixedPercent is { } percent ? (byte)percent : Protocol.InterpolateAuto;
-        int length = Protocol.EncodeInterpolate(_request, value);
+        byte value = interpolation.FixedPercent is { } percent ? (byte)percent : MakcuProtocol.InterpolateAuto;
+        int length = MakcuProtocol.EncodeInterpolate(_request, value);
 
-        Packet? reply;
+        MakcuPacket? reply;
         try
         {
-            reply = Exchange(_port, _request.AsSpan(0, length), Protocol.CommandInterpolate);
+            reply = Exchange(_port, _request.AsSpan(0, length), MakcuProtocol.CommandInterpolate);
         }
         catch (Exception error) when (IsPortFailure(error))
         {
@@ -90,7 +89,7 @@ public sealed class MakcuDevice : IDisposable
             throw new IOException("MAKCU did not confirm the move interpolation in time");
         }
 
-        if (!Protocol.ConfirmsInterpolation(value, reply.Value))
+        if (!MakcuProtocol.ConfirmsInterpolation(value, reply.Value))
         {
             throw new InvalidOperationException(
                 $"MAKCU answered the move interpolation with {Convert.ToHexString(reply.Value.Payload)}");
@@ -116,8 +115,8 @@ public sealed class MakcuDevice : IDisposable
                 kinds = QueryDeviceKinds(port)
                     ?? throw new InvalidOperationException("MAKCU did not answer at either baud rate");
 
-                Span<byte> request = stackalloc byte[Protocol.MaxRequestLength];
-                int length = Protocol.EncodeSetBaud(request, HighBaud);
+                Span<byte> request = stackalloc byte[MakcuProtocol.MaxRequestLength];
+                int length = MakcuProtocol.EncodeSetBaud(request, HighBaud);
                 port.Write(request[..length]);
                 port.SetBaudRate(HighBaud);
                 kinds = QueryDeviceKinds(port)
@@ -125,7 +124,7 @@ public sealed class MakcuDevice : IDisposable
                         $"MAKCU did not answer at {HighBaud} baud after the baud switch");
             }
 
-            if ((kinds.Value & Protocol.KindMouse) == 0)
+            if ((kinds.Value & MakcuProtocol.KindMouse) == 0)
             {
                 throw new InvalidOperationException(
                     $"MAKCU on {name} has no mouse route (device kinds 0x{kinds.Value:X2})");
@@ -144,15 +143,15 @@ public sealed class MakcuDevice : IDisposable
     /// <summary>Null when the device does not answer. A reject is an error. It is not an answer.</summary>
     private static byte? QueryDeviceKinds(IMakcuPort port)
     {
-        Span<byte> request = stackalloc byte[Protocol.MaxRequestLength];
-        int length = Protocol.EncodeDevice(request);
-        Packet? reply = Exchange(port, request[..length], Protocol.CommandDevice);
+        Span<byte> request = stackalloc byte[MakcuProtocol.MaxRequestLength];
+        int length = MakcuProtocol.EncodeDevice(request);
+        MakcuPacket? reply = Exchange(port, request[..length], MakcuProtocol.CommandDevice);
         if (reply is null)
         {
             return null;
         }
 
-        if (Protocol.IsReject(reply.Value))
+        if (MakcuProtocol.IsReject(reply.Value))
         {
             throw new InvalidOperationException("MAKCU rejected the device query");
         }
@@ -165,11 +164,11 @@ public sealed class MakcuDevice : IDisposable
         return kinds;
     }
 
-    private static Packet? Exchange(IMakcuPort port, ReadOnlySpan<byte> request, byte command)
+    private static MakcuPacket? Exchange(IMakcuPort port, ReadOnlySpan<byte> request, byte command)
     {
         port.Write(request);
-        var decoder = new PacketDecoder();
-        var packets = new List<Packet>();
+        var decoder = new MakcuPacketDecoder();
+        var packets = new List<MakcuPacket>();
         var buffer = new byte[256];
         var clock = Stopwatch.StartNew();
         while (clock.Elapsed < ReplyTimeout)
@@ -182,7 +181,7 @@ public sealed class MakcuDevice : IDisposable
 
             packets.Clear();
             decoder.Feed(buffer.AsSpan(0, count), packets);
-            foreach (Packet packet in packets)
+            foreach (MakcuPacket packet in packets)
             {
                 if (packet.Command == command)
                 {

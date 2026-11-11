@@ -1,7 +1,6 @@
-using NiceAimassist.Config;
-using NiceAimassist.Makcu;
+using NiceAimassist.Mouse;
 
-namespace NiceAimassist.Tests.Makcu;
+namespace NiceAimassist.Tests.Mouse;
 
 public class MakcuDeviceTests
 {
@@ -18,7 +17,7 @@ public class MakcuDeviceTests
         using MakcuDevice link = Connect(device);
 
         Assert.Equal(4_000_000, link.BaudRate);
-        Assert.DoesNotContain(device.Frames, frame => frame[4] == Protocol.CommandSetBaud);
+        Assert.DoesNotContain(device.Frames, frame => frame[4] == MakcuProtocol.CommandSetBaud);
     }
 
     [Fact]
@@ -31,7 +30,7 @@ public class MakcuDeviceTests
         Assert.Equal(4_000_000, device.Baud);
         Assert.Equal(4_000_000, link.BaudRate);
         Assert.Equal("COM3", link.PortName);
-        Assert.Contains(device.Frames, frame => frame[4] == Protocol.CommandSetBaud && frame[5] == 0x00 && frame[6] == 0x09);
+        Assert.Contains(device.Frames, frame => frame[4] == MakcuProtocol.CommandSetBaud && frame[5] == 0x00 && frame[6] == 0x09);
     }
 
     [Fact]

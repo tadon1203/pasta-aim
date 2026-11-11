@@ -1,8 +1,8 @@
 using System.Buffers.Binary;
 
-namespace NiceAimassist.Makcu;
+namespace NiceAimassist.Mouse;
 
-internal static class Protocol
+internal static class MakcuProtocol
 {
     public const int MaxRequestLength = 9;
     public const int MaxPayload = 64;
@@ -48,10 +48,10 @@ internal static class Protocol
         return 9;
     }
 
-    public static bool IsReject(Packet packet) => packet.Payload is [Reject];
+    public static bool IsReject(MakcuPacket packet) => packet.Payload is [Reject];
 
     /// <remarks>Any reply confirms Auto (255). A reject of Auto has the same bytes as its echo.</remarks>
-    public static bool ConfirmsInterpolation(byte value, Packet packet) =>
+    public static bool ConfirmsInterpolation(byte value, MakcuPacket packet) =>
         value == InterpolateAuto || (packet.Payload is [var echo] && echo == value);
 
     private static void WriteHeader(Span<byte> destination, ushort length, byte command)

@@ -1,4 +1,4 @@
-namespace NiceAimassist.Makcu;
+namespace NiceAimassist.Mouse;
 
 /// <summary>The byte stream to one MAKCU device. A COM port implements it. Tests use a fake.</summary>
 public interface IMakcuPort : IDisposable

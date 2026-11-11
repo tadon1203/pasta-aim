@@ -1,16 +1,14 @@
 using System.Buffers.Binary;
 
-namespace NiceAimassist.Makcu;
+namespace NiceAimassist.Mouse;
 
-internal readonly record struct Packet(byte Command, byte[] Payload);
-
-internal sealed class PacketDecoder
+internal sealed class MakcuPacketDecoder
 {
     private static readonly byte[] Header = [0xDE, 0xAD];
 
     private byte[] _pending = [];
 
-    public void Feed(ReadOnlySpan<byte> bytes, List<Packet> packets)
+    public void Feed(ReadOnlySpan<byte> bytes, List<MakcuPacket> packets)
     {
         byte[] data = _pending.Length == 0 ? bytes.ToArray() : [.. _pending, .. bytes];
         int start = 0;
@@ -33,7 +31,7 @@ internal sealed class PacketDecoder
             }
 
             int length = BinaryPrimitives.ReadUInt16LittleEndian(rest[2..]);
-            if (length > Protocol.MaxPayload)
+            if (length > MakcuProtocol.MaxPayload)
             {
                 // Skip only the header. Garbage data cannot stall the stream.
                 start += Header.Length;
@@ -46,7 +44,7 @@ internal sealed class PacketDecoder
                 break;
             }
 
-            packets.Add(new Packet(rest[4], rest[5..total].ToArray()));
+            packets.Add(new MakcuPacket(rest[4], rest[5..total].ToArray()));
             start += total;
         }
 

@@ -1,6 +1,6 @@
 using System.IO.Ports;
 
-namespace NiceAimassist.Makcu;
+namespace NiceAimassist.Mouse;
 
 internal sealed class SerialMakcuPort : IMakcuPort
 {
@@ -12,7 +12,7 @@ internal sealed class SerialMakcuPort : IMakcuPort
     private static readonly TimeSpan BaudSwitchSettle = TimeSpan.FromMilliseconds(10);
 
     private readonly SerialPort _port;
-    private readonly byte[] _write = new byte[Protocol.MaxRequestLength];
+    private readonly byte[] _write = new byte[MakcuProtocol.MaxRequestLength];
     private readonly byte[] _read = new byte[256];
 
     private SerialMakcuPort(string name, int baudRate)

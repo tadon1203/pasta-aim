@@ -4,6 +4,7 @@ using NiceAimassist.Collect;
 using NiceAimassist.Config;
 using NiceAimassist.Capture;
 using NiceAimassist.Detect;
+using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Loop;
 
@@ -13,7 +14,7 @@ public sealed class AimLoop
     private const int IdleSleepMs = 1;
 
     private readonly IDetector _detector;
-    private readonly IMoveSink _sink;
+    private readonly IMouse _mouse;
     private readonly Func<bool> _isHeld;
     private readonly Func<Settings> _currentSettings;
     private readonly Func<long> _now;
@@ -29,10 +30,10 @@ public sealed class AimLoop
     private Interpolation _sentInterpolation;
 
     /// <param name="now">Source of the Stopwatch timestamps. Usually <c>Stopwatch.GetTimestamp</c>.</param>
-    /// <param name="onFault">Called on the loop thread when the pipeline or the sink throws. The loop ends after the call.</param>
+    /// <param name="onFault">Called on the loop thread when the detector or the mouse throws. The loop ends after the call.</param>
     public AimLoop(
         IDetector detector,
-        IMoveSink sink,
+        IMouse mouse,
         Func<bool> isHeld,
         Func<Settings> currentSettings,
         Func<long> now,
@@ -41,7 +42,7 @@ public sealed class AimLoop
     {
         _collector = collector;
         _detector = detector ?? throw new ArgumentNullException(nameof(detector));
-        _sink = sink ?? throw new ArgumentNullException(nameof(sink));
+        _mouse = mouse ?? throw new ArgumentNullException(nameof(mouse));
         _isHeld = isHeld ?? throw new ArgumentNullException(nameof(isHeld));
         _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
         _now = now ?? throw new ArgumentNullException(nameof(now));
@@ -116,7 +117,7 @@ public sealed class AimLoop
             }
 
             _stats.SetHeld(true);
-            SendInterpolation(settings.Interpolation);
+            SendInterpolation(settings.Mouse.Interpolation);
             CaptureStatus status = _detector.TryDetect(settings.Detect.Confidence / 100f, out DetectedFrame frame);
             if (status == CaptureStatus.Timeout)
             {
@@ -141,7 +142,7 @@ public sealed class AimLoop
             bool sent = aim.Status == AimStatus.Move && _running;
             if (sent)
             {
-                _sink.Move(aim.Dx, aim.Dy);
+                _mouse.Move(aim.Dx, aim.Dy);
             }
 
             long sentAt = sent ? _now() : aimedAt;
@@ -172,7 +173,7 @@ public sealed class AimLoop
             return;
         }
 
-        _sink.SetInterpolation(interpolation);
+        _mouse.SetInterpolation(interpolation);
         Log.Debug($"interpolation set to {(interpolation.FixedPercent is { } percent ? percent + "%" : "auto")}");
         _sentInterpolation = interpolation;
         _interpolationSent = true;

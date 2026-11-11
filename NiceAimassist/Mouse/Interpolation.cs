@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace NiceAimassist.Config;
+namespace NiceAimassist.Mouse;
 
 /// <summary>How MAKCU smooths a move. The value is the device's Auto mode or a fixed percent in 0..100. The default value is Auto.</summary>
 [JsonConverter(typeof(InterpolationJsonConverter))]

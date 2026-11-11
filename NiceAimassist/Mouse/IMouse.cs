@@ -1,9 +1,7 @@
-using NiceAimassist.Config;
-
-namespace NiceAimassist.Loop;
+namespace NiceAimassist.Mouse;
 
 /// <summary>The mouse output of the loop. Only the loop thread calls it.</summary>
-public interface IMoveSink
+public interface IMouse
 {
     void Move(short dx, short dy);
 

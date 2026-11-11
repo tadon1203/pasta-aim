@@ -6,6 +6,7 @@ using NiceAimassist.Config;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
 using NiceAimassist.Input;
+using NiceAimassist.Mouse;
 using Timer = System.Windows.Forms.Timer;
 
 namespace NiceAimassist.Ui;
@@ -182,8 +183,8 @@ internal sealed class SettingsForm : Form
         _targetYOffset.Value = settings.Aim.TargetYOffset;
         _maxDelta.Value = settings.Aim.MaxDelta;
         _velocitySmoothing.Value = settings.Aim.VelocitySmoothing;
-        _interpolationAuto.Checked = settings.Interpolation.IsAuto;
-        _interpolationPercent.Value = settings.Interpolation.FixedPercent ?? 0;
+        _interpolationAuto.Checked = settings.Mouse.Interpolation.IsAuto;
+        _interpolationPercent.Value = settings.Mouse.Interpolation.FixedPercent ?? 0;
         _interpolationPercent.Enabled = !_interpolationAuto.Checked;
         _collectSize.Value = settings.CollectSize;
         _collectRate.Value = settings.CollectRate;
@@ -241,9 +242,12 @@ internal sealed class SettingsForm : Form
             VelocitySmoothing = (int)_velocitySmoothing.Value,
         },
         HoldKeys = [.. _holdKeys.Items.Cast<string>()],
-        Interpolation = _interpolationAuto.Checked
-            ? Interpolation.Auto
-            : Interpolation.Percent((int)_interpolationPercent.Value),
+        Mouse = _store.Current.Mouse with
+        {
+            Interpolation = _interpolationAuto.Checked
+                ? Interpolation.Auto
+                : Interpolation.Percent((int)_interpolationPercent.Value),
+        },
         CollectSize = (int)_collectSize.Value,
         CollectRate = (int)_collectRate.Value,
         CollectEnabled = _collectEnabled.Checked,
