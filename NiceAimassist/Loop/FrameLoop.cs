@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.Runtime.InteropServices;
 using NiceAimassist.Aim;
 using NiceAimassist.Dataset;
 using NiceAimassist.Settings;
@@ -64,7 +63,7 @@ public sealed partial class FrameLoop
         }
 
         _running = true;
-        _thread = new Thread(ThreadMain) { Name = "loop", IsBackground = true, Priority = ThreadPriority.Highest };
+        _thread = new Thread(ThreadMain) { Name = "loop", IsBackground = true };
         _thread.Start();
     }
 
@@ -81,29 +80,15 @@ public sealed partial class FrameLoop
 
     private void ThreadMain()
     {
-        uint taskIndex = 0;
-        nint mmcss = AvSetMmThreadCharacteristicsW("Games", ref taskIndex);
-        if (mmcss == 0)
-        {
-            Log.Warn($"AvSetMmThreadCharacteristicsW failed for task Games ({Marshal.GetLastPInvokeError()}); the loop keeps its thread priority only");
-        }
-
         try
         {
+            LoopThreadBoost.Apply();
             Loop();
         }
         catch (Exception error)
         {
             Log.Error($"the loop faulted: {error}");
             _onFault(error);
-        }
-        finally
-        {
-            // The revert must run on the thread that set the characteristics.
-            if (mmcss != 0)
-            {
-                AvRevertMmThreadCharacteristics(mmcss);
-            }
         }
     }
 
@@ -152,12 +137,8 @@ public sealed partial class FrameLoop
             }
 
             DetectedFrame frame = _detector.Detect(captured, settings.Detect.Confidence / 100f);
-            AimResult aim = _aim.Update(
-                frame.Target,
-                frame.DesktopTimestamp,
-                _now(),
-                new Size(_detector.InputWidth, _detector.InputHeight),
-                settings.Aim);
+            Size input = new(_detector.InputWidth, _detector.InputHeight);
+            AimResult aim = _aim.Update(frame.Target, frame.DesktopTimestamp, _now(), input, settings.Aim);
             long aimedAt = _now();
             // Read the flag after the aim. A stop during the frame then suppresses its move.
             bool sent = aim.Status == AimStatus.Move && _running;
@@ -169,7 +150,7 @@ public sealed partial class FrameLoop
             long sentAt = sent ? _now() : aimedAt;
             FrameTimings timings = new(frame.DesktopTimestamp, frame.CapturedTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
             _loopStatus.RecordFrame();
-            _diagnostics.RecordFrame(frame, timings, aim, sent);
+            _diagnostics.RecordFrame(frame, timings, input, aim, sent);
 
             // The recording comes last. It must not delay the move. The frame stays held until the next acquire.
             if (frame.Target is not null && _recorder is { IsDue: true })
@@ -178,12 +159,4 @@ public sealed partial class FrameLoop
             }
         }
     }
-
-    [LibraryImport("avrt.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint AvSetMmThreadCharacteristicsW(string taskName, ref uint taskIndex);
-
-    [LibraryImport("avrt.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool AvRevertMmThreadCharacteristics(nint handle);
-
 }

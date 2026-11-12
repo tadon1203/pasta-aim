@@ -103,7 +103,7 @@ public class AimControllerTests
         var aim = new AimController();
         var p = Params();
         Assert.False(Step(aim, At(50, 50), 0, p, delay: 0.01).Sent);
-        Assert.Equal((true, 30, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
+        Assert.Equal((true, 20, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
     }
 
     [Fact]
@@ -112,8 +112,8 @@ public class AimControllerTests
         var aim = new AimController();
         var p = Params();
         Step(aim, At(50, 50), 0, p, delay: 0.010);
-        // The blended delay is 0.010 + 0.2 * (0.060 - 0.010) = 0.020. The lead is 0.030.
-        Assert.Equal((true, 40, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.060));
+        // The blended delay is 0.010 + 0.2 * (0.060 - 0.010) = 0.020. The lead is 0.020.
+        Assert.Equal((true, 30, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.060));
     }
 
     [Fact]
@@ -140,8 +140,40 @@ public class AimControllerTests
         var aim = new AimController();
         var p = Params(smoothing: 50);
         Step(aim, At(50, 50), 0, p, delay: 0.01);
-        // The measured velocity is 1000 px/s. Half of it is the new estimate. The lead is 0.02 s.
+        // The measured velocity is 1000 px/s. Half of it is the new estimate. The lead is 0.01 s.
+        Assert.Equal((true, 15, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
+    }
+
+    [Fact]
+    public void TheSentMoveIsAddedBackToTheMeasuredVelocity()
+    {
+        var aim = new AimController();
+        var p = Params();
+        // The first frame sends 10 counts at one count per pixel. The target stays at 60 after the move.
+        // The own move of 10 px hides 10 px of target motion. The measured velocity is 1000 px/s.
+        Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0, p, delay: 0.01));
         Assert.Equal((true, 20, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
+    }
+
+    [Fact]
+    public void TheShiftUsesCountsPerPixelAndNotTheSensitivity()
+    {
+        var aim = new AimController();
+        var p = Params(sensitivity: 50) with { CountsPerPixel = 100 };
+        // The first move is 5 counts. It shifts the capture by 5 px, not by 10 px.
+        // The target stays at 60. The measured velocity is 500 px/s. The lead is 0.02 s, that is 10 px.
+        Assert.Equal((true, 5, 0), Step(aim, At(60, 50), 0, p, delay: 0.02));
+        Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.02));
+    }
+
+    [Fact]
+    public void WithoutPredictionTheAimPointStaysOnTheBox()
+    {
+        var aim = new AimController();
+        var p = Params() with { Prediction = false };
+        Step(aim, At(50, 50), 0, p, delay: 0.01);
+        Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
+        Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0.02, p, delay: 0.01));
     }
 
     [Fact]

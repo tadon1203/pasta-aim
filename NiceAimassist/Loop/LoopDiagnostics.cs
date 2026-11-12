@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing;
 using NiceAimassist.Aim;
 using NiceAimassist.Detect;
 using NiceAimassist.Shared.Logging;
@@ -22,6 +23,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
     private int _sent;
     private float _bestScore;
     private float _topScore;
+    private long _previousFrameAt;
 
     public void RecordTimeout()
     {
@@ -36,7 +38,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
         Tick();
     }
 
-    public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, AimResult aim, bool sent)
+    public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, Size input, AimResult aim, bool sent)
     {
         _frames++;
         StageTicks stages = timings.Stages.WithBreakdown(frame.Breakdown);
@@ -56,10 +58,16 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
         if (Log.IsEnabled(LogLevel.Trace))
         {
             string box = frame.Target is { } t
-                ? $"box=({t.X1:F1},{t.Y1:F1},{t.X2:F1},{t.Y2:F1}) score={t.Score:F3}"
+                ? $"box=({t.X1:F1},{t.Y1:F1},{t.X2:F1},{t.Y2:F1}) score={t.Score:F3} "
+                    + $"err=({t.CenterX - input.Width * 0.5f:F1},{t.CenterY - input.Height * 0.5f:F1})"
                 : "no target";
-            Log.Trace($"frame {box} aim={aim.Status} move=({aim.Dx},{aim.Dy}) sent={sent}");
+            double intervalMs = _previousFrameAt == 0
+                ? 0
+                : (timings.MovedTimestamp - _previousFrameAt) * 1000.0 / Stopwatch.Frequency;
+            Log.Trace($"frame {box} aim={aim.Status} move=({aim.Dx},{aim.Dy}) sent={sent} dt={intervalMs:F1}ms");
         }
+
+        _previousFrameAt = timings.MovedTimestamp;
 
         Tick();
     }
@@ -68,6 +76,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
     public void Restart()
     {
         _windowStart = now();
+        _previousFrameAt = 0;
         _frames = _timeouts = _noFrames = _targets = _aimed = _sent = 0;
         _bestScore = 0;
         _topScore = 0;

@@ -11,7 +11,6 @@ internal sealed unsafe class OutputReader : IDisposable
     private readonly ID3D12CommandQueue* _queue;
     private readonly byte* _mapped;
     private readonly int _length;
-    private readonly FenceEvent _fenceEvent;
     private ID3D12CommandAllocator* _allocator;
     private ID3D12GraphicsCommandList* _list;
     private ID3D12Resource* _buffer;
@@ -32,7 +31,6 @@ internal sealed unsafe class OutputReader : IDisposable
 
         _queue = gpu.ComputeQueue;
         _length = length;
-        _fenceEvent = new FenceEvent();
 
         try
         {
@@ -101,7 +99,7 @@ internal sealed unsafe class OutputReader : IDisposable
         _queue->ExecuteCommandLists(1, &list);
         ulong value = ++_fenceValue;
         ComInterop.Check(_queue->Signal(_fence, value), "Signal the output copy fence");
-        _fenceEvent.Wait(_fence, value);
+        FenceSpin.Wait(_fence, value);
         return new ReadOnlySpan<byte>(_mapped, _length);
     }
 
@@ -125,7 +123,6 @@ internal sealed unsafe class OutputReader : IDisposable
         }
 
         ComInterop.Release(ref _fence);
-        _fenceEvent.Dispose();
         ComInterop.Release(ref _list);
         ComInterop.Release(ref _allocator);
         ComInterop.Release(ref _buffer);

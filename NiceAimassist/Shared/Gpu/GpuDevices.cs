@@ -1,4 +1,3 @@
-using NiceAimassist.Shared.Logging;
 using Silk.NET.Core.Native;
 using Silk.NET.Direct3D11;
 using Silk.NET.Direct3D12;
@@ -10,7 +9,6 @@ namespace NiceAimassist.Shared.Gpu;
 public sealed unsafe class GpuDevices : IDisposable
 {
     private const uint D3D11SdkVersion = 7;
-    private const int CaptureGpuThreadPriority = 7;
     private const int DxgiNotFound = unchecked((int)0x887A0002);
 
     private static readonly DXGI Dxgi = DXGI.GetApi(window: null);
@@ -52,7 +50,6 @@ public sealed unsafe class GpuDevices : IDisposable
                     (IDXGIAdapter*)_adapter, D3DDriverType.Unknown, 0, 0, &level, 1, D3D11SdkVersion, &captureDevice, null, &immediate),
                 "D3D11CreateDevice");
             _captureDevice = captureDevice;
-            RaiseCaptureGpuPriority(captureDevice);
             try
             {
                 _captureContext = ComInterop.Query<ID3D11DeviceContext4>(immediate);
@@ -143,7 +140,7 @@ public sealed unsafe class GpuDevices : IDisposable
     {
         ulong value = ++_idleValue;
         ComInterop.Check(_computeQueue->Signal(_idleFence, value), "Signal the idle fence");
-        FenceEvent.WaitOnce(_idleFence, value);
+        FenceSpin.Wait(_idleFence, value);
     }
 
     private void ReleaseAll()
@@ -155,24 +152,6 @@ public sealed unsafe class GpuDevices : IDisposable
         ComInterop.Release(ref _captureDevice);
         ComInterop.Release(ref _output);
         ComInterop.Release(ref _adapter);
-    }
-
-    // A positive priority can need administrator rights, so a failure is not fatal.
-    private static void RaiseCaptureGpuPriority(ID3D11Device* device)
-    {
-        IDXGIDevice* dxgiDevice = ComInterop.Query<IDXGIDevice>(device);
-        try
-        {
-            int result = dxgiDevice->SetGPUThreadPriority(CaptureGpuThreadPriority);
-            if (result < 0)
-            {
-                Log.Warn($"SetGPUThreadPriority failed (0x{result:X8}); the capture GPU priority stays normal");
-            }
-        }
-        finally
-        {
-            ComInterop.Release(ref dxgiDevice);
-        }
     }
 
     private static IDXGIAdapter1* SelectAdapter(IDXGIFactory1* factory, long adapterLuid)

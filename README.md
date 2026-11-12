@@ -52,6 +52,8 @@ The file has one object per feature. A missing section takes its defaults.
     "sensitivity_y": 100,
     "target_y_offset": 50,
     "max_delta": 512,
+    "prediction": true,
+    "counts_per_pixel": 100,
     "velocity_smoothing": 50
   },
   "mouse": { "interpolation": "auto" },
@@ -71,7 +73,9 @@ The file has one object per feature. A missing section takes its defaults.
 | `aim.sensitivity_y` | 1 to 10000 | `100` | Vertical gain. |
 | `aim.target_y_offset` | 0 to 100 | `50` | Aim point inside the target box, in percent of its height. `0` is the top edge. |
 | `aim.max_delta` | 0 to 32767 | `512` | Cap on the length of one move. `0` is no cap. |
-| `aim.velocity_smoothing` | 0 to 95 | `50` | Smoothing of the target velocity estimate. |
+| `aim.prediction` | `true` or `false` | `true` | Whether the aim point leads a moving target. `false` aims at the box as it is. |
+| `aim.counts_per_pixel` | 1 to 10000 | `100` | Mouse counts the game needs to move the view by one capture pixel, in percent. `100` is one count. Prediction uses it to remove the shift that the own move causes. It does not depend on the sensitivity. |
+| `aim.velocity_smoothing` | 0 to 99 | `50` | Smoothing of the target velocity estimate. |
 | `mouse.interpolation` | `"auto"` or 0 to 100 | `"auto"` | MAKCU move smoothing: its Auto mode or a fixed percent. |
 | `hotkey.keys` | list of key names | `["F8"]` | Keys that enable aiming. |
 | `dataset.enabled` | boolean | `true` | Whether recording runs while a hotkey is down. |

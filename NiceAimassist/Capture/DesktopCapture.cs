@@ -138,7 +138,7 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
     }
 
     /// <summary>Blocks until the queue finished every read that <see cref="EndRead"/> announced.</summary>
-    internal void WaitReadsDone() => FenceEvent.WaitOnce(_computeDoneFence12, _submittedSequence);
+    internal void WaitReadsDone() => FenceSpin.Wait(_computeDoneFence12, _submittedSequence);
 
     public CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
     {

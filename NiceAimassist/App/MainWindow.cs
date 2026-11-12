@@ -23,7 +23,6 @@ internal sealed class MainWindow : Form
     private const int KeyInputPollMs = 15;
     private const int StatusIntervalMs = 1000;
     private const string AddKeyText = "Add";
-
     private readonly SettingsFile _file;
     private readonly LoopStatus _loopStatus;
     private readonly IDatasetControl _recorder;
@@ -41,6 +40,8 @@ internal sealed class MainWindow : Form
     private readonly NumericUpDown _confidence = new();
     private readonly NumericUpDown _targetYOffset = new();
     private readonly NumericUpDown _maxDelta = new();
+    private readonly CheckBox _prediction = new();
+    private readonly NumericUpDown _countsPerPixel = new();
     private readonly NumericUpDown _velocitySmoothing = new();
     private readonly NumericUpDown _interpolationPercent = new();
     private readonly CheckBox _interpolationAuto = new();
@@ -134,6 +135,7 @@ internal sealed class MainWindow : Form
         ConfigureNumber(_confidence, 0, DetectSettings.MaxConfidence);
         ConfigureNumber(_targetYOffset, 0, AimSettings.MaxTargetYOffset);
         ConfigureNumber(_maxDelta, 0, AimSettings.MaxDeltaLimit);
+        ConfigureNumber(_countsPerPixel, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
         ConfigureNumber(_velocitySmoothing, 0, AimSettings.MaxVelocitySmoothing);
         ConfigureNumber(_interpolationPercent, 0, 100);
         _interpolationAuto.Text = "Auto";
@@ -147,6 +149,8 @@ internal sealed class MainWindow : Form
 
         ConfigureNumber(_datasetSize, DatasetSettings.MinSize, DatasetSettings.MaxSize);
         ConfigureNumber(_datasetRate, DatasetSettings.MinRate, DatasetSettings.MaxRate);
+        _prediction.Text = "Lead moving targets";
+        _prediction.AutoSize = true;
         _datasetEnabled.Text = "Enabled (while hotkey is down)";
         _datasetEnabled.AutoSize = true;
 
@@ -158,6 +162,8 @@ internal sealed class MainWindow : Form
             ("Sensitivity Y", _sensitivityY),
             ("Target Y offset %", _targetYOffset),
             ("Max delta (0 = no cap)", _maxDelta),
+            ("Prediction", _prediction),
+            ("Counts per pixel %", _countsPerPixel),
             ("Velocity smoothing %", _velocitySmoothing),
             ("Interpolation %", interpolation),
             ("Hotkeys", keys),
@@ -225,7 +231,11 @@ internal sealed class MainWindow : Form
             _confidence.Value = settings.Detect.Confidence;
             _targetYOffset.Value = settings.Aim.TargetYOffset;
             _maxDelta.Value = settings.Aim.MaxDelta;
+            _prediction.Checked = settings.Aim.Prediction;
             _velocitySmoothing.Value = settings.Aim.VelocitySmoothing;
+            _countsPerPixel.Value = settings.Aim.CountsPerPixel;
+            _velocitySmoothing.Enabled = settings.Aim.Prediction;
+            _countsPerPixel.Enabled = settings.Aim.Prediction;
             _interpolationAuto.Checked = settings.Mouse.Interpolation.IsAuto;
             _interpolationPercent.Value = settings.Mouse.Interpolation.FixedPercent ?? 0;
             _interpolationPercent.Enabled = !_interpolationAuto.Checked;
@@ -276,12 +286,18 @@ internal sealed class MainWindow : Form
         foreach (NumericUpDown input in new[]
         {
             _sensitivityX, _sensitivityY, _confidence, _targetYOffset,
-            _maxDelta, _velocitySmoothing, _interpolationPercent, _datasetSize, _datasetRate,
+            _maxDelta, _countsPerPixel, _velocitySmoothing,_interpolationPercent, _datasetSize, _datasetRate,
         })
         {
             input.ValueChanged += (_, _) => SettingChanged();
         }
 
+        _prediction.CheckedChanged += (_, _) =>
+        {
+            _velocitySmoothing.Enabled = _prediction.Checked;
+            _countsPerPixel.Enabled = _prediction.Checked;
+            SettingChanged();
+        };
         _interpolationAuto.CheckedChanged += (_, _) =>
         {
             _interpolationPercent.Enabled = !_interpolationAuto.Checked;
@@ -312,6 +328,8 @@ internal sealed class MainWindow : Form
                 SensitivityY = (int)_sensitivityY.Value,
                 TargetYOffset = (int)_targetYOffset.Value,
                 MaxDelta = (int)_maxDelta.Value,
+                Prediction = _prediction.Checked,
+                CountsPerPixel = (int)_countsPerPixel.Value,
                 VelocitySmoothing = (int)_velocitySmoothing.Value,
             },
             Hotkey = current.Hotkey with { Keys = [.. _hotkeys.Items.Cast<string>()] },

@@ -10,7 +10,6 @@ public sealed class AimController
     private const float MinIoU = 0.3f;
     private const float DelaySmoothing = 0.2f;
     private const float MaxLookAhead = 0.2f;
-    private const float ExtraLookAhead = 0.01f;
     private const double MaxFrameGap = 0.1;
     private const float SensitivityDefault = 100f;
     private const float TargetYOffsetDefault = 50f;
@@ -19,6 +18,7 @@ public sealed class AimController
     private Vector2 _remainder;
     private Vector2 _velocity;
     private (Vector2 Center, long Desktop)? _previous;
+    private Vector2 _shift;
     private float? _delay;
 
     public AimResult Update(
@@ -45,11 +45,21 @@ public sealed class AimController
         float gainY = settings.SensitivityY / SensitivityDefault;
         float blend = 1f - settings.VelocitySmoothing / 100f;
 
-        Vector2 velocity = UpdateVelocity(center, desktopTimestamp, blend);
-        float lookAhead = MathF.Min((_delay ?? 0f) + ExtraLookAhead, MaxLookAhead);
-        Vector2 aimed = center + new Vector2(
-            Math.Clamp(velocity.X * lookAhead, -detection.Width, detection.Width),
-            Math.Clamp(velocity.Y * lookAhead, -detection.Height, detection.Height));
+        Vector2 aimed = center;
+        if (settings.Prediction)
+        {
+            Vector2 velocity = UpdateVelocity(center, desktopTimestamp, blend);
+            float lookAhead = MathF.Min(_delay ?? 0f, MaxLookAhead);
+            aimed += new Vector2(
+                Math.Clamp(velocity.X * lookAhead, -detection.Width, detection.Width),
+                Math.Clamp(velocity.Y * lookAhead, -detection.Height, detection.Height));
+        }
+        else
+        {
+            // A stale estimate must not lead the target after prediction turns on again.
+            _velocity = Vector2.Zero;
+            _previous = null;
+        }
 
         float errorX = aimed.X - input.Width * 0.5f;
         float aimY = aimed.Y + detection.Height * ((settings.TargetYOffset - TargetYOffsetDefault) / 100f);
@@ -73,6 +83,10 @@ public sealed class AimController
         _remainder = new Vector2(
             Math.Clamp(withRemainder.X - x, -0.5f, 0.5f),
             Math.Clamp(withRemainder.Y - y, -0.5f, 0.5f));
+
+        // The sent move shifts the next capture by its pixel size. The shift does not depend on the sensitivity.
+        // The next velocity adds this shift back.
+        _shift = new Vector2(x, y) * (SensitivityDefault / settings.CountsPerPixel);
 
         return new AimResult(x != 0 || y != 0 ? AimStatus.Move : AimStatus.OnTarget, x, y);
     }
@@ -98,6 +112,7 @@ public sealed class AimController
         _remainder = Vector2.Zero;
         _velocity = Vector2.Zero;
         _previous = null;
+        _shift = Vector2.Zero;
     }
 
     private Vector2 UpdateVelocity(Vector2 center, long desktopTimestamp, float blend)
@@ -107,7 +122,7 @@ public sealed class AimController
             double gap = (desktopTimestamp - previous.Desktop) / (double)Stopwatch.Frequency;
             if (gap > 0 && gap <= MaxFrameGap)
             {
-                Vector2 raw = (center - previous.Center) / (float)gap;
+                Vector2 raw = (center - previous.Center + _shift) / (float)gap;
                 _velocity += blend * (raw - _velocity);
             }
             else

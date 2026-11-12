@@ -37,11 +37,11 @@ public class LoopDiagnosticsTests
         DetectedFrame frame = new(0, 0, 0, null, 0f, default);
         AimResult move = new(AimStatus.Move, 0, 0);
 
-        diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
+        diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), new System.Drawing.Size(320, 320), move, true);
         Assert.Same(LatencySnapshot.Empty, status.Latency);
 
         clock = Stopwatch.Frequency;
-        diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), move, true);
+        diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), new System.Drawing.Size(320, 320), move, true);
         Assert.Equal(4, status.Latency.Average.Total);
 
         // A window with only timeouts keeps the last published value.
