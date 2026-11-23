@@ -36,6 +36,23 @@ There is no success status byte.
 
 `INTERPOLATE` also has a `GET` form (empty payload). The client does not use it.
 
+## Device kinds
+
+`DEVICE` returns one `kinds:u8` bit mask:
+
+| Bit | Kind |
+| --- | --- |
+| `0x01` | mouse |
+| `0x02` | keyboard |
+| `0x04` | generic HID controller |
+| `0x08` | DS4 |
+| `0x10` | DualSense |
+| `0x20` | DualSense Edge |
+| `0x40` | Xbox GIP |
+| `0x80` | Xbox 360 / XInput |
+
+The client needs `0x01`. The other bits are routes that the client does not use.
+
 ## Connect order
 
 The client finds the device by its serial port and then runs this sequence (`SerialDevice.ConnectPort`):
@@ -50,6 +67,15 @@ The client finds the device by its serial port and then runs this sequence (`Ser
 The firmware version is `major * 1000 + build`. V4.085 is `4085`. V4.094 is `4094`. It is written as `V{major}.{build:03}`.
 
 The client does not query the firmware version.
+
+## Firmware builds
+
+The capability matrix lists each build as official, test, or diagnostic. A test build is not released. The matrix is the reference for "since which build".
+
+- `DEVICE`, `MOVE`, and `INTERPOLATE` are present in every build from V30.
+- `SET_BAUD` is present from V4.030, with gaps. The packet works from V4.039 (see [Baud switch](#baud-switch)).
+- The latest official build is V4.126, from 2026-11-15. The latest test build is V4.502.
+- The client does not query the version. It uses only the commands above.
 
 ## Byte examples
 
@@ -87,9 +113,28 @@ For this one packet, the length `5` counts the command byte. This is different f
 - The switch is not saved. After a restart, MAKCU starts at its saved rate.
 - MAKCU sends no reply. The client reopens the port at the new rate and probes with `DEVICE`.
 
+## Transport encryption
+
+MAKCU sends the binary protocol in plaintext on the COM port. The client uses the COM port, so it cannot encrypt this link.
+
+MAKXD supports AES-128-CCM on COM and UDP. MAKCU supports it on UDP only. The envelope replaces the command record:
+
+```text
+DE AD | LEN:u16 | 03 | version:u8=1 | direction:u8 | nonce[12] | tag[16] | ciphertext[LEN-30]
+```
+
+- `direction` is `0` for a command and `1` for a reply.
+- The CCM nonce is 13 bytes: `direction` then the 12-byte transaction nonce.
+- The additional data is the 14-byte envelope header: version, direction, nonce.
+- The ciphertext is `CMD + PAYLOAD`, without `DE AD` and `LEN`.
+- A reply repeats the transaction nonce of its request. A different nonce is an error.
+- `LEN` is at most 251.
+- Encrypted UDP sends the envelope without `DE AD` and without the raw UDP transaction header.
+
+MAKXD sets the key in MAKUI with the HPM key and the COM encryption switch. MAKCU has no COM encryption setting.
+
 ## Sources
 
-Read on 2026-10-11:
-
-- <https://www.makcu.com/en/api>
-- <https://www.makcu.com/api/versions>
+- <https://www.makcu.com/en/api> — read on 2026-10-11.
+- <https://www.makcu.com/api/versions> — read on 2026-11-24.
+- MAKXD Rust SDK 0.5.0, transport encryption source — read on 2026-11-24. <https://docs.rs/crate/makxd/0.5.0/source/src/transport/encryption.rs>
