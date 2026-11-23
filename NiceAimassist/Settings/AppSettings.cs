@@ -50,19 +50,11 @@ public sealed record AppSettings
     /// <summary>Clamps every section into its range.</summary>
     public AppSettings Clamped() => this with
     {
-        Display = Display.Clamped(),
         Detect = Detect.Clamped(),
         Aim = Aim.Clamped(),
-        Mouse = Mouse.Clamped(),
         Hotkey = Hotkey.Clamped(),
-        Dataset = Dataset.Clamped(),
         Log = Log.Clamped(),
     };
-
-    // The list property makes the generated comparison use references.
-    public bool Equals(AppSettings? other) => other is not null && ToJson() == other.ToJson();
-
-    public override int GetHashCode() => ToJson().GetHashCode();
 
     public string ToJson() => JsonSerializer.Serialize(this, WriteOptions);
 }

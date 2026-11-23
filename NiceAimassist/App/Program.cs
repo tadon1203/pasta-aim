@@ -77,7 +77,7 @@ internal static class Program
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            SettingsApplier.Attach(file, hotkey);
+            using IDisposable applier = SettingsApplier.Subscribe(file, hotkey);
             loop = new FrameLoop(
                 frames,
                 detector,

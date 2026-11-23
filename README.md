@@ -20,7 +20,7 @@ See [CLAUDE.md](./CLAUDE.md) for the architecture and rules. See [docs/makcu-pro
 
 The app re-reads `settings.json` when it changes. `detect.model`, `display.adapter`, and `display.output` take effect after a restart.
 
-While a hotkey is down, the dataset feature saves the full display image to `dataset/original/`. Set `dataset.enabled` to `false` to turn it off.
+While a hotkey is down, the dataset feature saves one full display image every 2 seconds to `dataset/original/`. Set `dataset.enabled` to `false` to turn it off.
 
 ## Settings
 

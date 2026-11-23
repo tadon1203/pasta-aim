@@ -17,6 +17,20 @@ public sealed record HotkeySettings
     /// <summary>Trims and deduplicates the names, ignoring case. Blank names are removed. No name left means the default key.</summary>
     public HotkeySettings Clamped() => this with { Keys = NormalizedKeys(Keys) };
 
+    // The list property makes the generated comparison compare references.
+    public bool Equals(HotkeySettings? other) => other is not null && Keys.SequenceEqual(other.Keys);
+
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        foreach (string name in Keys)
+        {
+            hash.Add(name);
+        }
+
+        return hash.ToHashCode();
+    }
+
     private static IReadOnlyList<string> NormalizedKeys(IReadOnlyList<string>? names)
     {
         string[] kept = [.. (names ?? []).Where(name => !string.IsNullOrWhiteSpace(name))

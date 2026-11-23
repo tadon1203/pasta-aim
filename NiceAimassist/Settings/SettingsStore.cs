@@ -4,41 +4,31 @@ using NiceAimassist.Shared.Logging;
 namespace NiceAimassist.Settings;
 
 /// <summary>
-/// Reads the settings file. Re-reads it whenever it changes.
+/// Holds the settings. Reads the file again when its text changes.
 /// Readers take <see cref="Current"/> without a lock. A gate serializes the changes.
 /// </summary>
 public sealed class SettingsStore : IDisposable
 {
     private readonly string _path;
-    private readonly TimeSpan _debounce;
     private readonly object _gate = new();
     private readonly Timer _timer;
-    private readonly FileSystemWatcher _watcher;
     private readonly AppSettings _startup;
+    private volatile string _text;
     private AppSettings _current;
     private bool _disposed;
 
     /// <summary>
-    /// Reads the file. Creates it with the defaults when it is missing. Starts watching it.
+    /// Reads the file. Creates it with the defaults when it is missing.
     /// A file that cannot be parsed gives the defaults. The file stays unchanged.
     /// </summary>
-    /// <param name="debounceMilliseconds">Delay after the last file event before the file is re-read.</param>
-    public SettingsStore(string path, int debounceMilliseconds = 200)
+    /// <param name="pollMilliseconds">Time between two reads of the file.</param>
+    public SettingsStore(string path, int pollMilliseconds = 500)
     {
         _path = Path.GetFullPath(path);
-        _debounce = TimeSpan.FromMilliseconds(debounceMilliseconds);
-        _current = ReadOrCreate();
+        _text = ReadOrCreate();
+        _current = ParseOrDefaults(_text);
         _startup = _current;
-        _timer = new Timer(_ => Reload(), null, Timeout.Infinite, Timeout.Infinite);
-        _watcher = new FileSystemWatcher(Path.GetDirectoryName(_path)!, Path.GetFileName(_path))
-        {
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
-        };
-        // Editors save by writing a temporary file and renaming it. Therefore, Renamed and Created events matter too.
-        _watcher.Changed += (_, _) => ScheduleReload();
-        _watcher.Created += (_, _) => ScheduleReload();
-        _watcher.Renamed += (_, _) => ScheduleReload();
-        _watcher.EnableRaisingEvents = true;
+        _timer = new Timer(_ => Refresh(), null, pollMilliseconds, pollMilliseconds);
     }
 
     /// <summary>Raised on the thread that changed the settings, after <see cref="Current"/> holds the new value.</summary>
@@ -53,15 +43,34 @@ public sealed class SettingsStore : IDisposable
     /// <summary>Makes the settings current at once. Then writes them to the file.</summary>
     public void Save(AppSettings settings)
     {
-        AppSettings clamped = settings.Clamped();
-        Publish(clamped);
+        string text = settings.Clamped().ToJson();
+        Publish(text);
         try
         {
-            File.WriteAllText(_path, clamped.ToJson());
+            File.WriteAllText(_path, text);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             Log.Warn($"settings could not be written to {_path}; they stay in effect until the app closes: {error.Message}");
+        }
+    }
+
+    /// <summary>Reads the file and publishes a different text. The timer calls it.</summary>
+    public void Refresh()
+    {
+        string text;
+        try
+        {
+            text = File.ReadAllText(_path);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (Publish(text))
+        {
+            Log.Info("settings reloaded");
         }
     }
 
@@ -77,18 +86,17 @@ public sealed class SettingsStore : IDisposable
             _disposed = true;
         }
 
-        _watcher.Dispose();
         _timer.Dispose();
     }
 
-    private AppSettings ReadOrCreate()
+    private string ReadOrCreate()
     {
         if (!File.Exists(_path))
         {
-            AppSettings defaults = new();
+            string defaults = new AppSettings().ToJson();
             try
             {
-                File.WriteAllText(_path, defaults.ToJson());
+                File.WriteAllText(_path, defaults);
                 Log.Info($"created {_path} with the default settings");
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -101,57 +109,53 @@ public sealed class SettingsStore : IDisposable
 
         try
         {
-            return AppSettings.Parse(File.ReadAllText(_path));
+            return File.ReadAllText(_path);
         }
-        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"settings could not be read from {_path}; using the defaults: {error.Message}");
+            return new AppSettings().ToJson();
+        }
+    }
+
+    private AppSettings ParseOrDefaults(string text)
+    {
+        try
+        {
+            return AppSettings.Parse(text);
+        }
+        catch (JsonException error)
         {
             Log.Warn($"settings could not be read from {_path}; using the defaults: {error.Message}");
             return new AppSettings();
         }
     }
 
-    private void ScheduleReload()
-    {
-        lock (_gate)
-        {
-            if (!_disposed)
-            {
-                _timer.Change(_debounce, Timeout.InfiniteTimeSpan);
-            }
-        }
-    }
-
-    private void Reload()
+    // The file text is the identity of a version. A save writes the text that it publishes, so a later read changes nothing.
+    private bool Publish(string text)
     {
         AppSettings updated;
         try
         {
-            updated = AppSettings.Parse(File.ReadAllText(_path));
+            updated = AppSettings.Parse(text);
         }
-        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+        catch (JsonException error)
         {
+            Consume(text);
             Log.Warn($"settings reload failed; keeping the previous settings: {error.Message}");
-            return;
+            return false;
         }
 
-        if (Publish(updated))
-        {
-            Log.Info("settings reloaded");
-        }
-    }
-
-    // The file watcher reads back what Save wrote. That read changes nothing and raises no event.
-    private bool Publish(AppSettings updated)
-    {
         AppSettings previous;
         lock (_gate)
         {
-            previous = _current;
-            if (_disposed || updated == previous)
+            if (_disposed || text == _text)
             {
                 return false;
             }
 
+            previous = _current;
+            _text = text;
             Volatile.Write(ref _current, updated);
         }
 
@@ -162,6 +166,18 @@ public sealed class SettingsStore : IDisposable
 
         Changed?.Invoke(updated);
         return true;
+    }
+
+    // A bad text stays consumed, so the next poll does not log the same error again.
+    private void Consume(string text)
+    {
+        lock (_gate)
+        {
+            if (!_disposed)
+            {
+                _text = text;
+            }
+        }
     }
 
     private static bool RestartValuesDiffer(AppSettings first, AppSettings second) =>

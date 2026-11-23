@@ -4,7 +4,7 @@ namespace NiceAimassist.Tests.Settings;
 
 public sealed class SettingsStoreTests : IDisposable
 {
-    private const int DebounceMilliseconds = 50;
+    private const int PollMilliseconds = 50;
 
     private readonly string _directory = Path.Combine(
         Path.GetTempPath(),
@@ -55,7 +55,7 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
-    public void A_valid_edit_is_published_after_the_debounce()
+    public void A_valid_edit_is_published_after_the_poll()
     {
         string path = Path.Combine(_directory, "settings.json");
         SettingsStore file = NewFile(path);
@@ -74,7 +74,7 @@ public sealed class SettingsStoreTests : IDisposable
         TestWait.Until(() => file.Current.Aim.SensitivityX == 300);
 
         File.WriteAllText(path, "{ \"aim\": { \"sensitivity_x\": 4");
-        Thread.Sleep(DebounceMilliseconds * 6);
+        Thread.Sleep(PollMilliseconds * 6);
         Assert.Equal(300, file.Current.Aim.SensitivityX);
 
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 400 } }");
@@ -94,8 +94,8 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.Equal(250, file.Current.Aim.SensitivityX);
         Assert.Equal(250, AppSettings.Parse(File.ReadAllText(path)).Aim.SensitivityX);
 
-        // The watcher reads back the saved file. That read must not raise a second change.
-        Thread.Sleep(DebounceMilliseconds * 6);
+        // The poll reads back the saved text. That read must not raise a second change.
+        Thread.Sleep(PollMilliseconds * 6);
         Assert.Single(changes);
     }
 
@@ -114,7 +114,7 @@ public sealed class SettingsStoreTests : IDisposable
 
     private SettingsStore NewFile(string path)
     {
-        SettingsStore file = new(path, DebounceMilliseconds);
+        SettingsStore file = new(path, PollMilliseconds);
         _files.Add(file);
         return file;
     }

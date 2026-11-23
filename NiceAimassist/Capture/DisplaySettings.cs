@@ -11,6 +11,4 @@ public sealed record DisplaySettings
     /// <summary>The display output index on the adapter.</summary>
     [JsonPropertyName("output")]
     public int Output { get; init; }
-
-    public DisplaySettings Clamped() => this;
 }
