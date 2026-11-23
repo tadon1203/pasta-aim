@@ -10,7 +10,7 @@ namespace Pstm.Loop.Timing;
 public readonly record struct FrameStages(
     long Capture,
     long Detect,
-    long Aim,
+    long Correction,
     long Move,
     long Total,
     DetectTimings Breakdown = default)
@@ -18,7 +18,7 @@ public readonly record struct FrameStages(
     public FrameStages Plus(in FrameStages other) => new(
         Capture + other.Capture,
         Detect + other.Detect,
-        Aim + other.Aim,
+        Correction + other.Correction,
         Move + other.Move,
         Total + other.Total,
         Breakdown.Plus(other.Breakdown));
@@ -26,7 +26,7 @@ public readonly record struct FrameStages(
     public FrameStages MaxWith(in FrameStages other) => new(
         Math.Max(Capture, other.Capture),
         Math.Max(Detect, other.Detect),
-        Math.Max(Aim, other.Aim),
+        Math.Max(Correction, other.Correction),
         Math.Max(Move, other.Move),
         Math.Max(Total, other.Total),
         Breakdown.MaxWith(other.Breakdown));
@@ -36,14 +36,14 @@ public readonly record struct FrameStages(
         : new(
             Capture / count,
             Detect / count,
-            Aim / count,
+            Correction / count,
             Move / count,
             Total / count,
             Breakdown.Divide(count));
 
     public string FormatMs() =>
         $"{ToMs(Total):F2} ms (capture {ToMs(Capture):F2}, detect {ToMs(Detect):F2}, "
-        + $"aim {ToMs(Aim):F2}, move {ToMs(Move):F2})";
+        + $"tracker {ToMs(Correction):F2}, move {ToMs(Move):F2})";
 
     /// <summary>One stage as "average/max" in milliseconds. The log writes this format.</summary>
     public static string PairMs(long average, long max) => $"{ToMs(average):F2}/{ToMs(max):F2}";

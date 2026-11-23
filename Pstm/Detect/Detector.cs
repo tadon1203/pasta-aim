@@ -62,7 +62,7 @@ public sealed unsafe class Detector : IDetector
 
     public int InputHeight { get; }
 
-    public DetectedFrame Detect(CapturedFrame frame, float confidence)
+    public DetectedFrame Detect(CapturedFrame frame, float threshold)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         long capturedTimestamp = Stopwatch.GetTimestamp();
@@ -73,7 +73,7 @@ public sealed unsafe class Detector : IDetector
         ReadOnlySpan<byte> output = _outputReader.Read();
         long gpu = _timer.ReadElapsedStopwatchTicks();
         long read = Stopwatch.GetTimestamp();
-        DecodeResult decoded = DetectionDecoder.Decode(output, _session.Output, new Size(InputWidth, InputHeight), confidence);
+        DecodeResult decoded = DetectionDecoder.Decode(output, _session.Output, new Size(InputWidth, InputHeight), threshold);
         long detectedTimestamp = Stopwatch.GetTimestamp();
 
         DetectTimings breakdown = new(submitted - capturedTimestamp, ran - submitted, read - ran, detectedTimestamp - read, gpu);

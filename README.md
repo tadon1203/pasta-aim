@@ -1,8 +1,8 @@
-# pstm
+# PastaAim
 
 A Windows app that captures the center of a display, finds targets with an end-to-end YOLO model, and moves the mouse through a MAKCU device.
 
-See [CLAUDE.md](./CLAUDE.md) for the architecture and rules. See [docs/makcu-protocol.md](./docs/makcu-protocol.md) for the MAKCU wire protocol.
+See [AGENTS.md](./AGENTS.md) for the architecture and rules. See [docs/makcu-protocol.md](./docs/makcu-protocol.md) for the MAKCU wire protocol.
 
 ## Requirements
 
@@ -16,11 +16,11 @@ See [CLAUDE.md](./CLAUDE.md) for the architecture and rules. See [docs/makcu-pro
 1. Publish the app (see [Development](#development)).
 2. Put one `.onnx` model in `models/` next to the executable.
 3. Start the app once to create `settings.json`. Set `detect.model` to the model's file name.
-4. Start the app. Hold the hotkey (default `F8`) to aim.
+4. Start the app. Hold the hotkey (default `F8`) to correct the mouse.
 
 The app re-reads `settings.json` when it changes. `detect.model`, `display.adapter`, and `display.output` take effect after a restart.
 
-While a hotkey is down, the dataset feature saves one full display image every 2 seconds to `dataset/original/`. Set `dataset.enabled` to `false` to turn it off.
+While the keys are down, the sample feature saves one full display image every 2 seconds to `samples/original/`. Set `samples.enabled` to `false` to turn it off.
 
 ## Settings
 
@@ -31,17 +31,17 @@ A missing section takes its defaults. The app clamps values that are out of rang
 | `display.adapter` | `0` | DirectX adapter for capture. |
 | `display.output` | `0` | Display output for capture. |
 | `detect.model` | none | `.onnx` file in `models/`. Required. |
-| `detect.confidence` | `50` | Minimum confidence, in percent. |
-| `aim.sensitivity_x` | `100` | Horizontal gain. |
-| `aim.sensitivity_y` | `100` | Vertical gain. |
-| `aim.target_y_offset` | `50` | Aim point in percent of the box height. `0` is the top. |
-| `aim.max_delta` | `512` | Cap on one move. `0` is no cap. |
-| `aim.prediction` | `true` | Lead a moving target. |
-| `aim.velocity_smoothing_ms` | `12` | Prediction. Smoothing time of the velocity. A larger value is steadier but slower. |
-| `aim.counts_per_pixel` | `100` | Prediction. Mouse counts for one capture pixel, in percent. |
-| `mouse.interpolation` | `"auto"` | MAKCU move smoothing: `"auto"` or a percent. |
-| `hotkey.keys` | `["F8"]` | Keys that enable aiming. |
-| `dataset.enabled` | `true` | Record while a hotkey is down. |
+| `detect.threshold` | `50` | Minimum score threshold, in percent. |
+| `correction.sensitivity_x` | `100` | Horizontal gain. |
+| `correction.sensitivity_y` | `100` | Vertical gain. |
+| `correction.offset` | `50` | Correction point in percent of the box height. `0` is the top. |
+| `correction.max_delta` | `512` | Cap on one move. `0` is no cap. |
+| `correction.lead` | `true` | Lead a moving target. |
+| `correction.lead_smoothing_ms` | `12` | Lead. Smoothing time of the velocity. A larger value is steadier but slower. |
+| `correction.lead_scale` | `100` | Lead. Mouse counts for one capture pixel, in percent. |
+| `mouse.smoothing` | `"auto"` | MAKCU move smoothing: `"auto"` or a percent. |
+| `hotkey.keys` | `["F8"]` | Keys that enable correction. |
+| `samples.enabled` | `true` | Record while the keys are down. |
 | `log.level` | `Info` | Most detailed log level. |
 
 Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `Pstm/Hotkey/Key.cs`.
@@ -60,7 +60,7 @@ The app checks these at startup and reports the first one that fails.
 
 Each run writes `logs/pstm-yyyyMMdd-HHmmss.log`. The app keeps the last 10 files. Set `log.level` to `Debug` for more detail.
 
-- `no MAKCU port found`: the device does not use the CH340 USB IDs `1A86:55D3` or `1A86:7523`. Check the cable and the driver.
+- `no device port found`: the device does not use the CH340 USB IDs `1A86:55D3` or `1A86:7523`. Check the cable and the driver.
 - `no model is selected` or `model file not found`: set `detect.model` to a file that exists in `models/`.
 - A model check error: export the model with a static input size and embedded NMS.
 
@@ -74,4 +74,4 @@ dotnet test PastaAim.sln
 dotnet publish Pstm/Pstm.csproj -c Release
 ```
 
-The publish output is a self-contained single file in `Pstm/bin/Release/net10.0-windows/win-x64/publish/`. The checks to run before a commit are in [CLAUDE.md](./CLAUDE.md#commands).
+The publish output is a self-contained single file in `Pstm/bin/Release/net10.0-windows/win-x64/publish/`. The checks to run before a commit are in [AGENTS.md](./AGENTS.md#commands).

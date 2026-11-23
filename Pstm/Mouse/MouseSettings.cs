@@ -4,6 +4,6 @@ namespace Pstm.Mouse;
 
 public sealed record MouseSettings
 {
-    [JsonPropertyName("interpolation")]
-    public Interpolation Interpolation { get; init; }
+    [JsonPropertyName("smoothing")]
+    public Smoothing Smoothing { get; init; }
 }

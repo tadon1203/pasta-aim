@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Pstm.Hotkey;
 
-/// A keyboard key or mouse button. The aim is enabled while it is held.
+/// A keyboard key or mouse button. The tracker is enabled while it is held.
 public readonly partial struct Key
 {
     private static readonly (string Name, int Code)[] Table =

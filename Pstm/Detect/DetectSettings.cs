@@ -4,20 +4,20 @@ namespace Pstm.Detect;
 
 public sealed record DetectSettings
 {
-    public const int MaxConfidence = 100;
+    public const int MaxThreshold = 100;
 
     /// <summary>The .onnx file name inside models/ next to the executable. The value is null when no model is chosen.</summary>
     [JsonPropertyName("model")]
     public string? Model { get; init; }
 
-    /// <summary>Minimum detection confidence in percent.</summary>
-    [JsonPropertyName("confidence")]
-    public int Confidence { get; init; } = 50;
+    /// <summary>Minimum detection threshold in percent.</summary>
+    [JsonPropertyName("threshold")]
+    public int Threshold { get; init; } = 50;
 
-    /// <summary>Clamps the confidence into its range. Replaces an empty model name with null.</summary>
+    /// <summary>Clamps the threshold into its range. Replaces an empty model name with null.</summary>
     public DetectSettings Clamped() => this with
     {
         Model = string.IsNullOrWhiteSpace(Model) ? null : Model,
-        Confidence = Math.Clamp(Confidence, 0, MaxConfidence),
+        Threshold = Math.Clamp(Threshold, 0, MaxThreshold),
     };
 }

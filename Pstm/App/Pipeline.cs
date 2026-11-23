@@ -1,12 +1,12 @@
 using System.Diagnostics;
 using Pstm.Capture;
-using Pstm.Dataset;
+using Pstm.Samples;
 using Pstm.Detect;
 using Pstm.Detect.Model;
 using Pstm.Detect.Runtime;
 using Pstm.Hotkey;
 using Pstm.Loop;
-using Pstm.Mouse.Makcu;
+using Pstm.Mouse.Serial;
 using Pstm.Settings;
 using Pstm.Shared.Gpu;
 using Pstm.Shared.Logging;
@@ -22,9 +22,9 @@ internal sealed class Pipeline : IDisposable
     private GpuDevices? _gpu;
     private OnnxSession? _session;
     private DesktopCapture? _frames;
-    private DatasetRecorder? _recorder;
+    private SampleRecorder? _recorder;
     private Detector? _detector;
-    private MakcuDevice? _device;
+    private SerialDevice? _device;
     private FrameLoop? _loop;
 
     public Pipeline(
@@ -40,12 +40,12 @@ internal sealed class Pipeline : IDisposable
             _gpu = new GpuDevices(startup.Display.Adapter, startup.Display.Output);
             _session = new OnnxSession(_gpu, modelPath);
             _frames = new DesktopCapture(_gpu, _session.Input.Width, _session.Input.Height);
-            _recorder = new DatasetRecorder(
-                _gpu, Path.Combine(AppContext.BaseDirectory, "dataset"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
+            _recorder = new SampleRecorder(
+                _gpu, Path.Combine(AppContext.BaseDirectory, "samples"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
             _detector = new Detector(_gpu, _session, _frames);
             Log.Info($"model {Path.GetFileName(modelPath)}");
-            _device = MakcuDevice.Connect();
-            Log.Info($"MAKCU on {_device.PortName} at {_device.BaudRate} baud");
+            _device = SerialDevice.Connect();
+            Log.Info($"device on {_device.PortName} at {_device.BaudRate} baud");
             _loop = new FrameLoop(new LoopDependencies(
                 Frames: _frames,
                 Detector: _detector,
@@ -65,7 +65,7 @@ internal sealed class Pipeline : IDisposable
 
     public FrameLoop Loop => _loop ?? throw new InvalidOperationException("the pipeline is not ready");
 
-    public IDatasetRecorder Recorder => _recorder ?? throw new InvalidOperationException("the pipeline is not ready");
+    public ISampleRecorder Recorder => _recorder ?? throw new InvalidOperationException("the pipeline is not ready");
     public void Start() => Loop.Start();
 
     // The loop comes first. The detector waits for the capture reads. The GPU goes last.

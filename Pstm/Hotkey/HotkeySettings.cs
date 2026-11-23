@@ -9,7 +9,7 @@ public sealed record HotkeySettings
     private static readonly string[] DefaultKeys = [DefaultKey];
 
     /// <summary>
-    /// The key names that enable the aim, such as "F8". The aim is enabled while any of them is down.
+    /// The key names that enable the tracker, such as "F8". The tracker is enabled while any of them is down.
     /// </summary>
     [JsonPropertyName("keys")]
     public IReadOnlyList<string> Keys { get; init; } = DefaultKeys;

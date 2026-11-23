@@ -1,6 +1,6 @@
 using System.Drawing;
-using Pstm.Aim;
-using Pstm.Dataset;
+using Pstm.Correction;
+using Pstm.Samples;
 using Pstm.Settings;
 using Pstm.Capture;
 using Pstm.Detect;
@@ -22,8 +22,8 @@ public sealed class FrameLoop
     private readonly Func<AppSettings> _currentSettings;
     private readonly Func<long> _now;
     private readonly Action<Exception> _onFault;
-    private readonly IDatasetRecorder? _recorder;
-    private readonly AimTracker _aim = new();
+    private readonly ISampleRecorder? _recorder;
+    private readonly CorrectionTracker _tracker = new();
     private bool _wasHeld;
     private readonly LoopDiagnostics _diagnostics;
     private readonly LoopStatus _loopStatus = new();
@@ -54,7 +54,7 @@ public sealed class FrameLoop
         }
 
         _running = true;
-        _thread = new Thread(ThreadMain) { Name = "loop", IsBackground = true };
+        _thread = new Thread(ThreadMain) { Name = "worker", IsBackground = true };
         _thread.Start();
     }
 
@@ -90,7 +90,7 @@ public sealed class FrameLoop
         {
             AppSettings settings = _currentSettings();
             bool held = _isHeld();
-            _recorder?.ApplyEnabled(held && settings.Dataset.Enabled);
+            _recorder?.ApplyEnabled(held && settings.Samples.Enabled);
             _recorder?.AdvancePipeline();
             if (!held)
             {
@@ -103,21 +103,21 @@ public sealed class FrameLoop
                 }
 
                 _loopStatus.SetHeld(false);
-                _aim.Reset();
+                _tracker.Reset();
                 idleTimer.SleepMs(IdleSleepMs);
                 continue;
             }
 
             if (!_wasHeld)
             {
-                Log.Debug($"hotkey pressed; confidence={settings.Detect.Confidence}% input={_detector.InputWidth}x{_detector.InputHeight}");
+                Log.Debug($"hotkey pressed; threshold={settings.Detect.Threshold}% input={_detector.InputWidth}x{_detector.InputHeight}");
                 _diagnostics.Restart();
                 _wasHeld = true;
             }
 
             _loopStatus.SetHeld(true);
-            // The first value of a changed interpolation needs a serial round trip with a reply timeout of 100 ms.
-            _mouse.SetInterpolation(settings.Mouse.Interpolation);
+            // The first value of a changed smoothing needs a serial round trip with a reply timeout of 100 ms.
+            _mouse.SetSmoothing(settings.Mouse.Smoothing);
             CaptureOutcome status = _frames.TryAcquire(AcquireTimeoutMs, out CapturedFrame captured);
             if (status == CaptureOutcome.Timeout)
             {
@@ -131,26 +131,26 @@ public sealed class FrameLoop
                 continue;
             }
 
-            DetectedFrame frame = _detector.Detect(captured, settings.Detect.Confidence / 100f);
+            DetectedFrame frame = _detector.Detect(captured, settings.Detect.Threshold / 100f);
             Size input = new(_detector.InputWidth, _detector.InputHeight);
-            AimResult aim = _aim.Update(
+            CorrectionResult tracker = _tracker.Update(
                 target: frame.Target,
                 desktopTimestamp: frame.DesktopTimestamp,
                 nowTimestamp: _now(),
                 input: input,
-                settings: settings.Aim);
-            long aimedAt = _now();
-            // Read the flag after the aim. A stop during the frame then suppresses its move.
-            bool sent = aim.Outcome == AimOutcome.Move && _running;
+                settings: settings.Correction);
+            long correctedAt = _now();
+            // Read the flag after the tracker. A stop during the frame then suppresses its move.
+            bool sent = tracker.Outcome == CorrectionOutcome.Move && _running;
             if (sent)
             {
-                _mouse.Move(aim.Dx, aim.Dy);
+                _mouse.Move(tracker.Dx, tracker.Dy);
             }
 
-            long sentAt = sent ? _now() : aimedAt;
-            FrameTimings timings = new(frame.DesktopTimestamp, frame.DetectStartTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
+            long sentAt = sent ? _now() : correctedAt;
+            FrameTimings timings = new(frame.DesktopTimestamp, frame.DetectStartTimestamp, frame.DetectedTimestamp, correctedAt, sentAt);
             _loopStatus.RecordFrame();
-            _diagnostics.RecordFrame(frame, timings, input, aim, sent);
+            _diagnostics.RecordFrame(frame, timings, input, tracker, sent);
 
             // The recording comes last. It must not delay the move. The frame stays held until the next acquire.
             if (frame.Target is not null)

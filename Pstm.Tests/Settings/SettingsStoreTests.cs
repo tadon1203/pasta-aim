@@ -44,7 +44,7 @@ public sealed class SettingsStoreTests : IDisposable
     public void An_unparsable_file_gives_the_defaults_and_is_not_overwritten()
     {
         string path = Path.Combine(_directory, "settings.json");
-        const string broken = "{ \"aim\": { \"sensitivity_x\": 150";
+        const string broken = "{ \"tracker\": { \"sensitivity_x\": 150";
         File.WriteAllText(path, broken);
         SettingsStore file = NewFile(path);
 
@@ -60,9 +60,9 @@ public sealed class SettingsStoreTests : IDisposable
         string path = Path.Combine(_directory, "settings.json");
         SettingsStore file = NewFile(path);
 
-        File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
+        File.WriteAllText(path, @"{ ""correction"": { ""sensitivity_x"": 300 } }");
 
-        TestWait.Until(() => file.Current.Aim.SensitivityX == 300);
+        TestWait.Until(() => file.Current.Correction.SensitivityX == 300);
     }
 
     [Fact]
@@ -70,15 +70,15 @@ public sealed class SettingsStoreTests : IDisposable
     {
         string path = Path.Combine(_directory, "settings.json");
         SettingsStore file = NewFile(path);
-        File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
-        TestWait.Until(() => file.Current.Aim.SensitivityX == 300);
+        File.WriteAllText(path, @"{ ""correction"": { ""sensitivity_x"": 300 } }");
+        TestWait.Until(() => file.Current.Correction.SensitivityX == 300);
 
-        File.WriteAllText(path, "{ \"aim\": { \"sensitivity_x\": 4");
+        File.WriteAllText(path, "{ \"tracker\": { \"sensitivity_x\": 4");
         Thread.Sleep(PollMilliseconds * 6);
-        Assert.Equal(300, file.Current.Aim.SensitivityX);
+        Assert.Equal(300, file.Current.Correction.SensitivityX);
 
-        File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 400 } }");
-        TestWait.Until(() => file.Current.Aim.SensitivityX == 400);
+        File.WriteAllText(path, @"{ ""correction"": { ""sensitivity_x"": 400 } }");
+        TestWait.Until(() => file.Current.Correction.SensitivityX == 400);
     }
 
     [Fact]
@@ -89,10 +89,10 @@ public sealed class SettingsStoreTests : IDisposable
         List<AppSettings> changes = [];
         file.Changed += changes.Add;
 
-        file.Save(file.Current with { Aim = file.Current.Aim with { SensitivityX = 250 } });
+        file.Save(file.Current with { Correction = file.Current.Correction with { SensitivityX = 250 } });
 
-        Assert.Equal(250, file.Current.Aim.SensitivityX);
-        Assert.Equal(250, AppSettings.Parse(File.ReadAllText(path)).Aim.SensitivityX);
+        Assert.Equal(250, file.Current.Correction.SensitivityX);
+        Assert.Equal(250, AppSettings.Parse(File.ReadAllText(path)).Correction.SensitivityX);
 
         // The poll reads back the saved text. That read must not raise a second change.
         Thread.Sleep(PollMilliseconds * 6);
@@ -107,9 +107,9 @@ public sealed class SettingsStoreTests : IDisposable
         File.Delete(path);
         Directory.CreateDirectory(path);
 
-        file.Save(file.Current with { Aim = file.Current.Aim with { SensitivityX = 250 } });
+        file.Save(file.Current with { Correction = file.Current.Correction with { SensitivityX = 250 } });
 
-        Assert.Equal(250, file.Current.Aim.SensitivityX);
+        Assert.Equal(250, file.Current.Correction.SensitivityX);
     }
 
     private SettingsStore NewFile(string path)

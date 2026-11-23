@@ -57,9 +57,9 @@ The two frame fences carry the same `ulong` value. `CapturedFrame.Sequence` hold
 
 A frame can be read one time, and only while it is the newest frame. `BeginRead` throws on any other frame.
 
-## The dataset path
+## The sample path
 
-The dataset does not use these fences. It copies the desktop texture of the held frame into its own staging
+The sample recorder does not use these fences. It copies the desktop texture of the held frame into its own staging
 texture on the capture context, flushes, and maps with `DoNotWait`. A map that reports that the GPU still
 draws the copy returns false, and the loop tries again on a later pass. `StagingGate` prevents a second copy
 while a copy is pending or mapped.
@@ -70,11 +70,11 @@ block.
 
 ## Rules
 
-- Only the loop thread calls the capture, the preprocess, the output read, and the dataset staging.
+- Only the loop thread calls the capture, the preprocess, the output read, and the sample staging.
 - `BeginRead` runs before `ExecuteCommandLists`. `EndRead` runs after it.
 - The GPU timer starts at the first command of the preprocess list and ends at the first command of the output
   copy list. A change to either list moves the measured span.
 - Dispose order: stop the loop, then the detector (preprocessor, output reader, timer), then the model session,
-  then the capture, then the dataset recorder, then `GpuDevices`. Each owner waits for the work that can still
+  then the capture, then the sample recorder, then `GpuDevices`. Each owner waits for the work that can still
   use its resources. `GpuDevices.WaitIdle` drains the compute queue. `Preprocessor.Dispose` waits for the
   capture reads that it announced.

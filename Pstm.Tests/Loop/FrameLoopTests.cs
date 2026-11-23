@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Pstm.Capture;
-using Pstm.Dataset;
+using Pstm.Samples;
 using Pstm.Detect;
 using Pstm.Loop;
 using Pstm.Mouse;
@@ -12,7 +12,7 @@ namespace Pstm.Tests.Loop;
 
 public class FrameLoopTests
 {
-    // The target center is 100 px right of the input center (320). The default aim moves dx = 100.
+    // The target center is 100 px right of the input center (320). The default tracker moves dx = 100.
     private static readonly Detection Centered = new(400, 300, 440, 340, 0.9f, 0);
 
     [Fact]
@@ -48,9 +48,9 @@ public class FrameLoopTests
     }
 
     [Fact]
-    public void ReleasingTheKeyResetsTheAimTracker()
+    public void ReleasingTheKeyResetsTheCorrectionTracker()
     {
-        // Without the reset, the second frame reads the first move as target motion. The aim then overshoots the target.
+        // Without the reset, the second frame reads the first move as target motion. The tracker then overshoots the target.
         long first = Stopwatch.GetTimestamp();
         FakeFrameSource source = new();
         source.Enqueue(first, Centered);
@@ -95,24 +95,24 @@ public class FrameLoopTests
     }
 
     [Fact]
-    public void TheMouseGetsTheInterpolationOfTheCurrentSettings()
+    public void TheMouseGetsTheSmoothingOfTheCurrentSettings()
     {
         // The frames are fed in two stages. The setting change happens between the stages.
         FakeFrameSource source = new();
         FakeMouse mouse = new();
-        Holder<AppSettings> settings = new(Snapshot(Interpolation.Percent(30)));
+        Holder<AppSettings> settings = new(Snapshot(Smoothing.Percent(30)));
         FrameLoop loop = NewLoop(source, mouse, () => true, () => settings.Value);
         loop.Start();
 
         source.Enqueue(Stopwatch.GetTimestamp(), null);
         TestWait.Until(() => loop.LoopStatus.Frames >= 1);
-        Assert.Equal(Interpolation.Percent(30), mouse.Interpolations.Last());
-        settings.Value = Snapshot(Interpolation.Auto);
+        Assert.Equal(Smoothing.Percent(30), mouse.Smoothings.Last());
+        settings.Value = Snapshot(Smoothing.Auto);
         source.Enqueue(Stopwatch.GetTimestamp(), null);
         TestWait.Until(() => loop.LoopStatus.Frames >= 2);
         loop.Stop();
 
-        Assert.Equal(Interpolation.Auto, mouse.Interpolations.Last());
+        Assert.Equal(Smoothing.Auto, mouse.Smoothings.Last());
     }
 
     [Fact]
@@ -186,7 +186,7 @@ public class FrameLoopTests
         Assert.False(recorder.LastEnabled);
     }
 
-    private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetRecorder? recorder = null)
+    private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, ISampleRecorder? recorder = null)
     {
         FrameLoop loop = NewLoop(source, mouse, isHeld, Snapshot, recorder: recorder);
         loop.Start();
@@ -199,7 +199,7 @@ public class FrameLoopTests
         Func<bool> isHeld,
         Func<AppSettings> settings,
         Action<Exception>? onFault = null,
-        IDatasetRecorder? recorder = null) =>
+        ISampleRecorder? recorder = null) =>
         new(new LoopDependencies(
             Frames: source,
             Detector: new FakeDetector(source),
@@ -210,9 +210,9 @@ public class FrameLoopTests
             OnFault: onFault ?? (_ => { }),
             Recorder: recorder));
 
-    private static AppSettings Snapshot() => Snapshot(Interpolation.Auto);
+    private static AppSettings Snapshot() => Snapshot(Smoothing.Auto);
 
-    private static AppSettings Snapshot(Interpolation interpolation) => new() { Mouse = new MouseSettings { Interpolation = interpolation } };
+    private static AppSettings Snapshot(Smoothing smoothing) => new() { Mouse = new MouseSettings { Smoothing = smoothing } };
 
     private sealed class Holder<T>(T value)
         where T : class
@@ -278,7 +278,7 @@ public class FrameLoopTests
 
         public int InputHeight => 640;
 
-        public DetectedFrame Detect(CapturedFrame frame, float confidence) =>
+        public DetectedFrame Detect(CapturedFrame frame, float threshold) =>
             new(frame.DesktopTimestamp, frame.DesktopTimestamp, frame.DesktopTimestamp, source.TargetOf(frame.Sequence), 0f, default);
 
         public void Dispose()
@@ -290,7 +290,7 @@ public class FrameLoopTests
     {
         public ConcurrentQueue<(short Dx, short Dy)> Moves { get; } = new();
 
-        public ConcurrentQueue<Interpolation> Interpolations { get; } = new();
+        public ConcurrentQueue<Smoothing> Smoothings { get; } = new();
 
         public void Move(short dx, short dy)
         {
@@ -298,16 +298,16 @@ public class FrameLoopTests
             events?.Enqueue("move");
         }
 
-        public void SetInterpolation(Interpolation interpolation) => Interpolations.Enqueue(interpolation);
+        public void SetSmoothing(Smoothing smoothing) => Smoothings.Enqueue(smoothing);
     }
 
-    private sealed class FakeRecorder(ConcurrentQueue<string> events) : IDatasetRecorder
+    private sealed class FakeRecorder(ConcurrentQueue<string> events) : ISampleRecorder
     {
         private int _recorded;
         private int _updates;
         private volatile bool _lastEnabled = true;
 
-        public DatasetStatus Status => default;
+        public SampleStatus Status => default;
 
         public int Recorded => Volatile.Read(ref _recorded);
 

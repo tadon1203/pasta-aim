@@ -1,5 +1,5 @@
 using Pstm.Capture;
-using Pstm.Dataset;
+using Pstm.Samples;
 using Pstm.Detect;
 using Pstm.Mouse;
 using Pstm.Settings;
@@ -15,4 +15,4 @@ public sealed record LoopDependencies(
     Func<AppSettings> CurrentSettings,
     Func<long> Now,
     Action<Exception> OnFault,
-    IDatasetRecorder? Recorder = null);
+    ISampleRecorder? Recorder = null);

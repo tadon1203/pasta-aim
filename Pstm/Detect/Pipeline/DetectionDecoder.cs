@@ -14,7 +14,7 @@ internal static class DetectionDecoder
     /// Decodes the model output in one pass. The typed view reads the buffer in native byte order.
     /// On the Windows x64 targets, that order is little-endian.
     /// </summary>
-    internal static DecodeResult Decode(ReadOnlySpan<byte> rows, ModelOutput output, Size input, float confidence)
+    internal static DecodeResult Decode(ReadOnlySpan<byte> rows, ModelOutput output, Size input, float threshold)
     {
         if (output.Rows < 0 || rows.Length < output.ByteLength)
         {
@@ -22,8 +22,8 @@ internal static class DetectionDecoder
         }
 
         return output.Precision == TensorPrecision.Fp16
-            ? DecodeCells(MemoryMarshal.Cast<byte, Half>(rows), output.Rows, input, confidence)
-            : DecodeCells(MemoryMarshal.Cast<byte, float>(rows), output.Rows, input, confidence);
+            ? DecodeCells(MemoryMarshal.Cast<byte, Half>(rows), output.Rows, input, threshold)
+            : DecodeCells(MemoryMarshal.Cast<byte, float>(rows), output.Rows, input, threshold);
     }
 
     // The conversion to float is resolved per element type at JIT time. Therefore, the loop has no precision branch.
@@ -31,7 +31,7 @@ internal static class DetectionDecoder
         ReadOnlySpan<TElement> cells,
         int rowCount,
         Size input,
-        float confidence)
+        float threshold)
         where TElement : unmanaged, INumberBase<TElement>
     {
         float centerX = input.Width * 0.5f;
@@ -51,7 +51,7 @@ internal static class DetectionDecoder
             float score = float.CreateTruncating(cells[cell + 4]);
             float classId = float.CreateTruncating(cells[cell + 5]);
 
-            // The max score ignores the box and the confidence filter. It is taken before them.
+            // The max score ignores the box and the threshold filter. It is taken before them.
             if (float.IsFinite(score) && score > maxScore)
             {
                 maxScore = score;
@@ -63,7 +63,7 @@ internal static class DetectionDecoder
                 continue;
             }
 
-            if (!(score >= confidence) || x2 <= x1 || y2 <= y1)
+            if (!(score >= threshold) || x2 <= x1 || y2 <= y1)
             {
                 continue;
             }

@@ -5,5 +5,5 @@ public interface IMouse
 {
     void Move(short dx, short dy);
 
-    void SetInterpolation(Interpolation interpolation);
+    void SetSmoothing(Smoothing smoothing);
 }

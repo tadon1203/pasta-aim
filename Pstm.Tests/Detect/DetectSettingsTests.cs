@@ -6,10 +6,10 @@ namespace Pstm.Tests.Detect;
 public sealed class DetectSettingsTests
 {
     [Fact]
-    public void Confidence_is_clamped_into_its_range()
+    public void Threshold_is_clamped_into_its_range()
     {
-        Assert.Equal(DetectSettings.MaxConfidence, AppSettings.Parse(@"{ ""detect"": { ""confidence"": 150 } }").Detect.Confidence);
-        Assert.Equal(0, AppSettings.Parse(@"{ ""detect"": { ""confidence"": -5 } }").Detect.Confidence);
+        Assert.Equal(DetectSettings.MaxThreshold, AppSettings.Parse(@"{ ""detect"": { ""threshold"": 150 } }").Detect.Threshold);
+        Assert.Equal(0, AppSettings.Parse(@"{ ""detect"": { ""threshold"": -5 } }").Detect.Threshold);
     }
 
     [Fact]

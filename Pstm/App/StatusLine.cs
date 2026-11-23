@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Windows.Forms;
-using Pstm.Dataset;
+using Pstm.Samples;
 using Pstm.Loop;
 using Pstm.Loop.Timing;
 using Timer = System.Windows.Forms.Timer;
@@ -13,12 +13,12 @@ internal sealed class StatusLine : IDisposable
 
     private readonly Label _label;
     private readonly LoopStatus _loopStatus;
-    private readonly IDatasetRecorder _recorder;
+    private readonly ISampleRecorder _recorder;
     private readonly Timer _timer = new();
     private long _frames;
     private long _ticks = Stopwatch.GetTimestamp();
 
-    public StatusLine(Label label, LoopStatus loopStatus, IDatasetRecorder recorder)
+    public StatusLine(Label label, LoopStatus loopStatus, ISampleRecorder recorder)
     {
         _label = label;
         _loopStatus = loopStatus;
@@ -39,11 +39,11 @@ internal sealed class StatusLine : IDisposable
         FrameStages latency = _loopStatus.Latency.Average;
         _frames = frames;
         _ticks = ticks;
-        DatasetStatus datasetStatus = _recorder.Status;
-        string dataset = datasetStatus.LastError is { } error
-            ? $"   dataset error: {error}"
-            : datasetStatus.Active ? $"   recording, saved {datasetStatus.Saved}" : string.Empty;
+        SampleStatus samplesStatus = _recorder.Status;
+        string samples = samplesStatus.LastError is { } error
+            ? $"   samples error: {error}"
+            : samplesStatus.Active ? $"   recording, saved {samplesStatus.Saved}" : string.Empty;
         _label.Text = $"fps {fps:F1}   latency {latency.FormatMs()}   "
-            + $"{(_loopStatus.Held ? "held" : "idle")}{dataset}";
+            + $"{(_loopStatus.Held ? "held" : "idle")}{samples}";
     }
 }

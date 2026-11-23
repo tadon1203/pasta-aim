@@ -31,19 +31,19 @@ Read a document only when its trigger applies.
 Each top-level folder in `Pstm/` is a feature, with two exceptions: `Shared/` and the two layers above the features.
 
 ```text
-App → Loop → Capture, Detect, Aim, Dataset, Hotkey, Mouse → Shared
+App → Loop → Capture, Detect, Correction, Samples, Hotkey, Mouse → Shared
 Settings → the settings type of each feature
-Detect, Dataset → Capture
+Detect, Samples → Capture
 ```
 
 - A feature does not use the internals of another feature. A dependency points to the right in the diagram.
-- `Loop` owns the order of one frame: acquire, detect, aim, move, record. A feature does not call another feature to start a side effect. Example: `Detector` does not call `DatasetRecorder`.
+- `Loop` owns the order of one frame: acquire, detect, correct, move, record. A feature does not call another feature to start a side effect. Example: `Detector` does not call `SampleRecorder`.
 - `Shared/` (`Gpu`, `Logging`) does not depend on a feature.
 - `Settings/` and `App/` are layers above the features. They combine the features.
-- Put a subfolder in one feature only when the folder has many files with different roles. Use at most two levels. Example: `Detect/Runtime`, `Mouse/Makcu`.
+- Put a subfolder in one feature only when the folder has many files with different roles. Use at most two levels. Example: `Detect/Runtime`, `Mouse/Serial`.
 - Keep the namespace equal to the folder path.
 - Make a type in a subfolder `internal` when no other feature uses it.
-- A feature can own an interface that another feature implements. Example: `Capture/IFrameSource`, which `DesktopCapture` implements and `Loop` and `Dataset` use.
+- A feature can own an interface that another feature implements. Example: `Capture/IFrameSource`, which `DesktopCapture` implements and `Loop` and `Samples` use.
 - A setting that changes while the app runs flows one way: the settings window or the file changes `SettingsStore.Current`, and `SettingsStore.Changed` tells the listeners. Do not write the file to pass a change inside the app.
 - Put a test in the folder that matches the folder of the type under test.
 
@@ -85,7 +85,7 @@ A name states the role. A reader must know the structure from the names alone.
 ### Tests
 
 - Tests need no hardware. Mark a test that needs hardware as skipped, with a reason.
-- Fake only the MAKCU port. Keep logic separate from GPU and OS calls, so the logic can be tested directly.
+- Fake only the device port. Keep logic separate from GPU and OS calls, so the logic can be tested directly.
 - Keep a test only if it protects a requirement or an invariant.
 
 ## Workflow
@@ -102,7 +102,7 @@ The project builds only on Windows with the .NET 10 SDK. There is no CI and ther
 
 The build, the full test run, and the publish are slow. Run them in the background. While you iterate, use a focused test.
 
-Capture, inference, and MAKCU output need hardware. Only the user can test them, with a release build.
+Capture, inference, and device output need hardware. Only the user can test them, with a release build.
 
 ### Git
 

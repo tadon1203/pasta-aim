@@ -25,14 +25,14 @@ public sealed class AppSettingsTests
         {
             Detect = new DetectSettings { Model = "yolo.onnx" },
             Display = new DisplaySettings { Adapter = 1L << 32 | 7, Output = 2 },
-            Mouse = new MouseSettings { Interpolation = Interpolation.Percent(30) },
+            Mouse = new MouseSettings { Smoothing = Smoothing.Percent(30) },
             Hotkey = new HotkeySettings { Keys = ["F9", "xinput:a"] },
         };
 
         string json = settings.ToJson();
 
-        Assert.Contains("\"target_y_offset\"", json);
-        Assert.Contains("\"interpolation\": 30", json);
+        Assert.Contains("\"offset\"", json);
+        Assert.Contains("\"smoothing\": 30", json);
         Assert.Equal(settings, AppSettings.Parse(json));
     }
 
@@ -41,6 +41,6 @@ public sealed class AppSettingsTests
     {
         Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse("[1, 2]"));
         Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse("null"));
-        Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse(@"{ ""aim"": { ""sensitivity_x"": ""fast"" } }"));
+        Assert.Throws<System.Text.Json.JsonException>(() => AppSettings.Parse(@"{ ""correction"": { ""sensitivity_x"": ""fast"" } }"));
     }
 }

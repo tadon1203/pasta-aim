@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using Pstm.Aim;
+using Pstm.Correction;
 using Pstm.Loop;
 using Pstm.Loop.Timing;
 using Pstm.Detect;
@@ -36,7 +36,7 @@ public class LoopDiagnosticsTests
         LoopStatus status = new();
         LoopDiagnostics diagnostics = new(() => clock, status.SetLatency);
         DetectedFrame frame = new(0, 0, 0, null, 0f, default);
-        AimResult move = new(AimOutcome.Move, 0, 0);
+        CorrectionResult move = new(CorrectionOutcome.Move, 0, 0);
 
         diagnostics.RecordFrame(frame, new FrameTimings(0, 1, 2, 3, 4), new System.Drawing.Size(320, 320), move, true);
         Assert.Same(FrameStats.Empty, status.Latency);

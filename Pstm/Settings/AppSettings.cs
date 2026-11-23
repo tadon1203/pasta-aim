@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Pstm.Aim;
+using Pstm.Correction;
 using Pstm.Capture;
-using Pstm.Dataset;
+using Pstm.Samples;
 using Pstm.Detect;
 using Pstm.Hotkey;
 using Pstm.Shared.Logging;
@@ -24,8 +24,8 @@ public sealed record AppSettings
     [JsonPropertyName("detect")]
     public DetectSettings Detect { get; init; } = new();
 
-    [JsonPropertyName("aim")]
-    public AimSettings Aim { get; init; } = new();
+    [JsonPropertyName("correction")]
+    public CorrectionSettings Correction { get; init; } = new();
 
     [JsonPropertyName("mouse")]
     public MouseSettings Mouse { get; init; } = new();
@@ -33,8 +33,8 @@ public sealed record AppSettings
     [JsonPropertyName("hotkey")]
     public HotkeySettings Hotkey { get; init; } = new();
 
-    [JsonPropertyName("dataset")]
-    public DatasetSettings Dataset { get; init; } = new();
+    [JsonPropertyName("samples")]
+    public SampleSettings Samples { get; init; } = new();
 
     [JsonPropertyName("log")]
     public LogSettings Log { get; init; } = new();
@@ -51,7 +51,7 @@ public sealed record AppSettings
     public AppSettings Clamped() => this with
     {
         Detect = Detect.Clamped(),
-        Aim = Aim.Clamped(),
+        Correction = Correction.Clamped(),
         Hotkey = Hotkey.Clamped(),
         Log = Log.Clamped(),
     };

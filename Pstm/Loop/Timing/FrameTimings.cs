@@ -5,13 +5,13 @@ public readonly record struct FrameTimings(
     long DesktopTimestamp,
     long DetectStartTimestamp,
     long DetectedTimestamp,
-    long AimedTimestamp,
+    long CorrectionedTimestamp,
     long MovedTimestamp)
 {
     public FrameStages Stages => new(
         DetectStartTimestamp - DesktopTimestamp,
         DetectedTimestamp - DetectStartTimestamp,
-        AimedTimestamp - DetectedTimestamp,
-        MovedTimestamp - AimedTimestamp,
+        CorrectionedTimestamp - DetectedTimestamp,
+        MovedTimestamp - CorrectionedTimestamp,
         MovedTimestamp - DesktopTimestamp);
 }

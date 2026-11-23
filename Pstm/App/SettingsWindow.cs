@@ -1,6 +1,6 @@
 using System.Windows.Forms;
-using Pstm.Aim;
-using Pstm.Dataset;
+using Pstm.Correction;
+using Pstm.Samples;
 using Pstm.Settings;
 using Pstm.Detect;
 using Pstm.Loop;
@@ -12,7 +12,7 @@ namespace Pstm.App;
 
 /// <summary>
 /// Edits the settings through <see cref="SettingsStore.Save"/>, and shows every other change of the settings.
-/// The window reads the loop only through <see cref="LoopStatus"/> and <see cref="IDatasetRecorder.Status"/>.
+/// The window reads the loop only through <see cref="LoopStatus"/> and <see cref="ISampleRecorder.Status"/>.
 /// </summary>
 internal sealed class SettingsWindow : Form
 {
@@ -31,15 +31,15 @@ internal sealed class SettingsWindow : Form
     private readonly Button _removeKey = new();
     private readonly NumericUpDown _sensitivityX = new();
     private readonly NumericUpDown _sensitivityY = new();
-    private readonly NumericUpDown _confidence = new();
-    private readonly NumericUpDown _targetYOffset = new();
+    private readonly NumericUpDown _threshold = new();
+    private readonly NumericUpDown _offset = new();
     private readonly NumericUpDown _maxDelta = new();
-    private readonly CheckBox _prediction = new();
-    private readonly NumericUpDown _countsPerPixel = new();
-    private readonly NumericUpDown _velocitySmoothing = new();
-    private readonly NumericUpDown _interpolationPercent = new();
-    private readonly CheckBox _interpolationAuto = new();
-    private readonly CheckBox _datasetEnabled = new();
+    private readonly CheckBox _lead = new();
+    private readonly NumericUpDown _leadScale = new();
+    private readonly NumericUpDown _leadSmoothing = new();
+    private readonly NumericUpDown _smoothingPercent = new();
+    private readonly CheckBox _smoothingAuto = new();
+    private readonly CheckBox _samplesEnabled = new();
     private readonly Label _status = new();
     private readonly Timer _saveTimer = new();
 
@@ -49,7 +49,7 @@ internal sealed class SettingsWindow : Form
     public SettingsWindow(
         SettingsStore file,
         LoopStatus loopStatus,
-        IDatasetRecorder recorder,
+        ISampleRecorder recorder,
         ManualResetEventSlim stopped,
         string modelsDirectory)
     {
@@ -92,7 +92,7 @@ internal sealed class SettingsWindow : Form
 
     private void InitializeComponent()
     {
-        Text = "pstm";
+        Text = "Settings";
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -115,42 +115,42 @@ internal sealed class SettingsWindow : Form
         keys.Controls.Add(_hotkeys);
         keys.Controls.Add(keyButtons);
 
-        ConfigureNumber(_sensitivityX, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
-        ConfigureNumber(_sensitivityY, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
-        ConfigureNumber(_confidence, 0, DetectSettings.MaxConfidence);
-        ConfigureNumber(_targetYOffset, 0, AimSettings.MaxTargetYOffset);
-        ConfigureNumber(_maxDelta, 0, AimSettings.MaxDeltaLimit);
-        ConfigureNumber(_countsPerPixel, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
-        ConfigureNumber(_velocitySmoothing, 0, AimSettings.MaxVelocitySmoothingMs);
-        ConfigureNumber(_interpolationPercent, 0, 100);
-        _interpolationAuto.Text = "Auto";
-        _interpolationAuto.AutoSize = true;
-        FlowLayoutPanel interpolation = new() { AutoSize = true };
-        interpolation.Controls.Add(_interpolationPercent);
-        interpolation.Controls.Add(_interpolationAuto);
+        ConfigureNumber(_sensitivityX, CorrectionSettings.MinSensitivity, CorrectionSettings.MaxSensitivity);
+        ConfigureNumber(_sensitivityY, CorrectionSettings.MinSensitivity, CorrectionSettings.MaxSensitivity);
+        ConfigureNumber(_threshold, 0, DetectSettings.MaxThreshold);
+        ConfigureNumber(_offset, 0, CorrectionSettings.MaxOffset);
+        ConfigureNumber(_maxDelta, 0, CorrectionSettings.MaxDeltaLimit);
+        ConfigureNumber(_leadScale, CorrectionSettings.MinSensitivity, CorrectionSettings.MaxSensitivity);
+        ConfigureNumber(_leadSmoothing, 0, CorrectionSettings.MaxLeadSmoothingMs);
+        ConfigureNumber(_smoothingPercent, 0, 100);
+        _smoothingAuto.Text = "Auto";
+        _smoothingAuto.AutoSize = true;
+        FlowLayoutPanel smoothing = new() { AutoSize = true };
+        smoothing.Controls.Add(_smoothingPercent);
+        smoothing.Controls.Add(_smoothingAuto);
 
         _logLevel.DropDownStyle = ComboBoxStyle.DropDownList;
         _logLevel.Items.AddRange([.. Enum.GetValues<LogLevel>().Cast<object>()]);
 
-        _prediction.Text = "Lead moving targets";
-        _prediction.AutoSize = true;
-        _datasetEnabled.Text = "Enabled (while hotkey is down)";
-        _datasetEnabled.AutoSize = true;
+        _lead.Text = "On";
+        _lead.AutoSize = true;
+        _samplesEnabled.Text = "Enabled (while keys are down)";
+        _samplesEnabled.AutoSize = true;
 
         _status.AutoSize = true;
         _layout.Controls.Add(Rows(
             ("Model (restart)", _model),
-            ("Confidence %", _confidence),
-            ("Sensitivity X", _sensitivityX),
-            ("Sensitivity Y", _sensitivityY),
-            ("Target Y offset %", _targetYOffset),
-            ("Max delta (0 = no cap)", _maxDelta),
-            ("Prediction", _prediction),
-            ("Prediction smoothing (ms)", _velocitySmoothing),
-            ("Prediction counts per pixel %", _countsPerPixel),
-            ("Interpolation %", interpolation),
-            ("Hotkeys", keys),
-            ("Dataset", _datasetEnabled),
+            ("Threshold %", _threshold),
+            ("Gain X", _sensitivityX),
+            ("Gain Y", _sensitivityY),
+            ("Offset %", _offset),
+            ("Max step (0 = no cap)", _maxDelta),
+            ("Lead", _lead),
+            ("Lead smoothing (ms)", _leadSmoothing),
+            ("Lead scale %", _leadScale),
+            ("Smoothing %", smoothing),
+            ("Keys", keys),
+            ("Sample recording", _samplesEnabled),
             ("Log level", _logLevel)));
         _layout.Controls.Add(_status);
         Controls.Add(_layout);
@@ -199,20 +199,20 @@ internal sealed class SettingsWindow : Form
 
             _model.SelectedItem = settings.Detect.Model;
             _keyCapture.SetKeys(settings.Hotkey.Keys);
-            _sensitivityX.Value = settings.Aim.SensitivityX;
-            _sensitivityY.Value = settings.Aim.SensitivityY;
-            _confidence.Value = settings.Detect.Confidence;
-            _targetYOffset.Value = settings.Aim.TargetYOffset;
-            _maxDelta.Value = settings.Aim.MaxDelta;
-            _prediction.Checked = settings.Aim.Prediction;
-            _velocitySmoothing.Value = settings.Aim.VelocitySmoothingMs;
-            _countsPerPixel.Value = settings.Aim.CountsPerPixel;
-            _velocitySmoothing.Enabled = settings.Aim.Prediction;
-            _countsPerPixel.Enabled = settings.Aim.Prediction;
-            _interpolationAuto.Checked = settings.Mouse.Interpolation.IsAuto;
-            _interpolationPercent.Value = settings.Mouse.Interpolation.FixedPercent ?? 0;
-            _interpolationPercent.Enabled = !_interpolationAuto.Checked;
-            _datasetEnabled.Checked = settings.Dataset.Enabled;
+            _sensitivityX.Value = settings.Correction.SensitivityX;
+            _sensitivityY.Value = settings.Correction.SensitivityY;
+            _threshold.Value = settings.Detect.Threshold;
+            _offset.Value = settings.Correction.Offset;
+            _maxDelta.Value = settings.Correction.MaxDelta;
+            _lead.Checked = settings.Correction.Lead;
+            _leadSmoothing.Value = settings.Correction.LeadSmoothingMs;
+            _leadScale.Value = settings.Correction.LeadScale;
+            _leadSmoothing.Enabled = settings.Correction.Lead;
+            _leadScale.Enabled = settings.Correction.Lead;
+            _smoothingAuto.Checked = settings.Mouse.Smoothing.IsAuto;
+            _smoothingPercent.Value = settings.Mouse.Smoothing.FixedPercent ?? 0;
+            _smoothingPercent.Enabled = !_smoothingAuto.Checked;
+            _samplesEnabled.Checked = settings.Samples.Enabled;
             _logLevel.SelectedItem = settings.Log.Level;
         }
         finally
@@ -247,25 +247,25 @@ internal sealed class SettingsWindow : Form
     {
         _model.SelectedIndexChanged += (_, _) => SettingChanged();
         _logLevel.SelectedIndexChanged += (_, _) => SettingChanged();
-        _datasetEnabled.CheckedChanged += (_, _) => SettingChanged();
+        _samplesEnabled.CheckedChanged += (_, _) => SettingChanged();
         foreach (NumericUpDown input in new[]
         {
-            _sensitivityX, _sensitivityY, _confidence, _targetYOffset,
-            _maxDelta, _countsPerPixel, _velocitySmoothing, _interpolationPercent,
+            _sensitivityX, _sensitivityY, _threshold, _offset,
+            _maxDelta, _leadScale, _leadSmoothing, _smoothingPercent,
         })
         {
             input.ValueChanged += (_, _) => SettingChanged();
         }
 
-        _prediction.CheckedChanged += (_, _) =>
+        _lead.CheckedChanged += (_, _) =>
         {
-            _velocitySmoothing.Enabled = _prediction.Checked;
-            _countsPerPixel.Enabled = _prediction.Checked;
+            _leadSmoothing.Enabled = _lead.Checked;
+            _leadScale.Enabled = _lead.Checked;
             SettingChanged();
         };
-        _interpolationAuto.CheckedChanged += (_, _) =>
+        _smoothingAuto.CheckedChanged += (_, _) =>
         {
-            _interpolationPercent.Enabled = !_interpolationAuto.Checked;
+            _smoothingPercent.Enabled = !_smoothingAuto.Checked;
             SettingChanged();
         };
         _saveTimer.Tick += (_, _) => Flush();
@@ -280,28 +280,28 @@ internal sealed class SettingsWindow : Form
             Detect = current.Detect with
             {
                 Model = _model.SelectedItem as string,
-                Confidence = (int)_confidence.Value,
+                Threshold = (int)_threshold.Value,
             },
-            Aim = current.Aim with
+            Correction = current.Correction with
             {
                 SensitivityX = (int)_sensitivityX.Value,
                 SensitivityY = (int)_sensitivityY.Value,
-                TargetYOffset = (int)_targetYOffset.Value,
+                Offset = (int)_offset.Value,
                 MaxDelta = (int)_maxDelta.Value,
-                Prediction = _prediction.Checked,
-                CountsPerPixel = (int)_countsPerPixel.Value,
-                VelocitySmoothingMs = (int)_velocitySmoothing.Value,
+                Lead = _lead.Checked,
+                LeadScale = (int)_leadScale.Value,
+                LeadSmoothingMs = (int)_leadSmoothing.Value,
             },
             Hotkey = current.Hotkey with { Keys = _keyCapture.Keys },
             Mouse = current.Mouse with
             {
-                Interpolation = _interpolationAuto.Checked
-                    ? Interpolation.Auto
-                    : Interpolation.Percent((int)_interpolationPercent.Value),
+                Smoothing = _smoothingAuto.Checked
+                    ? Smoothing.Auto
+                    : Smoothing.Percent((int)_smoothingPercent.Value),
             },
-            Dataset = current.Dataset with
+            Samples = current.Samples with
             {
-                Enabled = _datasetEnabled.Checked,
+                Enabled = _samplesEnabled.Checked,
             },
             Log = current.Log with
             {

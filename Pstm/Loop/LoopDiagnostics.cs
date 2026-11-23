@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
-using Pstm.Aim;
+using Pstm.Correction;
 using Pstm.Detect;
 using Pstm.Loop.Timing;
 using Pstm.Shared.Logging;
@@ -20,7 +20,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
     private int _timeouts;
     private int _noFrames;
     private int _targets;
-    private int _aimed;
+    private int _corrected;
     private int _sent;
     private float _bestScore;
     private float _topScore;
@@ -39,7 +39,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
         Tick();
     }
 
-    public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, Size input, AimResult aim, bool sent)
+    public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, Size input, CorrectionResult tracker, bool sent)
     {
         _frames++;
         FrameStages stages = timings.Stages with { Breakdown = frame.Breakdown };
@@ -52,8 +52,8 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
             _bestScore = MathF.Max(_bestScore, detection.Score);
         }
 
-        bool aimed = aim.Outcome == AimOutcome.Move;
-        _aimed += aimed ? 1 : 0;
+        bool corrected = tracker.Outcome == CorrectionOutcome.Move;
+        _corrected += corrected ? 1 : 0;
         _sent += sent ? 1 : 0;
 
         if (Log.IsEnabled(LogLevel.Trace))
@@ -65,7 +65,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
             double intervalMs = _previousFrameAt == 0
                 ? 0
                 : (timings.MovedTimestamp - _previousFrameAt) * 1000.0 / Stopwatch.Frequency;
-            Log.Trace($"frame {box} aim={aim.Outcome} move=({aim.Dx},{aim.Dy}) sent={sent} dt={intervalMs:F1}ms");
+            Log.Trace($"frame {box} tracker={tracker.Outcome} move=({tracker.Dx},{tracker.Dy}) sent={sent} dt={intervalMs:F1}ms");
         }
 
         _previousFrameAt = timings.MovedTimestamp;
@@ -78,7 +78,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
     {
         _windowStart = now();
         _previousFrameAt = 0;
-        _frames = _timeouts = _noFrames = _targets = _aimed = _sent = 0;
+        _frames = _timeouts = _noFrames = _targets = _corrected = _sent = 0;
         _bestScore = 0;
         _topScore = 0;
         _sum = default;
@@ -107,11 +107,11 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
             FrameStages max = latency.Max;
             Log.Debug(
                 $"loop {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
-                + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} top_score={_topScore:F3}");
+                + $"corrected={_corrected} sent={_sent} best_score={_bestScore:F3} top_score={_topScore:F3}");
             Log.Debug(
                 $"latency avg/max ms: capture={FrameStages.PairMs(avg.Capture, max.Capture)} "
                 + $"detect={FrameStages.PairMs(avg.Detect, max.Detect)} "
-                + $"aim={FrameStages.PairMs(avg.Aim, max.Aim)} "
+                + $"tracker={FrameStages.PairMs(avg.Correction, max.Correction)} "
                 + $"move={FrameStages.PairMs(avg.Move, max.Move)} "
                 + $"total={FrameStages.PairMs(avg.Total, max.Total)}");
             Log.Debug(

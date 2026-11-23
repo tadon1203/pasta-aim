@@ -1,6 +1,6 @@
 # MAKCU protocol
 
-The part of the MAKCU binary protocol that the client uses. The code is in `Pstm/Mouse/Makcu/MakcuProtocol.cs` (encoding), `Pstm/Mouse/Makcu/MakcuPacketDecoder.cs` (parsing), and `Pstm/Mouse/Makcu/MakcuDevice.cs` (exchanges). Code comments link to the sections here and do not repeat the facts.
+The part of the MAKCU binary protocol that the client uses. The code is in `Pstm/Mouse/Serial/DeviceProtocol.cs` (encoding), `Pstm/Mouse/Serial/PacketDecoder.cs` (parsing), and `Pstm/Mouse/Serial/SerialDevice.cs` (exchanges). Code comments link to the sections here and do not repeat the facts.
 
 ## Packet
 
@@ -38,7 +38,7 @@ There is no success status byte.
 
 ## Connect order
 
-The client finds the device by its serial port and then runs this sequence (`MakcuDevice.ConnectPort`):
+The client finds the device by its serial port and then runs this sequence (`SerialDevice.ConnectPort`):
 
 1. Open the port at 4 000 000 baud and send `DEVICE`. The device's rate after the app last closed is unknown, so this is tried first.
 2. If there is no reply, open the port at 115 200 baud and send `DEVICE`. If that also gets no reply, the port fails.
