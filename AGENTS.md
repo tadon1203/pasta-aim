@@ -22,6 +22,7 @@ Read a document only when its trigger applies.
 | ------------------------ | -------------------------- | ------------------------------- |
 | `README.md`              | Project summary, run steps | You need setup or run steps     |
 | `docs/makcu-protocol.md` | MAKCU wire protocol        | The MAKCU communication changes |
+| `docs/gpu-frame-protocol.md` | GPU frame pipeline, fences | The capture, the preprocess, or the model queue changes |
 
 ## Code
 
@@ -45,6 +46,30 @@ Detect, Dataset → Capture
 - A feature can own an interface that another feature implements. Example: `Capture/IFrameSource`, which `DesktopCapture` implements and `Loop` and `Dataset` use.
 - A setting that changes while the app runs flows one way: the settings window or the file changes `SettingsFile.Current`, and `SettingsFile.Changed` tells the listeners. Do not write the file to pass a change inside the app.
 - Put a test in the folder that matches the folder of the type under test.
+
+### Naming
+
+A name states the role. A reader must know the structure from the names alone.
+
+| Suffix | Meaning |
+| --- | --- |
+| `*Settings` | One JSON section. Sits in its feature folder. |
+| `*Status` | A snapshot that any thread can read. |
+| `*State` | A state machine with transitions. No I/O. |
+| `*Result` | The outcome of one call. |
+| `*Timings` | Timestamps. |
+| `*Stages` | Durations. |
+| `*Stats` | The average and the maximum of a window. |
+| `*Recorder` | Moves the parts in order and owns their resources. |
+| `*Tracker` | Follows one subject across frames. `Reset` returns it to the start. |
+| `*Decoder` | Reads a buffer and returns a value. No I/O. |
+| `*Port` | I/O only. |
+| `*Device` | A protocol on top of a port. |
+| `*Api` | P/Invoke bindings only. No state. |
+| `I*` | The only entrance that the loop or another feature uses. One implementation per interface. |
+
+- Use one file for one type. The file name equals the type name. An enum or a helper that belongs to the type is the exception.
+- Use one word for one meaning. Do not use the same word for two concepts.
 
 ### Rules
 
