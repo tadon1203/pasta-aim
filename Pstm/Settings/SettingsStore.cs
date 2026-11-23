@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pstm.Shared;
 using Pstm.Shared.Logging;
 
 namespace Pstm.Settings;
@@ -34,8 +35,8 @@ public sealed class SettingsStore : IDisposable
     /// <summary>Raised on the thread that changed the settings, after <see cref="Current"/> holds the new value.</summary>
     public event Action<AppSettings>? Changed;
 
-    /// <summary>settings.json next to the executable.</summary>
-    public static string DefaultPath => Path.Combine(AppContext.BaseDirectory, "settings.json");
+    /// <summary>settings.json in the app data folder.</summary>
+    public static string DefaultPath => AppFolders.Settings;
 
     /// <summary>The latest settings. Safe to call from any thread.</summary>
     public AppSettings Current => Volatile.Read(ref _current);

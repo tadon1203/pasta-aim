@@ -22,7 +22,7 @@ internal sealed class SampleWriter : IDisposable
     {
         _write = write;
         _onError = onError;
-        _thread = new Thread(Run) { Name = "samples-writer", IsBackground = true };
+        _thread = new Thread(Run) { Name = "writer", IsBackground = true };
         _thread.Start();
     }
 

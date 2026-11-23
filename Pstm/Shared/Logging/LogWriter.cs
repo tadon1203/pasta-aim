@@ -16,7 +16,7 @@ internal sealed class LogWriter : IDisposable
     {
         _writer = new StreamWriter(
             new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read), new UTF8Encoding(false));
-        _thread = new Thread(Run) { Name = "log", IsBackground = true };
+        _thread = new Thread(Run) { Name = "io", IsBackground = true };
         _thread.Start();
     }
 

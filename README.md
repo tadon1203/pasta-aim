@@ -1,6 +1,6 @@
 # PastaAim
 
-A Windows app that captures the center of a display, finds targets with an end-to-end YOLO model, and moves the mouse through a MAKCU device.
+A Windows app that captures the center of a display, finds targets with an end-to-end YOLO model, and moves the mouse through a MAKCU device. The executable and the data folder use the name `pstm`.
 
 See [AGENTS.md](./AGENTS.md) for the architecture and rules. See [docs/makcu-protocol.md](./docs/makcu-protocol.md) for the MAKCU wire protocol.
 
@@ -15,12 +15,12 @@ See [AGENTS.md](./AGENTS.md) for the architecture and rules. See [docs/makcu-pro
 
 1. Publish the app (see [Development](#development)).
 2. Put one `.onnx` model in `models/` next to the executable.
-3. Start the app once to create `settings.json`. Set `detect.model` to the model's file name.
+3. Start the app once to create `%LOCALAPPDATA%\pstm\settings.json`. Set `detect.model` to the model's file name.
 4. Start the app. Hold the hotkey (default `F8`) to correct the mouse.
 
 The app re-reads `settings.json` when it changes. `detect.model`, `display.adapter`, and `display.output` take effect after a restart.
 
-While the keys are down, the sample feature saves one full display image every 2 seconds to `samples/original/`. Set `samples.enabled` to `false` to turn it off.
+While the keys are down, the sample feature saves one full display image every 2 seconds to `%LOCALAPPDATA%\pstm\samples\original\`. It is off by default. Set `samples.enabled` to `true` to turn it on.
 
 ## Settings
 
@@ -41,7 +41,7 @@ A missing section takes its defaults. The app clamps values that are out of rang
 | `correction.lead_scale` | `100` | Lead. Mouse counts for one capture pixel, in percent. |
 | `mouse.smoothing` | `"auto"` | MAKCU move smoothing: `"auto"` or a percent. |
 | `hotkey.keys` | `["F8"]` | Keys that enable correction. |
-| `samples.enabled` | `true` | Record while the keys are down. |
+| `samples.enabled` | `false` | Record while the keys are down. |
 | `log.level` | `Info` | Most detailed log level. |
 
 Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `Pstm/Hotkey/Key.cs`.
@@ -58,7 +58,7 @@ The app checks these at startup and reports the first one that fails.
 
 ## Troubleshooting
 
-Each run writes `logs/pstm-yyyyMMdd-HHmmss.log`. The app keeps the last 10 files. Set `log.level` to `Debug` for more detail.
+Each run writes `%LOCALAPPDATA%\pstm\logs\pstm-yyyyMMdd-HHmmss.log`. The app keeps the last 10 files. Set `log.level` to `Debug` for more detail.
 
 - `no device port found`: the device does not use the CH340 USB IDs `1A86:55D3` or `1A86:7523`. Check the cable and the driver.
 - `no model is selected` or `model file not found`: set `detect.model` to a file that exists in `models/`.
@@ -74,4 +74,4 @@ dotnet test PastaAim.sln
 dotnet publish Pstm/Pstm.csproj -c Release
 ```
 
-The publish output is a self-contained single file in `Pstm/bin/Release/net10.0-windows/win-x64/publish/`. The checks to run before a commit are in [AGENTS.md](./AGENTS.md#commands).
+The publish output is one self-contained file, `pstm.exe`, in `Pstm/bin/Release/net10.0-windows/win-x64/publish/`. The checks to run before a commit are in [AGENTS.md](./AGENTS.md#commands).

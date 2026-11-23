@@ -3,6 +3,7 @@ using System.Windows.Forms;
 using Pstm.Detect.Model;
 using Pstm.Hotkey;
 using Pstm.Settings;
+using Pstm.Shared;
 using Pstm.Shared.Logging;
 using Application = System.Windows.Forms.Application;
 
@@ -13,8 +14,14 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
+        using Mutex mutex = new(true, @"Local\pstm", out bool createdNew);
+        if (!createdNew)
+        {
+            return 0;
+        }
+
         GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-        Log.OpenFile(Path.Combine(AppContext.BaseDirectory, "logs"));
+        Log.OpenFile(AppFolders.Logs);
         try
         {
             return Run();
@@ -23,6 +30,7 @@ internal static class Program
         {
             Log.Error(error.Message);
             Log.Debug(error.ToString());
+            MessageBox.Show(error.Message, "pstm", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
         finally
@@ -57,36 +65,22 @@ internal static class Program
                 stopped.Set();
             });
 
-        ConsoleCancelEventHandler onCancel = (_, args) =>
+        pipeline.Start();
+
+        // Set the visual styles and DPI mode before the first window is created.
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        using (SettingsWindow form = new(file, pipeline.Loop.LoopStatus, pipeline.Recorder, stopped, ModelFolder.Location))
         {
-            args.Cancel = true;
-            stopped.Set();
-        };
-
-        try
-        {
-            Console.CancelKeyPress += onCancel;
-            pipeline.Start();
-
-            // Set the visual styles and DPI mode before the first window is created.
-            Application.SetHighDpiMode(HighDpiMode.SystemAware);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            using (SettingsWindow form = new(file, pipeline.Loop.LoopStatus, pipeline.Recorder, stopped, ModelFolder.Location))
-            {
-                Application.Run(form);
-            }
-
-            if (fault is not null)
-            {
-                throw new InvalidOperationException($"the loop stopped: {fault.Message}", fault);
-            }
-
-            return 0;
+            Application.Run(form);
         }
-        finally
+
+        if (fault is not null)
         {
-            Console.CancelKeyPress -= onCancel;
+            throw new InvalidOperationException($"the loop stopped: {fault.Message}", fault);
         }
+
+        return 0;
     }
 }

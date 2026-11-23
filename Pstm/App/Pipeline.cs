@@ -8,6 +8,7 @@ using Pstm.Hotkey;
 using Pstm.Loop;
 using Pstm.Mouse.Serial;
 using Pstm.Settings;
+using Pstm.Shared;
 using Pstm.Shared.Gpu;
 using Pstm.Shared.Logging;
 
@@ -41,7 +42,7 @@ internal sealed class Pipeline : IDisposable
             _session = new OnnxSession(_gpu, modelPath);
             _frames = new DesktopCapture(_gpu, _session.Input.Width, _session.Input.Height);
             _recorder = new SampleRecorder(
-                _gpu, Path.Combine(AppContext.BaseDirectory, "samples"), Stopwatch.GetTimestamp, Stopwatch.Frequency);
+                _gpu, AppFolders.Samples, Stopwatch.GetTimestamp, Stopwatch.Frequency);
             _detector = new Detector(_gpu, _session, _frames);
             Log.Info($"model {Path.GetFileName(modelPath)}");
             _device = SerialDevice.Connect();

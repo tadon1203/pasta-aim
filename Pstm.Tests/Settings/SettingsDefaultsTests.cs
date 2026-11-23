@@ -19,10 +19,10 @@ public sealed class SettingsDefaultsTests
                 settings.Correction.MaxDelta, settings.Correction.LeadSmoothingMs, settings.Correction.LeadScale));
         Assert.True(settings.Correction.Lead);
         Assert.True(settings.Mouse.Smoothing.IsAuto);
-        Assert.True(settings.Samples.Enabled);
+        Assert.False(settings.Samples.Enabled);
         Assert.Equal(LogLevel.Info, settings.Log.Level);
         Assert.Equal((0L, 0), (settings.Display.Adapter, settings.Display.Output));
 
-        Assert.False(AppSettings.Parse(@"{ ""samples"": { ""enabled"": false } }").Samples.Enabled);
+        Assert.True(AppSettings.Parse(@"{ ""samples"": { ""enabled"": true } }").Samples.Enabled);
     }
 }
