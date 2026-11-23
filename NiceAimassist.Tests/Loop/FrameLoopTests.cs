@@ -12,20 +12,18 @@ namespace NiceAimassist.Tests.Loop;
 
 public class FrameLoopTests
 {
-    private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(5);
-
     // The target center is 100 px right of the input center (320). The default aim moves dx = 100.
     private static readonly Detection Centered = new(400, 300, 440, 340, 0.9f, 0);
 
     [Fact]
     public void HeldKeyWithTargetSendsMove()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMouse mouse = new();
         FrameLoop loop = Start(source, mouse, () => true);
 
-        WaitUntil(() => mouse.Moves.Count >= 1);
+        TestWait.Until(() => mouse.Moves.Count >= 1);
         loop.Stop();
 
         (short Dx, short Dy) move = Assert.Single(mouse.Moves);
@@ -36,13 +34,13 @@ public class FrameLoopTests
     [Fact]
     public void ReleasedKeySendsNoMoveAndDoesNotRunThePipeline()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMouse mouse = new();
         FakeHotkey hotkey = new(false);
         FrameLoop loop = Start(source, mouse, hotkey.IsHeld);
 
-        WaitUntil(() => hotkey.Polls >= 3);
+        TestWait.Until(() => hotkey.Polls >= 3);
         loop.Stop();
 
         Assert.True(mouse.Moves.IsEmpty);
@@ -54,14 +52,14 @@ public class FrameLoopTests
     {
         // Without the reset, the second frame reads the first move as target motion. The aim then overshoots the target.
         long first = Stopwatch.GetTimestamp();
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(first, Centered);
         source.Enqueue(first + Stopwatch.Frequency / 20, Centered);
         FakeMouse mouse = new();
         FakeHotkey hotkey = new(true, false, true);
         FrameLoop loop = Start(source, mouse, hotkey.IsHeld);
 
-        WaitUntil(() => mouse.Moves.Count >= 2);
+        TestWait.Until(() => mouse.Moves.Count >= 2);
         loop.Stop();
 
         (short Dx, short Dy)[] moves = mouse.Moves.ToArray();
@@ -72,11 +70,11 @@ public class FrameLoopTests
     [Fact]
     public void ReleasingTheKeyEndsTheHeldFrameOnce()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         FakeHotkey hotkey = new(true, true, true, false);
         FrameLoop loop = Start(source, new FakeMouse(), hotkey.IsHeld);
 
-        WaitUntil(() => hotkey.Polls >= 8);
+        TestWait.Until(() => hotkey.Polls >= 8);
         loop.Stop();
 
         Assert.Equal(1, source.ReleaseCount);
@@ -85,12 +83,12 @@ public class FrameLoopTests
     [Fact]
     public void FrameWithoutTargetSendsNoMove()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), null);
         FakeMouse mouse = new();
         FrameLoop loop = Start(source, mouse, () => true);
 
-        WaitUntil(() => loop.LoopStatus.Frames >= 1);
+        TestWait.Until(() => loop.LoopStatus.Frames >= 1);
         loop.Stop();
 
         Assert.True(mouse.Moves.IsEmpty);
@@ -100,18 +98,18 @@ public class FrameLoopTests
     public void TheMouseGetsTheInterpolationOfTheCurrentSettings()
     {
         // The frames are fed in two stages. The setting change happens between the stages.
-        FakeSource source = new();
+        FakeFrameSource source = new();
         FakeMouse mouse = new();
         Holder<AppSettings> settings = new(Snapshot(Interpolation.Percent(30)));
-        FrameLoop loop = new(source, source, mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
+        FrameLoop loop = new(source, new FakeDetector(source), mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
         loop.Start();
 
         source.Enqueue(Stopwatch.GetTimestamp(), null);
-        WaitUntil(() => loop.LoopStatus.Frames >= 1);
+        TestWait.Until(() => loop.LoopStatus.Frames >= 1);
         Assert.Equal(Interpolation.Percent(30), mouse.Interpolations.Last());
         settings.Value = Snapshot(Interpolation.Auto);
         source.Enqueue(Stopwatch.GetTimestamp(), null);
-        WaitUntil(() => loop.LoopStatus.Frames >= 2);
+        TestWait.Until(() => loop.LoopStatus.Frames >= 2);
         loop.Stop();
 
         Assert.Equal(Interpolation.Auto, mouse.Interpolations.Last());
@@ -120,12 +118,12 @@ public class FrameLoopTests
     [Fact]
     public void PipelineExceptionReportsFaultAndEndsTheLoop()
     {
-        FakeSource source = new() { Fault = new InvalidOperationException("device lost") };
+        FakeFrameSource source = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
-        FrameLoop loop = new(source, source, new FakeMouse(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
+        FrameLoop loop = new(source, new FakeDetector(source), new FakeMouse(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
         loop.Start();
 
-        WaitUntil(() => faults.Count >= 1);
+        TestWait.Until(() => faults.Count >= 1);
         loop.Stop();
 
         Assert.Equal("device lost", Assert.Single(faults).Message);
@@ -135,10 +133,10 @@ public class FrameLoopTests
     [Fact]
     public void StopReturnsPromptlyWhileWaitingForFrames()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         FrameLoop loop = Start(source, new FakeMouse(), () => true);
 
-        WaitUntil(() => source.AcquireCalls >= 3);
+        TestWait.Until(() => source.AcquireCalls >= 3);
         Stopwatch clock = Stopwatch.StartNew();
         loop.Stop();
 
@@ -150,13 +148,13 @@ public class FrameLoopTests
     {
         // The recording must not delay the move.
         ConcurrentQueue<string> events = new();
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMouse mouse = new(events);
         FakeRecorder recorder = new(events) { IsDue = true };
         FrameLoop loop = Start(source, mouse, () => true, recorder);
 
-        WaitUntil(() => recorder.Recorded >= 1);
+        TestWait.Until(() => recorder.Recorded >= 1);
         loop.Stop();
 
         Assert.Equal(["move", "record"], events.Take(2));
@@ -165,12 +163,12 @@ public class FrameLoopTests
     [Fact]
     public void AFrameWithoutATargetIsNotRecorded()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), null);
         FakeRecorder recorder = new(new ConcurrentQueue<string>()) { IsDue = true };
         FrameLoop loop = Start(source, new FakeMouse(), () => true, recorder);
 
-        WaitUntil(() => loop.LoopStatus.Frames >= 1);
+        TestWait.Until(() => loop.LoopStatus.Frames >= 1);
         loop.Stop();
 
         Assert.Equal(0, recorder.Recorded);
@@ -179,12 +177,12 @@ public class FrameLoopTests
     [Fact]
     public void ARecorderThatIsNotDueGetsNoFrame()
     {
-        FakeSource source = new();
+        FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeRecorder recorder = new(new ConcurrentQueue<string>()) { IsDue = false };
         FrameLoop loop = Start(source, new FakeMouse(), () => true, recorder);
 
-        WaitUntil(() => loop.LoopStatus.Frames >= 1);
+        TestWait.Until(() => loop.LoopStatus.Frames >= 1);
         loop.Stop();
 
         Assert.Equal(0, recorder.Recorded);
@@ -194,17 +192,17 @@ public class FrameLoopTests
     public void TheRecorderIsUpdatedWhileTheKeyIsReleased()
     {
         FakeRecorder recorder = new(new ConcurrentQueue<string>());
-        FrameLoop loop = Start(new FakeSource(), new FakeMouse(), () => false, recorder);
+        FrameLoop loop = Start(new FakeFrameSource(), new FakeMouse(), () => false, recorder);
 
-        WaitUntil(() => recorder.Updates >= 3);
+        TestWait.Until(() => recorder.Updates >= 3);
         loop.Stop();
 
         Assert.False(recorder.LastHeld);
     }
 
-    private static FrameLoop Start(FakeSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetControl? recorder = null)
+    private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetControl? recorder = null)
     {
-        FrameLoop loop = new(source, source, mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { }, recorder);
+        FrameLoop loop = new(source, new FakeDetector(source), mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { }, recorder);
         loop.Start();
         return loop;
     }
@@ -213,27 +211,13 @@ public class FrameLoopTests
 
     private static AppSettings Snapshot(Interpolation interpolation) => new() { Mouse = new MouseSettings { Interpolation = interpolation } };
 
-    private static void WaitUntil(Func<bool> condition)
-    {
-        long deadline = Stopwatch.GetTimestamp() + (long)(WaitLimit.TotalSeconds * Stopwatch.Frequency);
-        while (!condition())
-        {
-            if (Stopwatch.GetTimestamp() > deadline)
-            {
-                throw new TimeoutException("the loop did not reach the expected state");
-            }
-
-            Thread.Sleep(1);
-        }
-    }
-
     private sealed class Holder<T>(T value)
         where T : class
     {
         public volatile T Value = value;
     }
 
-    private sealed unsafe class FakeSource : IFrameSource, IDetector
+    private sealed unsafe class FakeFrameSource : IFrameSource
     {
         private readonly ConcurrentQueue<(long Qpc, Detection? Target)> _frames = new();
         private readonly ConcurrentDictionary<ulong, Detection?> _targets = new();
@@ -254,6 +238,8 @@ public class FrameLoopTests
         public ID3D11Texture2D* DesktopTexture => null;
 
         public void Enqueue(long presentQpc, Detection? target) => _frames.Enqueue((presentQpc, target));
+
+        public Detection? TargetOf(ulong sequence) => _targets[sequence];
 
         public void ReleaseHeldFrame() => Interlocked.Increment(ref _releaseCount);
 
@@ -278,8 +264,19 @@ public class FrameLoopTests
             return CaptureStatus.Timeout;
         }
 
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class FakeDetector(FakeFrameSource source) : IDetector
+    {
+        public int InputWidth => 640;
+
+        public int InputHeight => 640;
+
         public DetectedFrame Detect(CapturedFrame frame, float confidence) =>
-            new(frame.DesktopTimestamp, frame.DesktopTimestamp, frame.DesktopTimestamp, _targets[frame.Sequence], 0f, default);
+            new(frame.DesktopTimestamp, frame.DesktopTimestamp, frame.DesktopTimestamp, source.TargetOf(frame.Sequence), 0f, default);
 
         public void Dispose()
         {

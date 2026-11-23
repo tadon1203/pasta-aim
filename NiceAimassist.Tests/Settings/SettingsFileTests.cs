@@ -62,7 +62,7 @@ public sealed class SettingsFileTests : IDisposable
 
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
 
-        Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 300));
+        TestWait.Until(() => file.Current.Aim.SensitivityX == 300);
     }
 
     [Fact]
@@ -71,14 +71,14 @@ public sealed class SettingsFileTests : IDisposable
         string path = Path.Combine(_directory, "settings.json");
         SettingsFile file = NewFile(path);
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
-        Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 300));
+        TestWait.Until(() => file.Current.Aim.SensitivityX == 300);
 
         File.WriteAllText(path, "{ \"aim\": { \"sensitivity_x\": 4");
         Thread.Sleep(DebounceMilliseconds * 6);
         Assert.Equal(300, file.Current.Aim.SensitivityX);
 
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 400 } }");
-        Assert.True(WaitUntil(() => file.Current.Aim.SensitivityX == 400));
+        TestWait.Until(() => file.Current.Aim.SensitivityX == 400);
     }
 
     [Fact]
@@ -117,21 +117,5 @@ public sealed class SettingsFileTests : IDisposable
         SettingsFile file = new(path, DebounceMilliseconds);
         _files.Add(file);
         return file;
-    }
-
-    private static bool WaitUntil(Func<bool> condition, int timeoutMilliseconds = 5_000)
-    {
-        DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return true;
-            }
-
-            Thread.Sleep(10);
-        }
-
-        return condition();
     }
 }

@@ -32,15 +32,20 @@ public class LogWriterTests
     }
 
     [Fact]
-    public void WriteAfterDisposeDoesNotThrow()
+    public void WriteAfterDisposeDropsTheLineAndDoesNotThrow()
     {
         string path = Path.Combine(Path.GetTempPath(), "nice-aimassist-log-" + Guid.NewGuid().ToString("N") + ".log");
         LogWriter writer = new(path);
+        writer.Write("kept");
         writer.Dispose();
 
         try
         {
             writer.Write("late");
+
+            string[] lines = File.ReadAllLines(path);
+            Assert.Contains("kept", lines);
+            Assert.DoesNotContain("late", lines);
         }
         finally
         {

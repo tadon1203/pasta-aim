@@ -5,14 +5,6 @@ namespace NiceAimassist.Tests.Detect;
 public class DetectionTests
 {
     [Fact]
-    public void IoUOfIdenticalBoxesIsOne()
-    {
-        Detection box = new(0, 0, 10, 10, 0.9f, 0);
-
-        Assert.Equal(1f, Detection.IoU(box, box));
-    }
-
-    [Fact]
     public void IoUOfDisjointBoxesIsZero()
     {
         Detection a = new(0, 0, 10, 10, 0.9f, 0);

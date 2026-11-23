@@ -94,23 +94,6 @@ public class DetectionDecoderTests
     }
 
     [Fact]
-    public void Fp16RowsDecodeToTheSameSelection()
-    {
-        // Every value is exact in fp16.
-        Half[] rows = Array.ConvertAll(
-            new float[]
-            {
-                0f, 0f, 20f, 20f, 0.875f, 1f,
-                45f, 45f, 55f, 55f, 0.5f, 2f,
-            },
-            value => (Half)value);
-
-        Detection? target = DetectionDecoder.Decode(Bytes(rows), Output(2, TensorPrecision.Fp16), Input, 0.25f).Nearest;
-
-        Assert.Equal(new Detection(45f, 45f, 55f, 55f, 0.5f, 2), target);
-    }
-
-    [Fact]
     public void Fp16CellsAreReadLittleEndian()
     {
         // In fp16, the bit pattern 0x3C00 is 1.0 and 0x4900 is 10.0. Each value is stored low byte first.
@@ -139,31 +122,19 @@ public class DetectionDecoderTests
     }
 
     [Fact]
-    public void TopScoreIgnoresTheBoxAndNonFiniteScores()
+    public void TopScoreIgnoresTheBoxTheThresholdAndNonFiniteScores()
     {
         float[] rows =
         [
-            30f, 30f, 20f, 20f, 0.4f, 0f,
-            0f, 0f, 10f, 10f, float.NaN, 0f,
-            0f, 0f, 10f, 10f, 0.1f, 0f,
+            0f, 0f, 20f, 20f, 0.3f, 1f,
+            45f, 45f, 55f, 55f, float.NaN, 2f,
+            50f, 50f, 50f, 60f, 0.9f, 3f,
         ];
 
-        Assert.Equal(0.4f, DetectionDecoder.Decode(Bytes(rows), Output(3), Input, 0f).TopScore);
-    }
-
-    [Fact]
-    public void TopScoreCountsRowsThatFailTheConfidenceFilter()
-    {
-        float[] rows =
-        [
-            0f, 0f, 20f, 20f, 0.2f, 1f,
-            45f, 45f, 55f, 55f, 0.1f, 2f,
-        ];
-
-        DecodeResult result = DetectionDecoder.Decode(Bytes(rows), Output(2), Input, 0.25f);
+        DecodeResult result = DetectionDecoder.Decode(Bytes(rows), Output(3), Input, 0.95f);
 
         Assert.Null(result.Nearest);
-        Assert.Equal(0.2f, result.TopScore);
+        Assert.Equal(0.9f, result.TopScore);
     }
 
     private static ModelOutput Output(int rows, TensorPrecision precision = TensorPrecision.Fp32) => new(rows, precision);

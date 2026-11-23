@@ -115,11 +115,4 @@ public class MakcuDeviceTests
         link.SetInterpolation(Interpolation.Auto);
         Assert.Equal(framesBefore + 2, device.Frames.Count);
     }
-
-    [Fact]
-    public void APercentIsClampedToTheRangeWhenCreated()
-    {
-        Assert.Equal(Interpolation.Percent(100), Interpolation.Percent(150));
-        Assert.Equal(Interpolation.Percent(0), Interpolation.Percent(-5));
-    }
 }

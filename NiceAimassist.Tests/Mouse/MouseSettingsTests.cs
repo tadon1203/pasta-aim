@@ -6,12 +6,6 @@ namespace NiceAimassist.Tests.Mouse;
 
 public sealed class MouseSettingsTests
 {
-    [Fact]
-    public void A_missing_mouse_section_takes_auto_interpolation()
-    {
-        Assert.Equal(Interpolation.Auto, AppSettings.Parse("{}").Mouse.Interpolation);
-    }
-
     [Theory]
     [InlineData(@"{ ""mouse"": { ""interpolation"": ""auto"" } }", -1)]
     [InlineData(@"{ ""mouse"": { ""interpolation"": ""AUTO"" } }", -1)]

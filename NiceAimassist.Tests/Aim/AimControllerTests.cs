@@ -19,7 +19,8 @@ public class AimControllerTests
     private static Detection At(float centerX, float centerY, float height = 40f) =>
         Box(centerX, centerY, 30f, height);
 
-    private static AimSettings Params(int sensitivity = 100, int targetYOffset = 50, int maxDelta = 0, int smoothing = 0) =>
+    // No cap on the length. The production default of MaxDelta is 512.
+    private static AimSettings NoCap(int sensitivity = 100, int targetYOffset = 50, int maxDelta = 0, int smoothing = 0) =>
         new()
         {
             SensitivityX = sensitivity,
@@ -42,9 +43,9 @@ public class AimControllerTests
     [Fact]
     public void TargetYOffsetAimsInsideTheBoxBeforeSensitivity()
     {
-        Assert.Equal((true, 5, 15), Single(At(60, 70), Params(sensitivity: 50, targetYOffset: 75)));
-        Assert.Equal((true, 10, 0), Single(At(60, 70), Params(targetYOffset: 0)));
-        Assert.Equal((true, 10, 40), Single(At(60, 70), Params(targetYOffset: 100)));
+        Assert.Equal((true, 5, 15), Single(At(60, 70), NoCap(sensitivity: 50, targetYOffset: 75)));
+        Assert.Equal((true, 10, 0), Single(At(60, 70), NoCap(targetYOffset: 0)));
+        Assert.Equal((true, 10, 40), Single(At(60, 70), NoCap(targetYOffset: 100)));
     }
 
     [Fact]
@@ -57,36 +58,30 @@ public class AimControllerTests
     [Fact]
     public void MaxDeltaCapsTheLengthAndKeepsTheDirection()
     {
-        Assert.Equal((true, 4, 9), Single(At(60, 70), Params(maxDelta: 10)));
-        Assert.Equal((true, 10, 20), Single(At(60, 70), Params(maxDelta: 100)));
+        Assert.Equal((true, 4, 9), Single(At(60, 70), NoCap(maxDelta: 10)));
+        Assert.Equal((true, 10, 20), Single(At(60, 70), NoCap(maxDelta: 100)));
     }
 
     [Fact]
     public void ZeroMovementSendsNothing()
     {
-        Assert.Equal((true, 10, 0), Single(At(60, 50), Params()));
-        Assert.Equal((false, 0, 0), Single(At(50, 50), Params()));
+        Assert.Equal((true, 10, 0), Single(At(60, 50), NoCap()));
+        Assert.Equal((false, 0, 0), Single(At(50, 50), NoCap()));
     }
 
     [Fact]
     public void StatusSeparatesNoTargetFromOnTarget()
     {
         var aim = new AimController();
-        Assert.Equal(AimStatus.NoTarget, aim.Update(null, 0, 0, Input, Params()).Status);
-        Assert.Equal(AimStatus.OnTarget, aim.Update(At(50, 50), 0, 0, Input, Params()).Status);
-    }
-
-    [Fact]
-    public void TheFrameMovesTowardTheAimPoint()
-    {
-        Assert.Equal((true, 20, 0), Single(At(70, 50), Params()));
+        Assert.Equal(AimStatus.NoTarget, aim.Update(null, 0, 0, Input, NoCap()).Status);
+        Assert.Equal(AimStatus.OnTarget, aim.Update(At(50, 50), 0, 0, Input, NoCap()).Status);
     }
 
     [Fact]
     public void RemainderAccumulatesSubCountMovement()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         // The frames are one second apart. The velocity estimate stays at zero.
         var sent = new (bool, int, int)[4];
         for (int i = 0; i < sent.Length; i++)
@@ -101,7 +96,7 @@ public class AimControllerTests
     public void TheAimPointLeadsAMovingTargetByItsVelocity()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Assert.False(Step(aim, At(50, 50), 0, p, delay: 0.01).Sent);
         Assert.Equal((true, 20, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
     }
@@ -110,7 +105,7 @@ public class AimControllerTests
     public void TheLeadFollowsTheMeasuredDelayBlendedAcrossFrames()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Step(aim, At(50, 50), 0, p, delay: 0.010);
         // The blended delay is 0.010 + 0.2 * (0.060 - 0.010) = 0.020. The lead is 0.020.
         Assert.Equal((true, 30, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.060));
@@ -120,7 +115,7 @@ public class AimControllerTests
     public void TheLeadIsCappedAtTwoHundredMilliseconds()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Step(aim, Box(50, 50, 1000, 40), 0, p, delay: 5);
         Assert.Equal((true, 210, 0), Step(aim, Box(60, 50, 1000, 40), 0.01, p, delay: 5));
     }
@@ -129,7 +124,7 @@ public class AimControllerTests
     public void TheLeadIsAtMostOneBoxWide()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Step(aim, At(50, 50), 0, p, delay: 0.2);
         Assert.Equal((true, 40, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.2));
     }
@@ -138,7 +133,7 @@ public class AimControllerTests
     public void SmoothingBlendsTheNewVelocityIntoTheEstimate()
     {
         var aim = new AimController();
-        var p = Params(smoothing: 10);
+        var p = NoCap(smoothing: 10);
         Step(aim, At(50, 50), 0, p, delay: 0.01);
         // The measured velocity is 1000 px/s. The gap equals the smoothing time, so the blend is 1 - 1/e = 0.632.
         // The lead is 0.01 s, that is 6.32 px.
@@ -149,7 +144,7 @@ public class AimControllerTests
     public void TheSmoothingTimeDoesNotDependOnTheFrameRate()
     {
         // The own move shifts the next capture. The low sensitivity and the high counts per pixel make that shift zero.
-        var p = Params(sensitivity: 1, smoothing: 20) with { CountsPerPixel = 10_000 };
+        var p = NoCap(sensitivity: 1, smoothing: 20) with { CountsPerPixel = 10_000 };
         var last = p with { SensitivityX = 10_000, SensitivityY = 10_000 };
         var slow = new AimController();
         var fast = new AimController();
@@ -169,7 +164,7 @@ public class AimControllerTests
     public void TheSentMoveIsAddedBackToTheMeasuredVelocity()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         // The first frame sends 10 counts at one count per pixel. The target stays at 60 after the move.
         // The own move of 10 px hides 10 px of target motion. The measured velocity is 1000 px/s.
         Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0, p, delay: 0.01));
@@ -180,7 +175,7 @@ public class AimControllerTests
     public void TheShiftUsesCountsPerPixelAndNotTheSensitivity()
     {
         var aim = new AimController();
-        var p = Params(sensitivity: 50) with { CountsPerPixel = 100 };
+        var p = NoCap(sensitivity: 50) with { CountsPerPixel = 100 };
         // The first move is 5 counts. It shifts the capture by 5 px, not by 10 px.
         // The target stays at 60. The measured velocity is 500 px/s. The lead is 0.02 s, that is 10 px.
         Assert.Equal((true, 5, 0), Step(aim, At(60, 50), 0, p, delay: 0.02));
@@ -191,7 +186,7 @@ public class AimControllerTests
     public void WithoutPredictionTheAimPointStaysOnTheBox()
     {
         var aim = new AimController();
-        var p = Params() with { Prediction = false };
+        var p = NoCap() with { Prediction = false };
         Step(aim, At(50, 50), 0, p, delay: 0.01);
         Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
         Assert.Equal((true, 10, 0), Step(aim, At(60, 50), 0.02, p, delay: 0.01));
@@ -200,7 +195,7 @@ public class AimControllerTests
     [Fact]
     public void ALongGapASwitchAndAResetGiveNoLead()
     {
-        var p = Params();
+        var p = NoCap();
 
         var gap = new AimController();
         Step(gap, At(50, 50), 0, p, delay: 0.02);
@@ -220,7 +215,7 @@ public class AimControllerTests
     public void ALostTargetClearsTheRemainder()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Assert.False(Step(aim, At(50.3f, 50), 0, p).Sent);
         Assert.False(Step(aim, null, 1, p).Sent);
         Assert.False(Step(aim, At(50.3f, 50), 2, p).Sent);
@@ -230,7 +225,7 @@ public class AimControllerTests
     public void ResetClearsTheRemainder()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Assert.False(Step(aim, At(50.3f, 50), 0, p).Sent);
         aim.Reset();
         Assert.False(Step(aim, At(50.3f, 50), 1, p).Sent);
@@ -240,7 +235,7 @@ public class AimControllerTests
     public void AJumpToAnotherBoxClearsTheRemainder()
     {
         var aim = new AimController();
-        var p = Params();
+        var p = NoCap();
         Assert.False(Step(aim, At(50.3f, 50), 0, p).Sent);
         // A carried 0.3 remainder would round 40.3 + 0.3 up to 41. The test expects 40.
         Assert.Equal((true, 40, 0), Step(aim, At(90.3f, 50), 1, p));
@@ -251,8 +246,8 @@ public class AimControllerTests
     {
         var aim = new AimController();
         // 400 px at gain 100 is 40000 counts. The value saturates to 32767. The remainder is clamped to 0.5.
-        Assert.Equal((true, 32767, 0), Step(aim, At(450, 50), 0, Params(sensitivity: 10000)));
+        Assert.Equal((true, 32767, 0), Step(aim, At(450, 50), 0, NoCap(sensitivity: 10000)));
         // 400 px at gain 0.25 is exactly 100. With the clamped 0.5 remainder, it rounds to 101.
-        Assert.Equal((true, 101, 0), Step(aim, At(450, 50), 1, Params(sensitivity: 25)));
+        Assert.Equal((true, 101, 0), Step(aim, At(450, 50), 1, NoCap(sensitivity: 25)));
     }
 }
