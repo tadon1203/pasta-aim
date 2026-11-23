@@ -11,6 +11,9 @@ public interface IFrameSource
     /// </summary>
     CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame);
 
+    /// <summary>Ends the held frame now. The next <see cref="TryAcquire"/> then waits for a new frame.</summary>
+    void ReleaseHeldFrame();
+
     /// <summary>The desktop image of the held frame. It is null before the first frame. It is invalid after the next <see cref="TryAcquire"/>.</summary>
     unsafe ID3D11Texture2D* DesktopTexture { get; }
 }

@@ -145,19 +145,9 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         frame = default;
 
-        if (_frameHeld)
+        if (_frameHeld && !TryReleaseHeldFrame())
         {
-            // The duplicated surface must not outlive its frame. Release the wrappers before ReleaseFrame.
-            DisposeDesktopImage();
-            _frameHeld = false;
-            int release = _duplication->ReleaseFrame();
-            if (release == DxgiAccessLost)
-            {
-                RecreateDuplication();
-                return CaptureStatus.Lost;
-            }
-
-            ComInterop.Check(release, "ReleaseFrame");
+            return CaptureStatus.Lost;
         }
 
         OutduplFrameInfo frameInfo;
@@ -191,7 +181,8 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
         }
 
         ID3D11DeviceContext4* context = _gpu.CaptureContext4;
-        if (_submittedSequence != 0)
+        // A GPU wait on a fence that already passed still costs work in the GPU scheduler. The loop usually waits for the reads first.
+        if (_submittedSequence != 0 && _computeDoneFence12->GetCompletedValue() < _submittedSequence)
         {
             ComInterop.Check(context->Wait(_computeDoneFence11, _submittedSequence), "ID3D11DeviceContext4.Wait");
         }
@@ -206,6 +197,15 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
 
         frame = new CapturedFrame(_sequence, frameInfo.LastPresentTime);
         return CaptureStatus.Ready;
+    }
+
+    public void ReleaseHeldFrame()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_frameHeld)
+        {
+            _ = TryReleaseHeldFrame();
+        }
     }
 
     public void Dispose()
@@ -310,6 +310,28 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
         _duplication = DuplicateOutput();
         _frameHeld = false;
         _layoutValid = false;
+    }
+
+    /// <returns>False when the duplication was lost and created again.</returns>
+    private bool TryReleaseHeldFrame()
+    {
+        if (!_frameHeld)
+        {
+            return true;
+        }
+
+        // The duplicated surface must not outlive its frame. Release the wrappers before ReleaseFrame.
+        DisposeDesktopImage();
+        _frameHeld = false;
+        int release = _duplication->ReleaseFrame();
+        if (release == DxgiAccessLost)
+        {
+            RecreateDuplication();
+            return false;
+        }
+
+        ComInterop.Check(release, "ReleaseFrame");
+        return true;
     }
 
     private void DisposeDesktopImage()

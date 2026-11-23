@@ -45,8 +45,6 @@ internal sealed class MainWindow : Form
     private readonly NumericUpDown _velocitySmoothing = new();
     private readonly NumericUpDown _interpolationPercent = new();
     private readonly CheckBox _interpolationAuto = new();
-    private readonly NumericUpDown _datasetSize = new();
-    private readonly NumericUpDown _datasetRate = new();
     private readonly CheckBox _datasetEnabled = new();
     private readonly Label _status = new();
     private readonly Timer _saveTimer = new();
@@ -136,7 +134,7 @@ internal sealed class MainWindow : Form
         ConfigureNumber(_targetYOffset, 0, AimSettings.MaxTargetYOffset);
         ConfigureNumber(_maxDelta, 0, AimSettings.MaxDeltaLimit);
         ConfigureNumber(_countsPerPixel, AimSettings.MinSensitivity, AimSettings.MaxSensitivity);
-        ConfigureNumber(_velocitySmoothing, 0, AimSettings.MaxVelocitySmoothing);
+        ConfigureNumber(_velocitySmoothing, 0, AimSettings.MaxVelocitySmoothingMs);
         ConfigureNumber(_interpolationPercent, 0, 100);
         _interpolationAuto.Text = "Auto";
         _interpolationAuto.AutoSize = true;
@@ -147,8 +145,6 @@ internal sealed class MainWindow : Form
         _logLevel.DropDownStyle = ComboBoxStyle.DropDownList;
         _logLevel.Items.AddRange([.. Enum.GetValues<LogLevel>().Cast<object>()]);
 
-        ConfigureNumber(_datasetSize, DatasetSettings.MinSize, DatasetSettings.MaxSize);
-        ConfigureNumber(_datasetRate, DatasetSettings.MinRate, DatasetSettings.MaxRate);
         _prediction.Text = "Lead moving targets";
         _prediction.AutoSize = true;
         _datasetEnabled.Text = "Enabled (while hotkey is down)";
@@ -163,13 +159,11 @@ internal sealed class MainWindow : Form
             ("Target Y offset %", _targetYOffset),
             ("Max delta (0 = no cap)", _maxDelta),
             ("Prediction", _prediction),
-            ("Counts per pixel %", _countsPerPixel),
-            ("Velocity smoothing %", _velocitySmoothing),
+            ("Prediction smoothing (ms)", _velocitySmoothing),
+            ("Prediction counts per pixel %", _countsPerPixel),
             ("Interpolation %", interpolation),
             ("Hotkeys", keys),
             ("Dataset", _datasetEnabled),
-            ("Dataset image px", _datasetSize),
-            ("Dataset images/s", _datasetRate),
             ("Log level", _logLevel)));
         _layout.Controls.Add(_status);
         Controls.Add(_layout);
@@ -232,17 +226,14 @@ internal sealed class MainWindow : Form
             _targetYOffset.Value = settings.Aim.TargetYOffset;
             _maxDelta.Value = settings.Aim.MaxDelta;
             _prediction.Checked = settings.Aim.Prediction;
-            _velocitySmoothing.Value = settings.Aim.VelocitySmoothing;
+            _velocitySmoothing.Value = settings.Aim.VelocitySmoothingMs;
             _countsPerPixel.Value = settings.Aim.CountsPerPixel;
             _velocitySmoothing.Enabled = settings.Aim.Prediction;
             _countsPerPixel.Enabled = settings.Aim.Prediction;
             _interpolationAuto.Checked = settings.Mouse.Interpolation.IsAuto;
             _interpolationPercent.Value = settings.Mouse.Interpolation.FixedPercent ?? 0;
             _interpolationPercent.Enabled = !_interpolationAuto.Checked;
-            _datasetSize.Value = settings.Dataset.Size;
-            _datasetRate.Value = settings.Dataset.Rate;
             _datasetEnabled.Checked = settings.Dataset.Enabled;
-            SetDatasetInputsEnabled();
             _logLevel.SelectedItem = settings.Log.Level;
             UpdateKeyButtons();
         }
@@ -278,15 +269,11 @@ internal sealed class MainWindow : Form
     {
         _model.SelectedIndexChanged += (_, _) => SettingChanged();
         _logLevel.SelectedIndexChanged += (_, _) => SettingChanged();
-        _datasetEnabled.CheckedChanged += (_, _) =>
-        {
-            SetDatasetInputsEnabled();
-            SettingChanged();
-        };
+        _datasetEnabled.CheckedChanged += (_, _) => SettingChanged();
         foreach (NumericUpDown input in new[]
         {
             _sensitivityX, _sensitivityY, _confidence, _targetYOffset,
-            _maxDelta, _countsPerPixel, _velocitySmoothing,_interpolationPercent, _datasetSize, _datasetRate,
+            _maxDelta, _countsPerPixel, _velocitySmoothing, _interpolationPercent,
         })
         {
             input.ValueChanged += (_, _) => SettingChanged();
@@ -330,7 +317,7 @@ internal sealed class MainWindow : Form
                 MaxDelta = (int)_maxDelta.Value,
                 Prediction = _prediction.Checked,
                 CountsPerPixel = (int)_countsPerPixel.Value,
-                VelocitySmoothing = (int)_velocitySmoothing.Value,
+                VelocitySmoothingMs = (int)_velocitySmoothing.Value,
             },
             Hotkey = current.Hotkey with { Keys = [.. _hotkeys.Items.Cast<string>()] },
             Mouse = current.Mouse with
@@ -341,8 +328,6 @@ internal sealed class MainWindow : Form
             },
             Dataset = current.Dataset with
             {
-                Size = (int)_datasetSize.Value,
-                Rate = (int)_datasetRate.Value,
                 Enabled = _datasetEnabled.Checked,
             },
             Log = current.Log with
@@ -372,13 +357,6 @@ internal sealed class MainWindow : Form
 
         _saveTimer.Stop();
         _file.Save(ReadSettings());
-    }
-
-    private void SetDatasetInputsEnabled()
-    {
-        bool enabled = _datasetEnabled.Checked;
-        _datasetSize.Enabled = enabled;
-        _datasetRate.Enabled = enabled;
     }
 
     private void UpdateKeyButtons() =>

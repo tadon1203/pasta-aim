@@ -16,7 +16,6 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
     private readonly StagingCopy _copy;
     private readonly SampleQueue _queue;
     private readonly DatasetWriter _dataset;
-    private int _size = DatasetSettings.DefaultSize;
     private string _pendingFileName = string.Empty;
     private bool _disposed;
 
@@ -36,8 +35,6 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
     public void Update(DatasetSettings settings, bool held)
     {
         _state.SetEnabled(held && settings.Enabled);
-        _size = settings.Size;
-        _state.SetRate(settings.Rate);
         if (!_state.Active)
         {
             _copy.DropPending();
@@ -57,7 +54,7 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
 
         try
         {
-            _copy.Copy(desktop, _size);
+            _copy.Copy(desktop);
             _pendingFileName = DatasetWriter.FileNameFor(DateTime.Now);
             _state.MarkRecorded();
         }
@@ -91,7 +88,7 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
 
         try
         {
-            if (!_copy.TryMap(out MappedPixels full, out MappedPixels crop))
+            if (!_copy.TryMap(out MappedPixels original))
             {
                 return;
             }
@@ -99,7 +96,7 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
             bool accepted = false;
             try
             {
-                accepted = _queue.TrySubmit(new Sample(_pendingFileName, crop, full));
+                accepted = _queue.TrySubmit(new Sample(_pendingFileName, original));
             }
             finally
             {
@@ -117,13 +114,11 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
 
     private void Write(Sample sample)
     {
-        BgraImage crop = default;
         BgraImage original = default;
         try
         {
             try
             {
-                crop = sample.Crop.CopyToPooled();
                 original = sample.Original.CopyToPooled();
             }
             finally
@@ -131,15 +126,10 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
                 _copy.MarkCopied();
             }
 
-            _dataset.Write(sample.FileNameWithoutExtension, crop, original);
+            _dataset.Write(sample.FileNameWithoutExtension, original);
         }
         finally
         {
-            if (crop.Pixels is not null)
-            {
-                Release(crop);
-            }
-
             if (original.Pixels is not null)
             {
                 Release(original);

@@ -11,7 +11,7 @@ public sealed class SampleQueueTests
         using ManualResetEventSlim release = new();
         using ManualResetEventSlim started = new();
         using SampleQueue queue = new(_ => { started.Set(); release.Wait(); }, _ => { });
-        Sample sample = new("s", Unmapped(), Unmapped());
+        Sample sample = new("s", Unmapped());
 
         Assert.True(queue.TrySubmit(sample));
         Assert.True(started.Wait(TimeSpan.FromSeconds(5)));

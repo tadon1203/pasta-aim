@@ -106,6 +106,8 @@ public sealed partial class FrameLoop
                 {
                     Log.Debug("hotkey released");
                     _wasHeld = false;
+                    // A frame held through the idle time makes the first frame after the next press old.
+                    _frames.ReleaseHeldFrame();
                 }
 
                 _loopStatus.SetHeld(false);

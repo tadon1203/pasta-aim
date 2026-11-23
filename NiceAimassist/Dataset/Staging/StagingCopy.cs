@@ -2,7 +2,6 @@ using NiceAimassist.Capture;
 using NiceAimassist.Shared.Gpu;
 using Silk.NET.Direct3D11;
 using Silk.NET.DXGI;
-using D3D11Box = Silk.NET.Direct3D11.Box;
 
 namespace NiceAimassist.Dataset.Staging;
 
@@ -14,8 +13,7 @@ internal sealed unsafe class StagingCopy : IDisposable
 
     private readonly GpuDevices _gpu;
     private readonly StagingGate _gate = new();
-    private ID3D11Texture2D* _stagingCrop;
-    private ID3D11Texture2D* _stagingFull;
+    private ID3D11Texture2D* _staging;
 
     public StagingCopy(GpuDevices gpu) => _gpu = gpu;
 
@@ -23,22 +21,18 @@ internal sealed unsafe class StagingCopy : IDisposable
 
     public bool IsPending => _gate.IsPending;
 
-    /// <summary>Copies the centered square of <paramref name="size"/> px and the full desktop into the staging textures.</summary>
-    public void Copy(ID3D11Texture2D* desktop, int size)
+    /// <summary>Copies the full desktop into the staging texture.</summary>
+    public void Copy(ID3D11Texture2D* desktop)
     {
         _gate.BeginCopy();
         try
         {
             Texture2DDesc desc;
             desktop->GetDesc(&desc);
-            (_, _, int side) = CenterCrop.Square((int)desc.Width, (int)desc.Height, size);
-            EnsureStaging(desc, side);
+            EnsureStaging(desc);
 
             ID3D11DeviceContext* context = _gpu.CaptureContext;
-            D3D11Box box = CenterCrop.Box((int)desc.Width, (int)desc.Height, side, side);
-            context->CopySubresourceRegion((ID3D11Resource*)_stagingCrop, 0, 0, 0, 0, (ID3D11Resource*)desktop, 0, &box);
-            // The full copy goes last. When it is readable, the crop copy is readable too.
-            context->CopyResource((ID3D11Resource*)_stagingFull, (ID3D11Resource*)desktop);
+            context->CopyResource((ID3D11Resource*)_staging, (ID3D11Resource*)desktop);
             // Without a flush, a DoNotWait map can report "still drawing" until the driver flushes.
             context->Flush();
         }
@@ -59,48 +53,37 @@ internal sealed unsafe class StagingCopy : IDisposable
     }
 
     /// <summary>
-    /// Maps the full copy without waiting, then maps the crop copy. Returns false while the GPU still draws the full copy.
-    /// The textures stay mapped until <see cref="ReleaseIfCopied"/> or <see cref="CancelMap"/>.
+    /// Maps the copy without waiting. Returns false while the GPU still draws it.
+    /// The texture stays mapped until <see cref="ReleaseIfCopied"/> or <see cref="CancelMap"/>.
     /// </summary>
-    public bool TryMap(out MappedPixels full, out MappedPixels crop)
+    public bool TryMap(out MappedPixels pixels)
     {
-        full = default;
-        crop = default;
+        pixels = default;
         if (!_gate.IsPending)
         {
-            throw new InvalidOperationException("Map the staging textures: no copy is pending");
+            throw new InvalidOperationException("Map the staging texture: no copy is pending");
         }
 
         ID3D11DeviceContext* context = _gpu.CaptureContext;
-        MappedSubresource fullMapped;
-        int result = context->Map((ID3D11Resource*)_stagingFull, 0, Map.Read, DoNotWait, &fullMapped);
+        MappedSubresource mapped;
+        int result = context->Map((ID3D11Resource*)_staging, 0, Map.Read, DoNotWait, &mapped);
         if (result == DxgiWasStillDrawing)
         {
             return false;
         }
 
-        ComInterop.Check(result, "Map the full staging texture");
-        MappedSubresource cropMapped;
-        try
-        {
-            ComInterop.Check(context->Map((ID3D11Resource*)_stagingCrop, 0, Map.Read, 0, &cropMapped), "Map the crop staging texture");
-        }
-        catch
-        {
-            context->Unmap((ID3D11Resource*)_stagingFull, 0);
-            throw;
-        }
-
+        ComInterop.Check(result, "Map the staging texture");
         _gate.Map();
-        full = Describe(_stagingFull, fullMapped);
-        crop = Describe(_stagingCrop, cropMapped);
+        Texture2DDesc desc;
+        _staging->GetDesc(&desc);
+        pixels = new MappedPixels((nint)mapped.PData, (int)mapped.RowPitch, (int)desc.Width, (int)desc.Height);
         return true;
     }
 
     /// <summary>Called on the writer thread after it copied the mapped rows.</summary>
     public void MarkCopied() => _gate.MarkCopied();
 
-    /// <summary>Unmaps the textures once the writer copied them. Does nothing before that.</summary>
+    /// <summary>Unmaps the texture once the writer copied it. Does nothing before that.</summary>
     public void ReleaseIfCopied()
     {
         if (!_gate.IsCopied)
@@ -108,14 +91,14 @@ internal sealed unsafe class StagingCopy : IDisposable
             return;
         }
 
-        UnmapBoth();
+        Unmap();
         _gate.Release();
     }
 
-    /// <summary>Unmaps the textures when the writer never receives the mapped sample.</summary>
+    /// <summary>Unmaps the texture when the writer never receives the mapped sample.</summary>
     public void CancelMap()
     {
-        UnmapBoth();
+        Unmap();
         _gate.CancelMap();
     }
 
@@ -124,81 +107,43 @@ internal sealed unsafe class StagingCopy : IDisposable
     {
         if (_gate.IsMapped)
         {
-            UnmapBoth();
+            Unmap();
         }
 
-        DisposeStaging();
+        ComInterop.Release(ref _staging);
     }
 
-    private static MappedPixels Describe(ID3D11Texture2D* staging, MappedSubresource mapped)
-    {
-        Texture2DDesc desc;
-        staging->GetDesc(&desc);
-        return new MappedPixels((nint)mapped.PData, (int)mapped.RowPitch, (int)desc.Width, (int)desc.Height);
-    }
+    private void Unmap() => _gpu.CaptureContext->Unmap((ID3D11Resource*)_staging, 0);
 
-    private void UnmapBoth()
+    // A failed rebuild keeps the old texture. It still matches the old size.
+    private void EnsureStaging(Texture2DDesc desktop)
     {
-        ID3D11DeviceContext* context = _gpu.CaptureContext;
-        context->Unmap((ID3D11Resource*)_stagingCrop, 0);
-        context->Unmap((ID3D11Resource*)_stagingFull, 0);
-    }
-
-    // A failed rebuild keeps the old textures. They still match the old sizes.
-    private void EnsureStaging(Texture2DDesc desktop, int side)
-    {
-        if (_stagingFull != null && _stagingCrop != null)
+        if (_staging != null)
         {
-            Texture2DDesc full;
-            Texture2DDesc crop;
-            _stagingFull->GetDesc(&full);
-            _stagingCrop->GetDesc(&crop);
-            if (full.Width == desktop.Width && full.Height == desktop.Height && crop.Width == (uint)side)
+            Texture2DDesc current;
+            _staging->GetDesc(&current);
+            if (current.Width == desktop.Width && current.Height == desktop.Height)
             {
                 return;
             }
         }
 
-        ID3D11Texture2D* newFull = CreateStaging(desktop.Width, desktop.Height, desktop.Format);
-        ID3D11Texture2D* newCrop;
-        try
-        {
-            newCrop = CreateStaging((uint)side, (uint)side, desktop.Format);
-        }
-        catch
-        {
-            ComInterop.Release(ref newFull);
-            throw;
-        }
-
-        DisposeStaging();
-        _stagingFull = newFull;
-        _stagingCrop = newCrop;
-    }
-
-    private ID3D11Texture2D* CreateStaging(uint width, uint height, Format format)
-    {
         Texture2DDesc desc = new()
         {
-            Width = width,
-            Height = height,
+            Width = desktop.Width,
+            Height = desktop.Height,
             MipLevels = 1,
             ArraySize = 1,
-            Format = format,
+            Format = desktop.Format,
             SampleDesc = new SampleDesc(1, 0),
             Usage = Usage.Staging,
             BindFlags = 0,
             CPUAccessFlags = (uint)CpuAccessFlag.Read,
             MiscFlags = 0,
         };
-        ID3D11Texture2D* texture;
-        ComInterop.Check(_gpu.CaptureDevice->CreateTexture2D(&desc, null, &texture), "CreateTexture2D (staging)");
-        return texture;
-    }
-
-    private void DisposeStaging()
-    {
-        ComInterop.Release(ref _stagingCrop);
-        ComInterop.Release(ref _stagingFull);
+        ID3D11Texture2D* created;
+        ComInterop.Check(_gpu.CaptureDevice->CreateTexture2D(&desc, null, &created), "CreateTexture2D (staging)");
+        ComInterop.Release(ref _staging);
+        _staging = created;
     }
 }

@@ -8,7 +8,7 @@ public sealed record AimSettings
     public const int MaxSensitivity = 10_000;
     public const int MaxTargetYOffset = 100;
     public const int MaxDeltaLimit = 32_767;
-    public const int MaxVelocitySmoothing = 99;
+    public const int MaxVelocitySmoothingMs = 1000;
 
     [JsonPropertyName("sensitivity_x")]
     public int SensitivityX { get; init; } = 100;
@@ -32,8 +32,9 @@ public sealed record AimSettings
     [JsonPropertyName("prediction")]
     public bool Prediction { get; init; } = true;
 
-    [JsonPropertyName("velocity_smoothing")]
-    public int VelocitySmoothing { get; init; } = 50;
+    /// <summary>Time in milliseconds for the velocity estimate to reach 63% of a step change. 0 means no smoothing.</summary>
+    [JsonPropertyName("velocity_smoothing_ms")]
+    public int VelocitySmoothingMs { get; init; } = 12;
 
     /// <summary>Clamps every value into its range.</summary>
     public AimSettings Clamped() => this with
@@ -43,6 +44,6 @@ public sealed record AimSettings
         TargetYOffset = Math.Clamp(TargetYOffset, 0, MaxTargetYOffset),
         MaxDelta = Math.Clamp(MaxDelta, 0, MaxDeltaLimit),
         CountsPerPixel = Math.Clamp(CountsPerPixel, MinSensitivity, MaxSensitivity),
-        VelocitySmoothing = Math.Clamp(VelocitySmoothing, 0, MaxVelocitySmoothing),
+        VelocitySmoothingMs = Math.Clamp(VelocitySmoothingMs, 0, MaxVelocitySmoothingMs),
     };
 }

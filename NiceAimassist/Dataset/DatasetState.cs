@@ -4,8 +4,9 @@ namespace NiceAimassist.Dataset;
 internal sealed class DatasetState
 {
     private readonly Func<long> _now;
-    private readonly long _ticksPerSecond;
-    private long _interval;
+    private const int IntervalSeconds = 2;
+
+    private readonly long _interval;
     private long _next;
     private volatile bool _active;
     private volatile string? _lastError;
@@ -14,8 +15,7 @@ internal sealed class DatasetState
     public DatasetState(Func<long> now, long ticksPerSecond)
     {
         _now = now;
-        _ticksPerSecond = ticksPerSecond;
-        _interval = ticksPerSecond;
+        _interval = ticksPerSecond * IntervalSeconds;
     }
 
     public bool Active => _active;
@@ -43,8 +43,6 @@ internal sealed class DatasetState
         _next = _now();
         _active = true;
     }
-
-    public void SetRate(int perSecond) => _interval = _ticksPerSecond / Math.Max(1, perSecond);
 
     public void MarkRecorded() =>
         // A stall delays the next image. It never causes a burst.

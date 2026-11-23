@@ -55,4 +55,4 @@ internal sealed class SampleQueue : IDisposable
     }
 }
 
-internal sealed record Sample(string FileNameWithoutExtension, MappedPixels Crop, MappedPixels Original);
+internal sealed record Sample(string FileNameWithoutExtension, MappedPixels Original);

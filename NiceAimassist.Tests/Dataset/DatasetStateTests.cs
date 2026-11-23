@@ -51,11 +51,10 @@ public sealed class DatasetStateTests
     }
 
     [Fact]
-    public void A_stall_delays_the_next_image_without_a_burst()
+    public void An_image_is_due_two_seconds_after_the_last_one_and_a_stall_causes_no_burst()
     {
         long now = 0;
         DatasetState state = new(() => now, ticksPerSecond: 1000);
-        state.SetRate(2);
         state.SetEnabled(true);
 
         Assert.True(state.IsDue);
@@ -67,7 +66,7 @@ public sealed class DatasetStateTests
         state.MarkRecorded();
         Assert.False(state.IsDue);
 
-        now += 499;
+        now += 1_999;
         Assert.False(state.IsDue);
         now += 1;
         Assert.True(state.IsDue);

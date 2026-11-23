@@ -43,12 +43,11 @@ public sealed class AimController
         Vector2 center = new(detection.CenterX, detection.CenterY);
         float gainX = settings.SensitivityX / SensitivityDefault;
         float gainY = settings.SensitivityY / SensitivityDefault;
-        float blend = 1f - settings.VelocitySmoothing / 100f;
 
         Vector2 aimed = center;
         if (settings.Prediction)
         {
-            Vector2 velocity = UpdateVelocity(center, desktopTimestamp, blend);
+            Vector2 velocity = UpdateVelocity(center, desktopTimestamp, settings.VelocitySmoothingMs);
             float lookAhead = MathF.Min(_delay ?? 0f, MaxLookAhead);
             aimed += new Vector2(
                 Math.Clamp(velocity.X * lookAhead, -detection.Width, detection.Width),
@@ -115,13 +114,15 @@ public sealed class AimController
         _shift = Vector2.Zero;
     }
 
-    private Vector2 UpdateVelocity(Vector2 center, long desktopTimestamp, float blend)
+    private Vector2 UpdateVelocity(Vector2 center, long desktopTimestamp, int smoothingMs)
     {
         if (_previous is { } previous)
         {
             double gap = (desktopTimestamp - previous.Desktop) / (double)Stopwatch.Frequency;
             if (gap > 0 && gap <= MaxFrameGap)
             {
+                // The blend depends on the frame gap, so the smoothing time does not depend on the frame rate.
+                float blend = smoothingMs == 0 ? 1f : 1f - MathF.Exp((float)(-gap * 1000.0 / smoothingMs));
                 Vector2 raw = (center - previous.Center + _shift) / (float)gap;
                 _velocity += blend * (raw - _velocity);
             }

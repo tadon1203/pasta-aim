@@ -70,6 +70,19 @@ public class FrameLoopTests
     }
 
     [Fact]
+    public void ReleasingTheKeyEndsTheHeldFrameOnce()
+    {
+        FakeSource source = new();
+        FakeHotkey hotkey = new(true, true, true, false);
+        FrameLoop loop = Start(source, new FakeMouse(), hotkey.IsHeld);
+
+        WaitUntil(() => hotkey.Polls >= 8);
+        loop.Stop();
+
+        Assert.Equal(1, source.ReleaseCount);
+    }
+
+    [Fact]
     public void FrameWithoutTargetSendsNoMove()
     {
         FakeSource source = new();
@@ -226,6 +239,7 @@ public class FrameLoopTests
         private readonly ConcurrentDictionary<ulong, Detection?> _targets = new();
         private ulong _sequence;
         private int _acquireCalls;
+        private int _releaseCount;
 
         public int InputWidth => 640;
 
@@ -235,9 +249,13 @@ public class FrameLoopTests
 
         public int AcquireCalls => Volatile.Read(ref _acquireCalls);
 
+        public int ReleaseCount => Volatile.Read(ref _releaseCount);
+
         public ID3D11Texture2D* DesktopTexture => null;
 
         public void Enqueue(long presentQpc, Detection? target) => _frames.Enqueue((presentQpc, target));
+
+        public void ReleaseHeldFrame() => Interlocked.Increment(ref _releaseCount);
 
         public CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
         {

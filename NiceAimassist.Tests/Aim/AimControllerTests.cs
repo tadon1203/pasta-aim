@@ -26,7 +26,7 @@ public class AimControllerTests
             SensitivityY = sensitivity,
             TargetYOffset = targetYOffset,
             MaxDelta = maxDelta,
-            VelocitySmoothing = smoothing,
+            VelocitySmoothingMs = smoothing,
         };
 
     private static (bool Sent, int X, int Y) Step(AimController aim, Detection? target, double seconds, AimSettings p, double delay = 0)
@@ -50,7 +50,7 @@ public class AimControllerTests
     [Fact]
     public void EachAxisHasItsOwnSensitivity()
     {
-        var p = new AimSettings { SensitivityX = 50, SensitivityY = 200, TargetYOffset = 50, MaxDelta = 0, VelocitySmoothing = 0 };
+        var p = new AimSettings { SensitivityX = 50, SensitivityY = 200, TargetYOffset = 50, MaxDelta = 0, VelocitySmoothingMs = 0 };
         Assert.Equal((true, 5, 40), Single(At(60, 70), p));
     }
 
@@ -138,10 +138,31 @@ public class AimControllerTests
     public void SmoothingBlendsTheNewVelocityIntoTheEstimate()
     {
         var aim = new AimController();
-        var p = Params(smoothing: 50);
+        var p = Params(smoothing: 10);
         Step(aim, At(50, 50), 0, p, delay: 0.01);
-        // The measured velocity is 1000 px/s. Half of it is the new estimate. The lead is 0.01 s.
-        Assert.Equal((true, 15, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
+        // The measured velocity is 1000 px/s. The gap equals the smoothing time, so the blend is 1 - 1/e = 0.632.
+        // The lead is 0.01 s, that is 6.32 px.
+        Assert.Equal((true, 16, 0), Step(aim, At(60, 50), 0.01, p, delay: 0.01));
+    }
+
+    [Fact]
+    public void TheSmoothingTimeDoesNotDependOnTheFrameRate()
+    {
+        // The own move shifts the next capture. The low sensitivity and the high counts per pixel make that shift zero.
+        var p = Params(sensitivity: 1, smoothing: 20) with { CountsPerPixel = 10_000 };
+        var last = p with { SensitivityX = 10_000, SensitivityY = 10_000 };
+        var slow = new AimController();
+        var fast = new AimController();
+        Step(slow, At(50, 50), 0, p, delay: 0.01);
+        Step(fast, At(50, 50), 0, p, delay: 0.01);
+        Step(fast, At(55, 50), 0.005, p, delay: 0.01);
+        Step(fast, At(60, 50), 0.01, p, delay: 0.01);
+        Step(fast, At(65, 50), 0.015, p, delay: 0.01);
+        Step(slow, At(60, 50), 0.01, p, delay: 0.01);
+        var expected = Step(slow, At(70, 50), 0.02, last, delay: 0.01);
+        var actual = Step(fast, At(70, 50), 0.02, last, delay: 0.01);
+        Assert.True(expected.Sent);
+        Assert.InRange(actual.X, expected.X - 5, expected.X + 5);
     }
 
     [Fact]
