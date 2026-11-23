@@ -42,7 +42,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
     public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, Size input, AimResult aim, bool sent)
     {
         _frames++;
-        FrameStages stages = timings.Stages.WithBreakdown(frame.Breakdown);
+        FrameStages stages = timings.Stages with { Breakdown = frame.Breakdown };
         _sum = _sum.Plus(stages);
         _max = _max.MaxWith(stages);
         _topScore = MathF.Max(_topScore, frame.TopScore);
@@ -115,11 +115,11 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publish
                 + $"move={FrameStages.PairMs(avg.Move, max.Move)} "
                 + $"total={FrameStages.PairMs(avg.Total, max.Total)}");
             Log.Debug(
-                $"detect breakdown avg/max ms: submit={FrameStages.PairMs(avg.Submit, max.Submit)} "
-                + $"run={FrameStages.PairMs(avg.Run, max.Run)} "
-                + $"wait={FrameStages.PairMs(avg.Wait, max.Wait)} "
-                + $"decode={FrameStages.PairMs(avg.Decode, max.Decode)} "
-                + $"gpu={FrameStages.PairMs(avg.Gpu, max.Gpu)}");
+                $"detect breakdown avg/max ms: submit={FrameStages.PairMs(avg.Breakdown.Submit, max.Breakdown.Submit)} "
+                + $"run={FrameStages.PairMs(avg.Breakdown.Run, max.Breakdown.Run)} "
+                + $"wait={FrameStages.PairMs(avg.Breakdown.Wait, max.Breakdown.Wait)} "
+                + $"decode={FrameStages.PairMs(avg.Breakdown.Decode, max.Breakdown.Decode)} "
+                + $"gpu={FrameStages.PairMs(avg.Breakdown.Gpu, max.Breakdown.Gpu)}");
         }
 
         Restart();

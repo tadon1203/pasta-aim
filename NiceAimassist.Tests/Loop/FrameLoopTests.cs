@@ -144,14 +144,14 @@ public class FrameLoopTests
     }
 
     [Fact]
-    public void ADueRecorderGetsTheFrameAfterTheMove()
+    public void TheFrameIsRecordedAfterTheMove()
     {
         // The recording must not delay the move.
         ConcurrentQueue<string> events = new();
         FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), Centered);
         FakeMouse mouse = new(events);
-        FakeRecorder recorder = new(events) { IsDue = true };
+        FakeRecorder recorder = new(events);
         FrameLoop loop = Start(source, mouse, () => true, recorder);
 
         TestWait.Until(() => recorder.Recorded >= 1);
@@ -165,7 +165,7 @@ public class FrameLoopTests
     {
         FakeFrameSource source = new();
         source.Enqueue(Stopwatch.GetTimestamp(), null);
-        FakeRecorder recorder = new(new ConcurrentQueue<string>()) { IsDue = true };
+        FakeRecorder recorder = new(new ConcurrentQueue<string>());
         FrameLoop loop = Start(source, new FakeMouse(), () => true, recorder);
 
         TestWait.Until(() => loop.LoopStatus.Frames >= 1);
@@ -175,21 +175,7 @@ public class FrameLoopTests
     }
 
     [Fact]
-    public void ARecorderThatIsNotDueGetsNoFrame()
-    {
-        FakeFrameSource source = new();
-        source.Enqueue(Stopwatch.GetTimestamp(), Centered);
-        FakeRecorder recorder = new(new ConcurrentQueue<string>()) { IsDue = false };
-        FrameLoop loop = Start(source, new FakeMouse(), () => true, recorder);
-
-        TestWait.Until(() => loop.LoopStatus.Frames >= 1);
-        loop.Stop();
-
-        Assert.Equal(0, recorder.Recorded);
-    }
-
-    [Fact]
-    public void TheRecorderIsUpdatedWhileTheKeyIsReleased()
+    public void TheRecorderIsDisabledWhileTheKeyIsReleased()
     {
         FakeRecorder recorder = new(new ConcurrentQueue<string>());
         FrameLoop loop = Start(new FakeFrameSource(), new FakeMouse(), () => false, recorder);
@@ -197,7 +183,7 @@ public class FrameLoopTests
         TestWait.Until(() => recorder.Updates >= 3);
         loop.Stop();
 
-        Assert.False(recorder.LastHeld);
+        Assert.False(recorder.LastEnabled);
     }
 
     private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetRecorder? recorder = null)
@@ -302,28 +288,31 @@ public class FrameLoopTests
     {
         private int _recorded;
         private int _updates;
-        private volatile bool _lastHeld = true;
+        private volatile bool _lastEnabled = true;
 
         public DatasetStatus Status => default;
-
-        public bool IsDue { get; init; }
 
         public int Recorded => Volatile.Read(ref _recorded);
 
         public int Updates => Volatile.Read(ref _updates);
 
-        public bool LastHeld => _lastHeld;
+        public bool LastEnabled => _lastEnabled;
 
-        public void Update(DatasetSettings settings, bool held)
+        public void ApplyEnabled(bool enabled)
         {
-            _lastHeld = held;
+            _lastEnabled = enabled;
             Interlocked.Increment(ref _updates);
         }
 
-        public void Record(IFrameSource frames)
+        public void AdvancePipeline()
+        {
+        }
+
+        public bool TryRecord(IFrameSource frames)
         {
             events.Enqueue("record");
             Interlocked.Increment(ref _recorded);
+            return true;
         }
     }
 

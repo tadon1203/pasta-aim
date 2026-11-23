@@ -24,6 +24,8 @@ internal sealed unsafe class StagingTexture : IDisposable
     /// <summary>Copies the full desktop into the staging texture.</summary>
     public void Copy(ID3D11Texture2D* desktop)
     {
+        // This path uses no fence. The source and the staging texture belong to the capture context,
+        // so one copy runs at a time.
         _gate.BeginCopy();
         try
         {

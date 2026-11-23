@@ -5,7 +5,7 @@ namespace NiceAimassist.Loop.Timing;
 
 /// <summary>
 /// Stage durations in Stopwatch ticks. <paramref name="Total"/> runs from the desktop timestamp to the end of the move.
-/// <paramref name="Submit"/> to <paramref name="Gpu"/> split the detect stage.
+/// <paramref name="Breakdown"/> splits the detect stage.
 /// </summary>
 public readonly record struct FrameStages(
     long Capture,
@@ -13,26 +13,15 @@ public readonly record struct FrameStages(
     long Aim,
     long Move,
     long Total,
-    long Submit = 0,
-    long Run = 0,
-    long Wait = 0,
-    long Decode = 0,
-    long Gpu = 0)
+    DetectTimings Breakdown = default)
 {
-    public FrameStages WithBreakdown(in DetectTimings parts) =>
-        this with { Submit = parts.Submit, Run = parts.Run, Wait = parts.Wait, Decode = parts.Decode, Gpu = parts.Gpu };
-
     public FrameStages Plus(in FrameStages other) => new(
         Capture + other.Capture,
         Detect + other.Detect,
         Aim + other.Aim,
         Move + other.Move,
         Total + other.Total,
-        Submit + other.Submit,
-        Run + other.Run,
-        Wait + other.Wait,
-        Decode + other.Decode,
-        Gpu + other.Gpu);
+        Breakdown.Plus(other.Breakdown));
 
     public FrameStages MaxWith(in FrameStages other) => new(
         Math.Max(Capture, other.Capture),
@@ -40,11 +29,7 @@ public readonly record struct FrameStages(
         Math.Max(Aim, other.Aim),
         Math.Max(Move, other.Move),
         Math.Max(Total, other.Total),
-        Math.Max(Submit, other.Submit),
-        Math.Max(Run, other.Run),
-        Math.Max(Wait, other.Wait),
-        Math.Max(Decode, other.Decode),
-        Math.Max(Gpu, other.Gpu));
+        Breakdown.MaxWith(other.Breakdown));
 
     public FrameStages Divide(long count) => count == 0
         ? default
@@ -54,11 +39,7 @@ public readonly record struct FrameStages(
             Aim / count,
             Move / count,
             Total / count,
-            Submit / count,
-            Run / count,
-            Wait / count,
-            Decode / count,
-            Gpu / count);
+            Breakdown.Divide(count));
 
     /// <summary>The total and each stage in milliseconds. The status line shows these values.</summary>
     public string FormatMs() =>

@@ -19,14 +19,14 @@ public class LoopDiagnosticsTests
     [Fact]
     public void WindowReportsAverageAndMaxPerStage()
     {
-        FrameStages first = new(10, 20, 0, 0, 0, Submit: 4, Gpu: 8);
-        FrameStages second = new(30, 5, 0, 0, 0, Submit: 2, Gpu: 12);
+        FrameStages first = new(10, 20, 0, 0, 0, new DetectTimings(Submit: 4, Gpu: 8));
+        FrameStages second = new(30, 5, 0, 0, 0, new DetectTimings(Submit: 2, Gpu: 12));
 
         FrameStages average = first.Plus(second).Divide(2);
         FrameStages max = first.MaxWith(second);
 
-        Assert.Equal(new FrameStages(20, 12, 0, 0, 0, Submit: 3, Gpu: 10), average);
-        Assert.Equal(new FrameStages(30, 20, 0, 0, 0, Submit: 4, Gpu: 12), max);
+        Assert.Equal(new FrameStages(20, 12, 0, 0, 0, new DetectTimings(Submit: 3, Gpu: 10)), average);
+        Assert.Equal(new FrameStages(30, 20, 0, 0, 0, new DetectTimings(Submit: 4, Gpu: 12)), max);
     }
 
     [Fact]

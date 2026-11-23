@@ -90,6 +90,10 @@ public sealed class AimTracker
         return new AimResult(x != 0 || y != 0 ? AimOutcome.Move : AimOutcome.OnTarget, x, y);
     }
 
+    /// <summary>
+    /// Forgets the target and the measured state. The loop calls it when the hotkey is released, so that
+    /// the move from the last press does not read as target motion.
+    /// </summary>
     public void Reset()
     {
         _last = null;

@@ -100,7 +100,8 @@ public sealed partial class FrameLoop
         {
             AppSettings settings = _currentSettings();
             bool held = _isHeld();
-            _recorder?.Update(settings.Dataset, held);
+            _recorder?.ApplyEnabled(held && settings.Dataset.Enabled);
+            _recorder?.AdvancePipeline();
             if (!held)
             {
                 if (_wasHeld)
@@ -125,6 +126,7 @@ public sealed partial class FrameLoop
             }
 
             _loopStatus.SetHeld(true);
+            // The first value of a changed interpolation needs a serial round trip with a reply timeout of 100 ms.
             _mouse.SetInterpolation(settings.Mouse.Interpolation);
             CaptureOutcome status = _frames.TryAcquire(AcquireTimeoutMs, out CapturedFrame captured);
             if (status == CaptureOutcome.Timeout)
@@ -141,7 +143,12 @@ public sealed partial class FrameLoop
 
             DetectedFrame frame = _detector.Detect(captured, settings.Detect.Confidence / 100f);
             Size input = new(_detector.InputWidth, _detector.InputHeight);
-            AimResult aim = _aim.Update(frame.Target, frame.DesktopTimestamp, _now(), input, settings.Aim);
+            AimResult aim = _aim.Update(
+                target: frame.Target,
+                desktopTimestamp: frame.DesktopTimestamp,
+                nowTimestamp: _now(),
+                input: input,
+                settings: settings.Aim);
             long aimedAt = _now();
             // Read the flag after the aim. A stop during the frame then suppresses its move.
             bool sent = aim.Outcome == AimOutcome.Move && _running;
@@ -156,9 +163,9 @@ public sealed partial class FrameLoop
             _diagnostics.RecordFrame(frame, timings, input, aim, sent);
 
             // The recording comes last. It must not delay the move. The frame stays held until the next acquire.
-            if (frame.Target is not null && _recorder is { IsDue: true })
+            if (frame.Target is not null)
             {
-                _recorder.Record(_frames);
+                _recorder?.TryRecord(_frames);
             }
         }
     }

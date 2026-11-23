@@ -8,15 +8,18 @@ public interface IDatasetRecorder
     /// <summary>The recording state. Any thread can read it.</summary>
     DatasetStatus Status { get; }
 
-    /// <summary>True when the next frame should be passed to <see cref="Dataset"/>.</summary>
-    bool IsDue { get; }
+    /// <summary>Starts or stops the recording. The loop calls it on every pass.</summary>
+    void ApplyEnabled(bool enabled);
 
     /// <summary>
-    /// Applies the settings and the hotkey state. Then unmaps the textures the writer copied, and maps a finished GPU copy
-    /// for the writer thread. Never waits for the GPU. The loop calls it on every pass.
+    /// Unmaps the textures the writer copied, and maps a finished GPU copy for the writer thread.
+    /// Never waits for the GPU. The loop calls it on every pass.
     /// </summary>
-    void Update(DatasetSettings settings, bool held);
+    void AdvancePipeline();
 
-    /// <summary>Queues the copies of the held desktop frame. The frame must stay held until this method returns.</summary>
-    void Record(IFrameSource frames);
+    /// <summary>
+    /// Queues a copy of the held desktop frame when a sample is due. Returns false when the copy does not start.
+    /// The frame must stay held until this method returns.
+    /// </summary>
+    bool TryRecord(IFrameSource frames);
 }

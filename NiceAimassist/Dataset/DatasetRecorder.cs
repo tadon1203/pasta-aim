@@ -28,28 +28,34 @@ public sealed unsafe class DatasetRecorder : IDatasetRecorder, IDisposable
     }
 
     // While the staging textures are mapped, a new GPU copy would write memory that the writer still reads.
-    public bool IsDue => _state.IsDue && _copy.CanCopy;
-
     public DatasetStatus Status => new(_state.Active, _queue.Saved, _state.LastError);
 
-    public void Update(DatasetSettings settings, bool held)
+    public void ApplyEnabled(bool enabled)
     {
-        _state.SetEnabled(held && settings.Enabled);
+        _state.SetEnabled(enabled);
         if (!_state.Active)
         {
             _copy.DropPending();
         }
+    }
 
+    public void AdvancePipeline()
+    {
         _copy.ReleaseIfCopied();
         SubmitReadySample();
     }
 
-    public void Record(IFrameSource frames)
+    public bool TryRecord(IFrameSource frames)
     {
+        if (!_state.IsDue || !_copy.CanCopy)
+        {
+            return false;
+        }
+
         var desktop = frames.DesktopTexture;
         if (desktop == null)
         {
-            return;
+            return false;
         }
 
         try
@@ -57,10 +63,12 @@ public sealed unsafe class DatasetRecorder : IDatasetRecorder, IDisposable
             _copy.Copy(desktop);
             _pendingFileName = JpegWriter.FileNameFor(DateTime.Now);
             _state.MarkRecorded();
+            return true;
         }
         catch (Exception error)
         {
             _state.Fail(error.Message);
+            return false;
         }
     }
 
