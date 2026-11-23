@@ -10,8 +10,7 @@ using NiceAimassist.Mouse;
 
 namespace NiceAimassist.Loop;
 
-/// <summary>Runs the aim loop on one dedicated thread.</summary>
-public sealed partial class FrameLoop
+public sealed class FrameLoop
 {
     private const int IdleSleepMs = 1;
     private const int AcquireTimeoutMs = 100;
@@ -31,26 +30,17 @@ public sealed partial class FrameLoop
     private volatile bool _running;
     private Thread? _thread;
 
-    /// <param name="now">Source of the Stopwatch timestamps. Usually <c>Stopwatch.GetTimestamp</c>.</param>
-    /// <param name="onFault">Called on the loop thread when the frame source, the detector, or the mouse throws. The loop ends after the call.</param>
-    public FrameLoop(
-        IFrameSource frames,
-        IDetector detector,
-        IMouse mouse,
-        Func<bool> isHeld,
-        Func<AppSettings> currentSettings,
-        Func<long> now,
-        Action<Exception> onFault,
-        IDatasetRecorder? recorder = null)
+    public FrameLoop(LoopDependencies dependencies)
     {
-        _recorder = recorder;
-        _frames = frames ?? throw new ArgumentNullException(nameof(frames));
-        _detector = detector ?? throw new ArgumentNullException(nameof(detector));
-        _mouse = mouse ?? throw new ArgumentNullException(nameof(mouse));
-        _isHeld = isHeld ?? throw new ArgumentNullException(nameof(isHeld));
-        _currentSettings = currentSettings ?? throw new ArgumentNullException(nameof(currentSettings));
-        _now = now ?? throw new ArgumentNullException(nameof(now));
-        _onFault = onFault ?? throw new ArgumentNullException(nameof(onFault));
+        ArgumentNullException.ThrowIfNull(dependencies);
+        _recorder = dependencies.Recorder;
+        _frames = dependencies.Frames ?? throw new ArgumentNullException("dependencies.Frames");
+        _detector = dependencies.Detector ?? throw new ArgumentNullException("dependencies.Detector");
+        _mouse = dependencies.Mouse ?? throw new ArgumentNullException("dependencies.Mouse");
+        _isHeld = dependencies.IsHeld ?? throw new ArgumentNullException("dependencies.IsHeld");
+        _currentSettings = dependencies.CurrentSettings ?? throw new ArgumentNullException("dependencies.CurrentSettings");
+        _now = dependencies.Now ?? throw new ArgumentNullException("dependencies.Now");
+        _onFault = dependencies.OnFault ?? throw new ArgumentNullException("dependencies.OnFault");
         _diagnostics = new LoopDiagnostics(_now, _loopStatus.SetLatency);
     }
 

@@ -58,24 +58,24 @@ public class ModelContractTests
     [Fact]
     public void AbsentMetadataIsAccepted()
     {
-        ModelContract.ValidateMetadata(null, null, null);
+        ModelContract.ValidateMetadata(new ModelMetadata(null, null, null));
     }
 
     [Fact]
     public void DynamicMetadataIsRejected()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            ModelContract.ValidateMetadata(" True ", null, null));
+            ModelContract.ValidateMetadata(new ModelMetadata(" True ", null, null)));
     }
 
     [Fact]
     public void NonEndToEndMetadataIsRejectedUnlessNmsIsEmbedded()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            ModelContract.ValidateMetadata("False", "False", null));
+            ModelContract.ValidateMetadata(new ModelMetadata("False", "False", null)));
         Assert.Throws<InvalidOperationException>(() =>
-            ModelContract.ValidateMetadata("False", "False", "False"));
+            ModelContract.ValidateMetadata(new ModelMetadata("False", "False", "False")));
 
-        ModelContract.ValidateMetadata("False", "False", "true");
+        ModelContract.ValidateMetadata(new ModelMetadata("False", "False", "true"));
     }
 }

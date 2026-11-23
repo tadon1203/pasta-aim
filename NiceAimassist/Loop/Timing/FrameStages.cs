@@ -41,7 +41,6 @@ public readonly record struct FrameStages(
             Total / count,
             Breakdown.Divide(count));
 
-    /// <summary>The total and each stage in milliseconds. The status line shows these values.</summary>
     public string FormatMs() =>
         $"{ToMs(Total):F2} ms (capture {ToMs(Capture):F2}, detect {ToMs(Detect):F2}, "
         + $"aim {ToMs(Aim):F2}, move {ToMs(Move):F2})";

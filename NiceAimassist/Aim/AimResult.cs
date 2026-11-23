@@ -2,7 +2,6 @@ namespace NiceAimassist.Aim;
 
 public enum AimOutcome
 {
-    /// <summary>There is no target.</summary>
     NoTarget,
 
     /// <summary>There is a target. The rounded movement is (0, 0).</summary>

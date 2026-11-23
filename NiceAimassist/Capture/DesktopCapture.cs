@@ -180,7 +180,7 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
             ValidateLayout(_desktopTexture);
         }
 
-        ID3D11DeviceContext4* context = _gpu.CaptureContext4;
+        ID3D11DeviceContext4* context = _gpu.CaptureContext;
         // A GPU wait on a fence that already passed still costs work in the GPU scheduler. The loop usually waits for the reads first.
         if (_submittedSequence != 0 && _computeDoneFence12->GetCompletedValue() < _submittedSequence)
         {

@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 
 namespace NiceAimassist.Dataset.Storage;
 
-/// <summary>Writes one full-display image as a JPEG file.</summary>
 internal sealed class JpegWriter
 {
     public const int JpegQuality = 95;

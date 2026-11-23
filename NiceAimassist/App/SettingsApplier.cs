@@ -4,7 +4,6 @@ using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.App;
 
-/// <summary>Applies the settings that act outside the loop, such as the log level and the hotkeys, when the settings change.</summary>
 internal static class SettingsApplier
 {
     public static IDisposable Subscribe(SettingsStore file, HotkeySet hotkeys)

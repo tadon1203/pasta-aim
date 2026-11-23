@@ -37,18 +37,15 @@ internal sealed unsafe class OnnxSession : IDisposable
         {
             _env = OrtApi.CreateEnv("NiceAimassist");
             _dmlDevice = DirectMl.CreateDevice(gpu.Device);
-            if (TryCreateSession(modelPath, directMlOnly: true, out _session, out string failure))
+            try
             {
+                _session = CreateSession(modelPath, directMlOnly: true);
                 Log.Info("every model node runs on DirectML; graph capture is requested");
             }
-            else
+            catch (InvalidOperationException error)
             {
-                Log.Warn($"the model did not load with DirectML only; graph capture is off: {failure}");
-                TryCreateSession(modelPath, directMlOnly: false, out _session, out failure);
-                if (_session == 0)
-                {
-                    throw new InvalidOperationException($"the model did not load: {failure}");
-                }
+                Log.Warn($"the model did not load with DirectML only; graph capture is off: {error.Message}");
+                _session = CreateSession(modelPath, directMlOnly: false);
             }
 
             TensorIo input = OrtApi.GetTensorIo(_session, input: true, 0);
@@ -60,10 +57,10 @@ internal sealed unsafe class OnnxSession : IDisposable
 
             Input = ModelContract.ParseInput(input.Dims, input.ElementType);
             Output = ModelContract.ParseOutput(output.Dims, output.ElementType);
-            ModelContract.ValidateMetadata(
-                OrtApi.GetCustomMetadata(_session, "dynamic"),
-                OrtApi.GetCustomMetadata(_session, "end2end"),
-                OrtApi.GetCustomMetadata(_session, "nms"));
+            ModelContract.ValidateMetadata(new ModelMetadata(
+                Dynamic: OrtApi.GetCustomMetadata(_session, "dynamic"),
+                EndToEnd: OrtApi.GetCustomMetadata(_session, "end2end"),
+                Nms: OrtApi.GetCustomMetadata(_session, "nms")));
 
             long[] inputShape = [1, 3, Input.Height, Input.Width];
             long[] outputShape = [1, Output.Rows, ModelContract.OutputColumns];
@@ -140,7 +137,7 @@ internal sealed unsafe class OnnxSession : IDisposable
     }
 
     // Only the session creation can fail on the model. A failure of the option calls is a fault of the app, so it throws.
-    private bool TryCreateSession(string modelPath, bool directMlOnly, out nint session, out string failure)
+    private nint CreateSession(string modelPath, bool directMlOnly)
     {
         nint options = OrtApi.CreateSessionOptions();
         try
@@ -157,18 +154,7 @@ internal sealed unsafe class OnnxSession : IDisposable
             }
 
             OrtApi.AppendDirectMl1(options, (nint)_dmlDevice, (nint)_gpu.ComputeQueue);
-            try
-            {
-                session = OrtApi.CreateSession(_env, modelPath, options);
-                failure = string.Empty;
-                return true;
-            }
-            catch (InvalidOperationException error)
-            {
-                session = 0;
-                failure = error.Message;
-                return false;
-            }
+            return OrtApi.CreateSession(_env, modelPath, options);
         }
         finally
         {

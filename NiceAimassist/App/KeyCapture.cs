@@ -4,7 +4,6 @@ using Timer = System.Windows.Forms.Timer;
 
 namespace NiceAimassist.App;
 
-/// <summary>Shows the hotkeys and captures one key from the keyboard or the controller.</summary>
 internal sealed class KeyCapture : IDisposable
 {
     private const int PollMs = 15;

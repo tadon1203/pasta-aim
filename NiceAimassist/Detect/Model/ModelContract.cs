@@ -60,15 +60,15 @@ internal static class ModelContract
         return new ModelOutput((int)dims[1], PrecisionOf(elementType, "output"));
     }
 
-    internal static void ValidateMetadata(string? dynamic, string? end2end, string? nms)
+    internal static void ValidateMetadata(ModelMetadata metadata)
     {
-        if (ParseFlag(dynamic) == true)
+        if (!metadata.IsStatic)
         {
             throw new InvalidOperationException(
                 "The model was exported with dynamic shapes (metadata dynamic=True). Export it static.");
         }
 
-        if (ParseFlag(end2end) == false && ParseFlag(nms) != true)
+        if (!metadata.HasEmbeddedNms)
         {
             throw new InvalidOperationException(
                 "The model is not end-to-end (metadata end2end=False). Export it with NMS embedded.");
@@ -83,8 +83,17 @@ internal static class ModelContract
             $"Unsupported model {role} element type {elementType}; expected FP16 or FP32."),
     };
 
+    private static string Format(ReadOnlySpan<long> dims) => string.Join(", ", dims.ToArray());
+}
+
+/// <summary>The optional model metadata. A missing value means that the export did not set it.</summary>
+internal readonly record struct ModelMetadata(string? Dynamic, string? EndToEnd, string? Nms)
+{
+    public bool IsStatic => ParseFlag(Dynamic) != true;
+
+    // end2end=False is acceptable only when nms=True.
+    public bool HasEmbeddedNms => ParseFlag(EndToEnd) != false || ParseFlag(Nms) == true;
+
     private static bool? ParseFlag(string? value) =>
         value is null ? null : value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
-
-    private static string Format(ReadOnlySpan<long> dims) => string.Join(", ", dims.ToArray());
 }

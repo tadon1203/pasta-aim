@@ -104,13 +104,32 @@ public sealed unsafe class GpuDevices : IDisposable
         }
     }
 
-    internal ID3D11Device* CaptureDevice => _captureDevice;
+    internal ID3D11Device* CaptureDevice
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _captureDevice;
+        }
+    }
 
-    internal ID3D11DeviceContext4* CaptureContext4 => _captureContext;
+    internal ID3D11DeviceContext4* CaptureContext
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _captureContext;
+        }
+    }
 
-    internal ID3D11DeviceContext* CaptureContext => (ID3D11DeviceContext*)_captureContext;
-
-    internal IDXGIOutput1* Output => _output;
+    internal IDXGIOutput1* Output
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _output;
+        }
+    }
 
     public void WaitIdle()
     {

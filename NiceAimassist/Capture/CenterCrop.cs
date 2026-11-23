@@ -2,9 +2,9 @@ using D3D11Box = Silk.NET.Direct3D11.Box;
 
 namespace NiceAimassist.Capture;
 
-public static class CenterCrop
+internal static class CenterCrop
 {
-    public static (int Left, int Top) Origin(int desktopWidth, int desktopHeight, int inputWidth, int inputHeight)
+    internal static (int Left, int Top) Origin(int desktopWidth, int desktopHeight, int inputWidth, int inputHeight)
     {
         if (inputWidth > desktopWidth || inputHeight > desktopHeight)
         {

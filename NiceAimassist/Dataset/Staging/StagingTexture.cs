@@ -12,10 +12,15 @@ internal sealed unsafe class StagingTexture : IDisposable
     private const int DxgiWasStillDrawing = unchecked((int)0x887A000A);
 
     private readonly GpuDevices _gpu;
+    private readonly ID3D11DeviceContext* _context;
     private readonly StagingGate _gate = new();
     private ID3D11Texture2D* _staging;
 
-    public StagingTexture(GpuDevices gpu) => _gpu = gpu;
+    public StagingTexture(GpuDevices gpu)
+    {
+        _gpu = gpu;
+        _context = (ID3D11DeviceContext*)gpu.CaptureContext;
+    }
 
     public bool CanCopy => _gate.CanCopy;
 
@@ -33,7 +38,7 @@ internal sealed unsafe class StagingTexture : IDisposable
             desktop->GetDesc(&desc);
             EnsureStaging(desc);
 
-            ID3D11DeviceContext* context = _gpu.CaptureContext;
+            ID3D11DeviceContext* context = _context;
             context->CopyResource((ID3D11Resource*)_staging, (ID3D11Resource*)desktop);
             // Without a flush, a DoNotWait map can report "still drawing" until the driver flushes.
             context->Flush();
@@ -66,7 +71,7 @@ internal sealed unsafe class StagingTexture : IDisposable
             throw new InvalidOperationException("Map the staging texture: no copy is pending");
         }
 
-        ID3D11DeviceContext* context = _gpu.CaptureContext;
+        ID3D11DeviceContext* context = _context;
         MappedSubresource mapped;
         int result = context->Map((ID3D11Resource*)_staging, 0, Map.Read, DoNotWait, &mapped);
         if (result == DxgiWasStillDrawing)
@@ -115,7 +120,7 @@ internal sealed unsafe class StagingTexture : IDisposable
         ComInterop.Release(ref _staging);
     }
 
-    private void Unmap() => _gpu.CaptureContext->Unmap((ID3D11Resource*)_staging, 0);
+    private void Unmap() => _context->Unmap((ID3D11Resource*)_staging, 0);
 
     // A failed rebuild keeps the old texture. It still matches the old size.
     private void EnsureStaging(Texture2DDesc desktop)

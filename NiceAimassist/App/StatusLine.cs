@@ -7,7 +7,6 @@ using Timer = System.Windows.Forms.Timer;
 
 namespace NiceAimassist.App;
 
-/// <summary>Writes the frame rate, the latency, and the recording state to one label once per second.</summary>
 internal sealed class StatusLine : IDisposable
 {
     private const int IntervalMs = 1000;

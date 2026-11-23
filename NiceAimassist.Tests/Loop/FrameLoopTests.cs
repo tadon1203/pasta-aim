@@ -101,7 +101,7 @@ public class FrameLoopTests
         FakeFrameSource source = new();
         FakeMouse mouse = new();
         Holder<AppSettings> settings = new(Snapshot(Interpolation.Percent(30)));
-        FrameLoop loop = new(source, new FakeDetector(source), mouse, () => true, () => settings.Value, Stopwatch.GetTimestamp, _ => { });
+        FrameLoop loop = NewLoop(source, mouse, () => true, () => settings.Value);
         loop.Start();
 
         source.Enqueue(Stopwatch.GetTimestamp(), null);
@@ -120,7 +120,7 @@ public class FrameLoopTests
     {
         FakeFrameSource source = new() { Fault = new InvalidOperationException("device lost") };
         ConcurrentQueue<Exception> faults = new();
-        FrameLoop loop = new(source, new FakeDetector(source), new FakeMouse(), () => true, Snapshot, Stopwatch.GetTimestamp, faults.Enqueue);
+        FrameLoop loop = NewLoop(source, new FakeMouse(), () => true, Snapshot, faults.Enqueue);
         loop.Start();
 
         TestWait.Until(() => faults.Count >= 1);
@@ -188,10 +188,27 @@ public class FrameLoopTests
 
     private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetRecorder? recorder = null)
     {
-        FrameLoop loop = new(source, new FakeDetector(source), mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { }, recorder);
+        FrameLoop loop = NewLoop(source, mouse, isHeld, Snapshot, recorder: recorder);
         loop.Start();
         return loop;
     }
+
+    private static FrameLoop NewLoop(
+        FakeFrameSource source,
+        IMouse mouse,
+        Func<bool> isHeld,
+        Func<AppSettings> settings,
+        Action<Exception>? onFault = null,
+        IDatasetRecorder? recorder = null) =>
+        new(new LoopDependencies(
+            Frames: source,
+            Detector: new FakeDetector(source),
+            Mouse: mouse,
+            IsHeld: isHeld,
+            CurrentSettings: settings,
+            Now: Stopwatch.GetTimestamp,
+            OnFault: onFault ?? (_ => { }),
+            Recorder: recorder));
 
     private static AppSettings Snapshot() => Snapshot(Interpolation.Auto);
 

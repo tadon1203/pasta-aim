@@ -46,15 +46,15 @@ internal sealed class Pipeline : IDisposable
             Log.Info($"model {Path.GetFileName(modelPath)}");
             _device = MakcuDevice.Connect();
             Log.Info($"MAKCU on {_device.PortName} at {_device.BaudRate} baud");
-            _loop = new FrameLoop(
-                _frames,
-                _detector,
-                _device,
-                hotkey.IsHeld,
-                () => file.Current,
-                Stopwatch.GetTimestamp,
-                onFault,
-                _recorder);
+            _loop = new FrameLoop(new LoopDependencies(
+                Frames: _frames,
+                Detector: _detector,
+                Mouse: _device,
+                IsHeld: hotkey.IsHeld,
+                CurrentSettings: () => file.Current,
+                Now: Stopwatch.GetTimestamp,
+                OnFault: onFault,
+                Recorder: _recorder));
         }
         catch
         {
