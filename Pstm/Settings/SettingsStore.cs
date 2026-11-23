@@ -13,7 +13,6 @@ public sealed class SettingsStore : IDisposable
     private readonly string _path;
     private readonly object _gate = new();
     private readonly Timer _timer;
-    private readonly AppSettings _startup;
     private volatile string _text;
     private AppSettings _current;
     private bool _disposed;
@@ -28,7 +27,6 @@ public sealed class SettingsStore : IDisposable
         _path = Path.GetFullPath(path);
         _text = ReadOrCreate();
         _current = ParseOrDefaults(_text);
-        _startup = _current;
         _timer = new Timer(_ => Refresh(), null, pollMilliseconds, pollMilliseconds);
     }
 
@@ -147,7 +145,6 @@ public sealed class SettingsStore : IDisposable
             return false;
         }
 
-        AppSettings previous;
         lock (_gate)
         {
             if (_disposed || text == _text)
@@ -155,14 +152,8 @@ public sealed class SettingsStore : IDisposable
                 return false;
             }
 
-            previous = _current;
             _text = text;
             Volatile.Write(ref _current, updated);
-        }
-
-        if (RestartValuesDiffer(previous, updated) && RestartValuesDiffer(_startup, updated))
-        {
-            Log.Warn("model and display take effect after a restart");
         }
 
         Changed?.Invoke(updated);
@@ -180,7 +171,4 @@ public sealed class SettingsStore : IDisposable
             }
         }
     }
-
-    private static bool RestartValuesDiffer(AppSettings first, AppSettings second) =>
-        first.Detect.Model != second.Detect.Model || first.Display != second.Display;
 }

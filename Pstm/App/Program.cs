@@ -42,7 +42,7 @@ internal static class Program
     private static int Run()
     {
         using SettingsStore file = new(SettingsStore.DefaultPath);
-        AppSettings startup = file.Current;
+        AppSettings startup = SelectStartupModel(file);
         Log.Level = startup.Log.Level;
         Log.Info($"log level {startup.Log.Level}; file {Log.FilePath ?? "(none)"}");
         HotkeySet hotkey = new(startup.Hotkey.Keys);
@@ -54,7 +54,7 @@ internal static class Program
 
         ManualResetEventSlim stopped = new();
         Exception? fault = null;
-        using IDisposable applier = SettingsApplier.Subscribe(file, hotkey);
+        using IDisposable applier = SettingsApplier.Subscribe(file, hotkey, startup);
         using Pipeline pipeline = new(
             file,
             startup,
@@ -82,5 +82,22 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    // The settings window and the next start read the file, so the model name that the app uses is written back.
+    private static AppSettings SelectStartupModel(SettingsStore file)
+    {
+        AppSettings settings = file.Current;
+        if (settings.Detect.Model is not null)
+        {
+            return settings;
+        }
+
+        settings = settings with
+        {
+            Detect = settings.Detect with { Model = ModelFolder.FirstModelName() },
+        };
+        file.Save(settings);
+        return settings;
     }
 }
