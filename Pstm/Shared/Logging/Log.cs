@@ -18,7 +18,7 @@ public static class Log
 
     public static bool IsEnabled(LogLevel level) => level <= _level;
 
-    /// <summary>Starts writing every enabled message to a new file in <paramref name="directory"/>. Old files beyond the last few are deleted. If a failure occurs, the console is the only sink.</summary>
+    /// <summary>Starts writing every enabled message to a new file in <paramref name="directory"/>. Old files beyond the last few are deleted. If a failure occurs, no file is written.</summary>
     public static void OpenFile(string directory)
     {
         try
@@ -61,20 +61,6 @@ public static class Log
         }
 
         _file?.Write($"{DateTime.Now:HH:mm:ss.fff} {level.ToString().ToUpperInvariant(),-5} [{Thread.CurrentThread.Name ?? "t" + Environment.CurrentManagedThreadId}] {message}");
-
-        // Console writes block on a slow terminal. Therefore, only the quiet levels reach the console.
-        switch (level)
-        {
-            case LogLevel.Error:
-                Console.Error.WriteLine($"error: {message}");
-                break;
-            case LogLevel.Warn:
-                Console.Error.WriteLine($"warn: {message}");
-                break;
-            case LogLevel.Info:
-                Console.WriteLine(message);
-                break;
-        }
     }
 
     private static void Prune(string directory)
