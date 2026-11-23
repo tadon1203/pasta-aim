@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 namespace NiceAimassist.Dataset.Storage;
 
 /// <summary>Writes one full-display image as a JPEG file.</summary>
-internal sealed class DatasetWriter
+internal sealed class JpegWriter
 {
     public const int JpegQuality = 95;
 
@@ -13,7 +13,7 @@ internal sealed class DatasetWriter
 
     private readonly string _directory;
 
-    public DatasetWriter(string root) => _directory = Path.Combine(root, "original");
+    public JpegWriter(string root) => _directory = Path.Combine(root, "original");
 
     public static string FileNameFor(DateTime local) => local.ToString("yyyyMMdd-HHmmss-fff");
 

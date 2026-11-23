@@ -7,7 +7,7 @@ namespace NiceAimassist.Settings;
 /// Reads the settings file. Re-reads it whenever it changes.
 /// Readers take <see cref="Current"/> without a lock. A gate serializes the changes.
 /// </summary>
-public sealed class SettingsFile : IDisposable
+public sealed class SettingsStore : IDisposable
 {
     private readonly string _path;
     private readonly TimeSpan _debounce;
@@ -23,7 +23,7 @@ public sealed class SettingsFile : IDisposable
     /// A file that cannot be parsed gives the defaults. The file stays unchanged.
     /// </summary>
     /// <param name="debounceMilliseconds">Delay after the last file event before the file is re-read.</param>
-    public SettingsFile(string path, int debounceMilliseconds = 200)
+    public SettingsStore(string path, int debounceMilliseconds = 200)
     {
         _path = Path.GetFullPath(path);
         _debounce = TimeSpan.FromMilliseconds(debounceMilliseconds);

@@ -5,7 +5,7 @@ using NiceAimassist.Detect;
 
 namespace NiceAimassist.Aim;
 
-public sealed class AimController
+public sealed class AimTracker
 {
     private const float MinIoU = 0.3f;
     private const float DelaySmoothing = 0.2f;
@@ -37,7 +37,7 @@ public sealed class AimController
         _last = target;
         if (target is not { } detection)
         {
-            return new AimResult(AimStatus.NoTarget, 0, 0);
+            return new AimResult(AimOutcome.NoTarget, 0, 0);
         }
 
         Vector2 center = new(detection.CenterX, detection.CenterY);
@@ -87,7 +87,7 @@ public sealed class AimController
         // The next velocity adds this shift back.
         _shift = new Vector2(x, y) * (SensitivityDefault / settings.CountsPerPixel);
 
-        return new AimResult(x != 0 || y != 0 ? AimStatus.Move : AimStatus.OnTarget, x, y);
+        return new AimResult(x != 0 || y != 0 ? AimOutcome.Move : AimOutcome.OnTarget, x, y);
     }
 
     public void Reset()

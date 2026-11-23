@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace NiceAimassist.Hotkey;
 
 /// A keyboard key or mouse button. The aim is enabled while it is held.
-public readonly partial struct KeyInput
+public readonly partial struct Key
 {
     private static readonly (string Name, int Code)[] Table =
     [
@@ -52,7 +52,7 @@ public readonly partial struct KeyInput
 
     private readonly int _padMask;
 
-    private KeyInput(int virtualKey, int padMask)
+    private Key(int virtualKey, int padMask)
     {
         VirtualKey = virtualKey;
         _padMask = padMask;
@@ -64,11 +64,11 @@ public readonly partial struct KeyInput
     /// Parses a key name. The case is ignored. A controller input starts with `xinput:` and a slug,
     /// such as `xinput:a` or `xinput:lt`. A bare letter or digit, such as `A` or `1`, is the same
     /// key as `KeyA` or `Digit1`.
-    public static bool TryParse(string name, out KeyInput key)
+    public static bool TryParse(string name, out Key key)
     {
         if (PadMasks.TryGetValue(name, out var mask))
         {
-            key = new KeyInput(0, mask);
+            key = new Key(0, mask);
             return true;
         }
 
@@ -77,7 +77,7 @@ public readonly partial struct KeyInput
             : name;
         if (Codes.TryGetValue(alias, out var code))
         {
-            key = new KeyInput(code, 0);
+            key = new Key(code, 0);
             return true;
         }
 

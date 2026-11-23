@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime;
 using System.Windows.Forms;
 using NiceAimassist.Dataset;
@@ -42,7 +42,7 @@ internal static class Program
 
     private static int Run()
     {
-        SettingsFile file = new(SettingsFile.DefaultPath);
+        SettingsStore file = new(SettingsStore.DefaultPath);
         GpuDevices? gpu = null;
         OnnxSession? session = null;
         DesktopCapture? frames = null;
@@ -77,7 +77,7 @@ internal static class Program
 
             ManualResetEventSlim stopped = new();
             Exception? fault = null;
-            LiveSettings.Attach(file, hotkey);
+            SettingsApplier.Attach(file, hotkey);
             loop = new FrameLoop(
                 frames,
                 detector,
@@ -103,7 +103,7 @@ internal static class Program
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (MainWindow form = new(file, loop.LoopStatus, recorder, stopped, ModelFolder.Location))
+            using (SettingsWindow form = new(file, loop.LoopStatus, recorder, stopped, ModelFolder.Location))
             {
                 Application.Run(form);
             }

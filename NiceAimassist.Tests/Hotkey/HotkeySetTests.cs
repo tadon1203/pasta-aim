@@ -4,9 +4,9 @@ namespace NiceAimassist.Tests.Hotkey;
 
 public sealed class HotkeySetTests
 {
-    private static KeyInput Key(string name)
+    private static Key ParseKey(string name)
     {
-        Assert.True(KeyInput.TryParse(name, out KeyInput key));
+        Assert.True(Key.TryParse(name, out Key key));
         return key;
     }
 
@@ -25,7 +25,7 @@ public sealed class HotkeySetTests
 
         set.Update(["NoSuchKey", "F9"]);
 
-        Assert.Equal([Key("F9")], set.ActiveKeys);
+        Assert.Equal([ParseKey("F9")], set.ActiveKeys);
     }
 
     [Fact]
@@ -35,6 +35,6 @@ public sealed class HotkeySetTests
 
         set.Update(["NoSuchKey"]);
 
-        Assert.Equal([Key("F9")], set.ActiveKeys);
+        Assert.Equal([ParseKey("F9")], set.ActiveKeys);
     }
 }

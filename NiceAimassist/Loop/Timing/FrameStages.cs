@@ -1,13 +1,13 @@
 using System.Diagnostics;
 using NiceAimassist.Detect;
 
-namespace NiceAimassist.Loop;
+namespace NiceAimassist.Loop.Timing;
 
 /// <summary>
 /// Stage durations in Stopwatch ticks. <paramref name="Total"/> runs from the desktop timestamp to the end of the move.
 /// <paramref name="Submit"/> to <paramref name="Gpu"/> split the detect stage.
 /// </summary>
-public readonly record struct StageTicks(
+public readonly record struct FrameStages(
     long Capture,
     long Detect,
     long Aim,
@@ -19,10 +19,10 @@ public readonly record struct StageTicks(
     long Decode = 0,
     long Gpu = 0)
 {
-    public StageTicks WithBreakdown(in DetectBreakdown parts) =>
+    public FrameStages WithBreakdown(in DetectTimings parts) =>
         this with { Submit = parts.Submit, Run = parts.Run, Wait = parts.Wait, Decode = parts.Decode, Gpu = parts.Gpu };
 
-    public StageTicks Plus(in StageTicks other) => new(
+    public FrameStages Plus(in FrameStages other) => new(
         Capture + other.Capture,
         Detect + other.Detect,
         Aim + other.Aim,
@@ -34,7 +34,7 @@ public readonly record struct StageTicks(
         Decode + other.Decode,
         Gpu + other.Gpu);
 
-    public StageTicks MaxWith(in StageTicks other) => new(
+    public FrameStages MaxWith(in FrameStages other) => new(
         Math.Max(Capture, other.Capture),
         Math.Max(Detect, other.Detect),
         Math.Max(Aim, other.Aim),
@@ -46,7 +46,7 @@ public readonly record struct StageTicks(
         Math.Max(Decode, other.Decode),
         Math.Max(Gpu, other.Gpu));
 
-    public StageTicks Divide(long count) => count == 0
+    public FrameStages Divide(long count) => count == 0
         ? default
         : new(
             Capture / count,
@@ -72,7 +72,7 @@ public readonly record struct StageTicks(
 }
 
 /// <summary>The average and the worst frame of one window.</summary>
-public sealed record LatencySnapshot(StageTicks Average, StageTicks Max)
+public sealed record FrameStats(FrameStages Average, FrameStages Max)
 {
-    public static LatencySnapshot Empty { get; } = new(default, default);
+    public static FrameStats Empty { get; } = new(default, default);
 }

@@ -47,7 +47,7 @@ public unsafe class PreprocessorGpuTests
             bool acquired = false;
             for (int attempt = 0; attempt < 100 && !acquired; attempt++)
             {
-                acquired = frames.TryAcquire(50, out frame) == CaptureStatus.Ready;
+                acquired = frames.TryAcquire(50, out frame) == CaptureOutcome.Ready;
             }
 
             Assert.True(acquired, "no desktop frame");

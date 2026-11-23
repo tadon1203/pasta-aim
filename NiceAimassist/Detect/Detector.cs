@@ -76,7 +76,7 @@ public sealed unsafe class Detector : IDetector
         DecodeResult decoded = DetectionDecoder.Decode(output, _session.Output, new Size(InputWidth, InputHeight), confidence);
         long detectedTimestamp = Stopwatch.GetTimestamp();
 
-        DetectBreakdown breakdown = new(submitted - capturedTimestamp, ran - submitted, read - ran, detectedTimestamp - read, gpu);
+        DetectTimings breakdown = new(submitted - capturedTimestamp, ran - submitted, read - ran, detectedTimestamp - read, gpu);
         return new DetectedFrame(
             frame.DesktopTimestamp, capturedTimestamp, detectedTimestamp, decoded.Nearest, decoded.TopScore, breakdown);
     }

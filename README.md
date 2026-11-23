@@ -44,7 +44,7 @@ A missing section takes its defaults. The app clamps values that are out of rang
 | `dataset.enabled` | `true` | Record while a hotkey is down. |
 | `log.level` | `Info` | Most detailed log level. |
 
-Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `NiceAimassist/Hotkey/KeyInput.cs`.
+Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `NiceAimassist/Hotkey/Key.cs`.
 
 ## Model
 

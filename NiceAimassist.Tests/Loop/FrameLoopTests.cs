@@ -48,7 +48,7 @@ public class FrameLoopTests
     }
 
     [Fact]
-    public void ReleasingTheKeyResetsTheAimController()
+    public void ReleasingTheKeyResetsTheAimTracker()
     {
         // Without the reset, the second frame reads the first move as target motion. The aim then overshoots the target.
         long first = Stopwatch.GetTimestamp();
@@ -200,7 +200,7 @@ public class FrameLoopTests
         Assert.False(recorder.LastHeld);
     }
 
-    private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetControl? recorder = null)
+    private static FrameLoop Start(FakeFrameSource source, FakeMouse mouse, Func<bool> isHeld, IDatasetRecorder? recorder = null)
     {
         FrameLoop loop = new(source, new FakeDetector(source), mouse, isHeld, Snapshot, Stopwatch.GetTimestamp, _ => { }, recorder);
         loop.Start();
@@ -243,7 +243,7 @@ public class FrameLoopTests
 
         public void ReleaseHeldFrame() => Interlocked.Increment(ref _releaseCount);
 
-        public CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
+        public CaptureOutcome TryAcquire(int timeoutMs, out CapturedFrame frame)
         {
             Interlocked.Increment(ref _acquireCalls);
             if (Fault is { } fault)
@@ -256,12 +256,12 @@ public class FrameLoopTests
                 _sequence++;
                 _targets[_sequence] = queued.Target;
                 frame = new CapturedFrame(_sequence, queued.Qpc);
-                return CaptureStatus.Ready;
+                return CaptureOutcome.Ready;
             }
 
             Thread.Sleep(1);
             frame = default;
-            return CaptureStatus.Timeout;
+            return CaptureOutcome.Timeout;
         }
 
         public void Dispose()
@@ -298,7 +298,7 @@ public class FrameLoopTests
         public void SetInterpolation(Interpolation interpolation) => Interpolations.Enqueue(interpolation);
     }
 
-    private sealed class FakeRecorder(ConcurrentQueue<string> events) : IDatasetControl
+    private sealed class FakeRecorder(ConcurrentQueue<string> events) : IDatasetRecorder
     {
         private int _recorded;
         private int _updates;

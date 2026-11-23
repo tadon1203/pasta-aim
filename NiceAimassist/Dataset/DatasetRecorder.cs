@@ -10,21 +10,21 @@ namespace NiceAimassist.Dataset;
 /// Copies the desktop into staging textures, maps them, and hands them to the writer thread.
 /// Every method except <see cref="Status"/> and the writer callbacks runs on the loop thread. The loop thread never waits on the GPU.
 /// </summary>
-public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
+public sealed unsafe class DatasetRecorder : IDatasetRecorder, IDisposable
 {
-    private readonly DatasetState _state;
-    private readonly StagingCopy _copy;
-    private readonly SampleQueue _queue;
-    private readonly DatasetWriter _dataset;
+    private readonly RecordingState _state;
+    private readonly StagingTexture _copy;
+    private readonly SampleWriter _queue;
+    private readonly JpegWriter _dataset;
     private string _pendingFileName = string.Empty;
     private bool _disposed;
 
     public DatasetRecorder(GpuDevices gpu, string datasetRoot, Func<long> now, long ticksPerSecond)
     {
-        _dataset = new DatasetWriter(datasetRoot);
-        _state = new DatasetState(now, ticksPerSecond);
-        _copy = new StagingCopy(gpu);
-        _queue = new SampleQueue(Write, error => _state.ReportWriteError(error.Message));
+        _dataset = new JpegWriter(datasetRoot);
+        _state = new RecordingState(now, ticksPerSecond);
+        _copy = new StagingTexture(gpu);
+        _queue = new SampleWriter(Write, error => _state.ReportWriteError(error.Message));
     }
 
     // While the staging textures are mapped, a new GPU copy would write memory that the writer still reads.
@@ -55,7 +55,7 @@ public sealed unsafe class DatasetRecorder : IDatasetControl, IDisposable
         try
         {
             _copy.Copy(desktop);
-            _pendingFileName = DatasetWriter.FileNameFor(DateTime.Now);
+            _pendingFileName = JpegWriter.FileNameFor(DateTime.Now);
             _state.MarkRecorded();
         }
         catch (Exception error)

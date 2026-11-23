@@ -140,14 +140,14 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
     /// <summary>Blocks until the queue finished every read that <see cref="EndRead"/> announced.</summary>
     internal void WaitReadsDone() => FenceSpin.Wait(_computeDoneFence12, _submittedSequence);
 
-    public CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame)
+    public CaptureOutcome TryAcquire(int timeoutMs, out CapturedFrame frame)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         frame = default;
 
         if (_frameHeld && !TryReleaseHeldFrame())
         {
-            return CaptureStatus.Lost;
+            return CaptureOutcome.Lost;
         }
 
         OutduplFrameInfo frameInfo;
@@ -155,13 +155,13 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
         int acquire = _duplication->AcquireNextFrame((uint)timeoutMs, &frameInfo, &resource);
         if (acquire == DxgiWaitTimeout)
         {
-            return CaptureStatus.Timeout;
+            return CaptureOutcome.Timeout;
         }
 
         if (acquire == DxgiAccessLost)
         {
             RecreateDuplication();
-            return CaptureStatus.Lost;
+            return CaptureOutcome.Lost;
         }
 
         ComInterop.Check(acquire, "AcquireNextFrame");
@@ -170,7 +170,7 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
         if (frameInfo.LastPresentTime == 0)
         {
             ComInterop.Release(ref resource);
-            return CaptureStatus.Unchanged;
+            return CaptureOutcome.Unchanged;
         }
 
         _desktopResource = resource;
@@ -196,7 +196,7 @@ public sealed unsafe partial class DesktopCapture : IFrameSource, IDisposable
         ((ID3D11DeviceContext*)context)->Flush();
 
         frame = new CapturedFrame(_sequence, frameInfo.LastPresentTime);
-        return CaptureStatus.Ready;
+        return CaptureOutcome.Ready;
     }
 
     public void ReleaseHeldFrame()

@@ -3,7 +3,7 @@ using NiceAimassist.Capture;
 namespace NiceAimassist.Dataset;
 
 /// <summary>What the loop needs from the training-data recorder. The loop thread calls it, except <see cref="Status"/>.</summary>
-public interface IDatasetControl
+public interface IDatasetRecorder
 {
     /// <summary>The recording state. Any thread can read it.</summary>
     DatasetStatus Status { get; }

@@ -6,10 +6,10 @@ namespace NiceAimassist.Capture;
 public interface IFrameSource
 {
     /// <summary>
-    /// Waits a bounded time for a new desktop frame. The result is <see cref="CaptureStatus.Ready"/>
+    /// Waits a bounded time for a new desktop frame. The result is <see cref="CaptureOutcome.Ready"/>
     /// only when <paramref name="frame"/> is filled. The previous frame ends with this call.
     /// </summary>
-    CaptureStatus TryAcquire(int timeoutMs, out CapturedFrame frame);
+    CaptureOutcome TryAcquire(int timeoutMs, out CapturedFrame frame);
 
     /// <summary>Ends the held frame now. The next <see cref="TryAcquire"/> then waits for a new frame.</summary>
     void ReleaseHeldFrame();

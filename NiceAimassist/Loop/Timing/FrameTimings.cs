@@ -1,16 +1,16 @@
-namespace NiceAimassist.Loop;
+namespace NiceAimassist.Loop.Timing;
 
 /// <summary>The Stopwatch timestamps of one frame's stages, in order.</summary>
 public readonly record struct FrameTimings(
     long DesktopTimestamp,
-    long CapturedTimestamp,
+    long DetectStartTimestamp,
     long DetectedTimestamp,
     long AimedTimestamp,
     long MovedTimestamp)
 {
-    public StageTicks Stages => new(
-        CapturedTimestamp - DesktopTimestamp,
-        DetectedTimestamp - CapturedTimestamp,
+    public FrameStages Stages => new(
+        DetectStartTimestamp - DesktopTimestamp,
+        DetectedTimestamp - DetectStartTimestamp,
         AimedTimestamp - DetectedTimestamp,
         MovedTimestamp - AimedTimestamp,
         MovedTimestamp - DesktopTimestamp);

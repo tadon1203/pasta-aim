@@ -1,5 +1,5 @@
+using NiceAimassist.Capture;
 using NiceAimassist.Detect;
-using NiceAimassist.Shared.Gpu;
 using NiceAimassist.Hotkey;
 using NiceAimassist.Mouse;
 using NiceAimassist.Settings;

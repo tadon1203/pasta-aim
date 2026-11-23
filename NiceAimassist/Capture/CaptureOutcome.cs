@@ -1,7 +1,7 @@
 namespace NiceAimassist.Capture;
 
 /// <summary>The outcome of waiting for one desktop frame.</summary>
-public enum CaptureStatus
+public enum CaptureOutcome
 {
     /// <summary>A new frame was copied and can be submitted.</summary>
     Ready,

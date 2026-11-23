@@ -1,6 +1,6 @@
 namespace NiceAimassist.Aim;
 
-public enum AimStatus
+public enum AimOutcome
 {
     /// <summary>There is no target.</summary>
     NoTarget,
@@ -12,4 +12,4 @@ public enum AimStatus
     Move,
 }
 
-public readonly record struct AimResult(AimStatus Status, short Dx, short Dy);
+public readonly record struct AimResult(AimOutcome Outcome, short Dx, short Dy);

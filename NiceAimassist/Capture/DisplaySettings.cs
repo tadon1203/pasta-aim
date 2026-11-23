@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace NiceAimassist.Shared.Gpu;
+namespace NiceAimassist.Capture;
 
 public sealed record DisplaySettings
 {

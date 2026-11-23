@@ -6,7 +6,7 @@ namespace NiceAimassist.Dataset.Storage;
 /// Hands samples to a writer thread through a bounded queue. A full queue rejects the sample.
 /// It does not block the caller. The caller is the loop thread.
 /// </summary>
-internal sealed class SampleQueue : IDisposable
+internal sealed class SampleWriter : IDisposable
 {
     public const int QueueCapacity = 2;
 
@@ -18,7 +18,7 @@ internal sealed class SampleQueue : IDisposable
 
     /// <param name="write">Runs on the writer thread. It reads the mapped memory of the sample only while it runs.</param>
     /// <param name="onError">Called on the writer thread when <paramref name="write"/> throws. The thread keeps running.</param>
-    public SampleQueue(Action<Sample> write, Action<Exception> onError)
+    public SampleWriter(Action<Sample> write, Action<Exception> onError)
     {
         _write = write;
         _onError = onError;

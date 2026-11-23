@@ -2,7 +2,7 @@ using NiceAimassist.Settings;
 
 namespace NiceAimassist.Tests.Settings;
 
-public sealed class SettingsFileTests : IDisposable
+public sealed class SettingsStoreTests : IDisposable
 {
     private const int DebounceMilliseconds = 50;
 
@@ -10,16 +10,16 @@ public sealed class SettingsFileTests : IDisposable
         Path.GetTempPath(),
         "nice-aimassist-settings-" + Guid.NewGuid().ToString("N"));
 
-    private readonly List<SettingsFile> _files = new();
+    private readonly List<SettingsStore> _files = new();
 
-    public SettingsFileTests()
+    public SettingsStoreTests()
     {
         Directory.CreateDirectory(_directory);
     }
 
     public void Dispose()
     {
-        foreach (SettingsFile file in _files)
+        foreach (SettingsStore file in _files)
         {
             file.Dispose();
         }
@@ -31,7 +31,7 @@ public sealed class SettingsFileTests : IDisposable
     public void A_missing_file_is_created_with_the_defaults()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsFile file = NewFile(path);
+        SettingsStore file = NewFile(path);
 
         AppSettings loaded = file.Current;
 
@@ -46,7 +46,7 @@ public sealed class SettingsFileTests : IDisposable
         string path = Path.Combine(_directory, "settings.json");
         const string broken = "{ \"aim\": { \"sensitivity_x\": 150";
         File.WriteAllText(path, broken);
-        SettingsFile file = NewFile(path);
+        SettingsStore file = NewFile(path);
 
         AppSettings loaded = file.Current;
 
@@ -58,7 +58,7 @@ public sealed class SettingsFileTests : IDisposable
     public void A_valid_edit_is_published_after_the_debounce()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsFile file = NewFile(path);
+        SettingsStore file = NewFile(path);
 
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
 
@@ -69,7 +69,7 @@ public sealed class SettingsFileTests : IDisposable
     public void An_invalid_edit_keeps_the_previous_settings()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsFile file = NewFile(path);
+        SettingsStore file = NewFile(path);
         File.WriteAllText(path, @"{ ""aim"": { ""sensitivity_x"": 300 } }");
         TestWait.Until(() => file.Current.Aim.SensitivityX == 300);
 
@@ -85,7 +85,7 @@ public sealed class SettingsFileTests : IDisposable
     public void A_save_is_current_at_once_and_raises_one_change()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsFile file = NewFile(path);
+        SettingsStore file = NewFile(path);
         List<AppSettings> changes = [];
         file.Changed += changes.Add;
 
@@ -103,7 +103,7 @@ public sealed class SettingsFileTests : IDisposable
     public void A_save_that_cannot_be_written_stays_current()
     {
         string path = Path.Combine(_directory, "settings.json");
-        SettingsFile file = NewFile(path);
+        SettingsStore file = NewFile(path);
         File.Delete(path);
         Directory.CreateDirectory(path);
 
@@ -112,9 +112,9 @@ public sealed class SettingsFileTests : IDisposable
         Assert.Equal(250, file.Current.Aim.SensitivityX);
     }
 
-    private SettingsFile NewFile(string path)
+    private SettingsStore NewFile(string path)
     {
-        SettingsFile file = new(path, DebounceMilliseconds);
+        SettingsStore file = new(path, DebounceMilliseconds);
         _files.Add(file);
         return file;
     }

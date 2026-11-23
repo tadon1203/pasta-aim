@@ -4,6 +4,7 @@ using NiceAimassist.Dataset;
 using NiceAimassist.Settings;
 using NiceAimassist.Capture;
 using NiceAimassist.Detect;
+using NiceAimassist.Loop.Timing;
 using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
 
@@ -22,8 +23,8 @@ public sealed partial class FrameLoop
     private readonly Func<AppSettings> _currentSettings;
     private readonly Func<long> _now;
     private readonly Action<Exception> _onFault;
-    private readonly IDatasetControl? _recorder;
-    private readonly AimController _aim = new();
+    private readonly IDatasetRecorder? _recorder;
+    private readonly AimTracker _aim = new();
     private bool _wasHeld;
     private readonly LoopDiagnostics _diagnostics;
     private readonly LoopStatus _loopStatus = new();
@@ -40,7 +41,7 @@ public sealed partial class FrameLoop
         Func<AppSettings> currentSettings,
         Func<long> now,
         Action<Exception> onFault,
-        IDatasetControl? recorder = null)
+        IDatasetRecorder? recorder = null)
     {
         _recorder = recorder;
         _frames = frames ?? throw new ArgumentNullException(nameof(frames));
@@ -83,7 +84,7 @@ public sealed partial class FrameLoop
         try
         {
             LoopThreadBoost.Apply();
-            Loop();
+            Run();
         }
         catch (Exception error)
         {
@@ -92,7 +93,7 @@ public sealed partial class FrameLoop
         }
     }
 
-    private void Loop()
+    private void Run()
     {
         using IdleTimer idleTimer = new();
         while (_running)
@@ -125,14 +126,14 @@ public sealed partial class FrameLoop
 
             _loopStatus.SetHeld(true);
             _mouse.SetInterpolation(settings.Mouse.Interpolation);
-            CaptureStatus status = _frames.TryAcquire(AcquireTimeoutMs, out CapturedFrame captured);
-            if (status == CaptureStatus.Timeout)
+            CaptureOutcome status = _frames.TryAcquire(AcquireTimeoutMs, out CapturedFrame captured);
+            if (status == CaptureOutcome.Timeout)
             {
                 _diagnostics.RecordTimeout();
                 continue;
             }
 
-            if (status != CaptureStatus.Ready)
+            if (status != CaptureOutcome.Ready)
             {
                 _diagnostics.RecordNoFrame();
                 continue;
@@ -143,14 +144,14 @@ public sealed partial class FrameLoop
             AimResult aim = _aim.Update(frame.Target, frame.DesktopTimestamp, _now(), input, settings.Aim);
             long aimedAt = _now();
             // Read the flag after the aim. A stop during the frame then suppresses its move.
-            bool sent = aim.Status == AimStatus.Move && _running;
+            bool sent = aim.Outcome == AimOutcome.Move && _running;
             if (sent)
             {
                 _mouse.Move(aim.Dx, aim.Dy);
             }
 
             long sentAt = sent ? _now() : aimedAt;
-            FrameTimings timings = new(frame.DesktopTimestamp, frame.CapturedTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
+            FrameTimings timings = new(frame.DesktopTimestamp, frame.DetectStartTimestamp, frame.DetectedTimestamp, aimedAt, sentAt);
             _loopStatus.RecordFrame();
             _diagnostics.RecordFrame(frame, timings, input, aim, sent);
 

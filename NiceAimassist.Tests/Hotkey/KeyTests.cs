@@ -2,7 +2,7 @@ using NiceAimassist.Hotkey;
 
 namespace NiceAimassist.Tests.Hotkey;
 
-public class KeyInputTests
+public class KeyTests
 {
     [Theory]
     [InlineData("F8", 0x77)]
@@ -14,7 +14,7 @@ public class KeyInputTests
     [InlineData("MouseX1", 0x05)]
     public void A_known_name_parses_to_its_virtual_key(string name, int code)
     {
-        Assert.True(KeyInput.TryParse(name, out var key));
+        Assert.True(Key.TryParse(name, out var key));
         Assert.Equal(code, key.VirtualKey);
     }
 
@@ -25,8 +25,8 @@ public class KeyInputTests
     [InlineData("mousex1", "MouseX1")]
     public void A_name_parses_to_the_same_key_regardless_of_case(string name, string canonical)
     {
-        Assert.True(KeyInput.TryParse(name, out var key));
-        Assert.True(KeyInput.TryParse(canonical, out var expected));
+        Assert.True(Key.TryParse(name, out var key));
+        Assert.True(Key.TryParse(canonical, out var expected));
         Assert.Equal(expected.VirtualKey, key.VirtualKey);
     }
 
@@ -36,7 +36,7 @@ public class KeyInputTests
     [InlineData("xinput:lt")]
     public void A_controller_name_parses_to_a_controller_input(string name)
     {
-        Assert.True(KeyInput.TryParse(name, out var key));
+        Assert.True(Key.TryParse(name, out var key));
         Assert.Equal(0, key.VirtualKey);
     }
 
@@ -49,6 +49,6 @@ public class KeyInputTests
     [InlineData("Shift")]
     public void An_unknown_name_is_rejected(string name)
     {
-        Assert.False(KeyInput.TryParse(name, out _));
+        Assert.False(Key.TryParse(name, out _));
     }
 }

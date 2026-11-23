@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using NiceAimassist.Aim;
 using NiceAimassist.Detect;
+using NiceAimassist.Loop.Timing;
 using NiceAimassist.Shared.Logging;
 
 namespace NiceAimassist.Loop;
@@ -10,10 +11,10 @@ namespace NiceAimassist.Loop;
 /// Counts what the held loop did. Once per second, it logs the counts and passes the latency to
 /// <paramref name="publishLatency"/>. A "no movement" result can then be traced to its stage.
 /// </summary>
-internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> publishLatency)
+internal sealed class LoopDiagnostics(Func<long> now, Action<FrameStats> publishLatency)
 {
-    private StageTicks _sum;
-    private StageTicks _max;
+    private FrameStages _sum;
+    private FrameStages _max;
     private long _windowStart = now();
     private int _frames;
     private int _timeouts;
@@ -41,7 +42,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
     public void RecordFrame(in DetectedFrame frame, in FrameTimings timings, Size input, AimResult aim, bool sent)
     {
         _frames++;
-        StageTicks stages = timings.Stages.WithBreakdown(frame.Breakdown);
+        FrameStages stages = timings.Stages.WithBreakdown(frame.Breakdown);
         _sum = _sum.Plus(stages);
         _max = _max.MaxWith(stages);
         _topScore = MathF.Max(_topScore, frame.TopScore);
@@ -51,7 +52,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
             _bestScore = MathF.Max(_bestScore, detection.Score);
         }
 
-        bool aimed = aim.Status == AimStatus.Move;
+        bool aimed = aim.Outcome == AimOutcome.Move;
         _aimed += aimed ? 1 : 0;
         _sent += sent ? 1 : 0;
 
@@ -64,7 +65,7 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
             double intervalMs = _previousFrameAt == 0
                 ? 0
                 : (timings.MovedTimestamp - _previousFrameAt) * 1000.0 / Stopwatch.Frequency;
-            Log.Trace($"frame {box} aim={aim.Status} move=({aim.Dx},{aim.Dy}) sent={sent} dt={intervalMs:F1}ms");
+            Log.Trace($"frame {box} aim={aim.Outcome} move=({aim.Dx},{aim.Dy}) sent={sent} dt={intervalMs:F1}ms");
         }
 
         _previousFrameAt = timings.MovedTimestamp;
@@ -92,33 +93,33 @@ internal sealed class LoopDiagnostics(Func<long> now, Action<LatencySnapshot> pu
             return;
         }
 
-        LatencySnapshot latency = LatencySnapshot.Empty;
+        FrameStats latency = FrameStats.Empty;
         if (_frames > 0)
         {
-            latency = new LatencySnapshot(_sum.Divide(_frames), _max);
+            latency = new FrameStats(_sum.Divide(_frames), _max);
             publishLatency(latency);
         }
 
         if (Log.IsEnabled(LogLevel.Debug))
         {
             double seconds = elapsed / (double)Stopwatch.Frequency;
-            StageTicks avg = latency.Average;
-            StageTicks max = latency.Max;
+            FrameStages avg = latency.Average;
+            FrameStages max = latency.Max;
             Log.Debug(
                 $"loop {seconds:F1}s: frames={_frames} timeouts={_timeouts} no_frame={_noFrames} with_target={_targets} "
                 + $"aimed={_aimed} sent={_sent} best_score={_bestScore:F3} top_score={_topScore:F3}");
             Log.Debug(
-                $"latency avg/max ms: capture={StageTicks.PairMs(avg.Capture, max.Capture)} "
-                + $"detect={StageTicks.PairMs(avg.Detect, max.Detect)} "
-                + $"aim={StageTicks.PairMs(avg.Aim, max.Aim)} "
-                + $"move={StageTicks.PairMs(avg.Move, max.Move)} "
-                + $"total={StageTicks.PairMs(avg.Total, max.Total)}");
+                $"latency avg/max ms: capture={FrameStages.PairMs(avg.Capture, max.Capture)} "
+                + $"detect={FrameStages.PairMs(avg.Detect, max.Detect)} "
+                + $"aim={FrameStages.PairMs(avg.Aim, max.Aim)} "
+                + $"move={FrameStages.PairMs(avg.Move, max.Move)} "
+                + $"total={FrameStages.PairMs(avg.Total, max.Total)}");
             Log.Debug(
-                $"detect breakdown avg/max ms: submit={StageTicks.PairMs(avg.Submit, max.Submit)} "
-                + $"run={StageTicks.PairMs(avg.Run, max.Run)} "
-                + $"wait={StageTicks.PairMs(avg.Wait, max.Wait)} "
-                + $"decode={StageTicks.PairMs(avg.Decode, max.Decode)} "
-                + $"gpu={StageTicks.PairMs(avg.Gpu, max.Gpu)}");
+                $"detect breakdown avg/max ms: submit={FrameStages.PairMs(avg.Submit, max.Submit)} "
+                + $"run={FrameStages.PairMs(avg.Run, max.Run)} "
+                + $"wait={FrameStages.PairMs(avg.Wait, max.Wait)} "
+                + $"decode={FrameStages.PairMs(avg.Decode, max.Decode)} "
+                + $"gpu={FrameStages.PairMs(avg.Gpu, max.Gpu)}");
         }
 
         Restart();

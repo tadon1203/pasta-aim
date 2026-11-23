@@ -6,6 +6,7 @@ using NiceAimassist.Dataset;
 using NiceAimassist.Settings;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
+using NiceAimassist.Loop.Timing;
 using NiceAimassist.Hotkey;
 using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
@@ -14,18 +15,18 @@ using Timer = System.Windows.Forms.Timer;
 namespace NiceAimassist.App;
 
 /// <summary>
-/// Edits the settings through <see cref="SettingsFile.Save"/>, and shows every other change of the settings.
-/// The window reads the loop only through <see cref="LoopStatus"/> and <see cref="IDatasetControl.Status"/>.
+/// Edits the settings through <see cref="SettingsStore.Save"/>, and shows every other change of the settings.
+/// The window reads the loop only through <see cref="LoopStatus"/> and <see cref="IDatasetRecorder.Status"/>.
 /// </summary>
-internal sealed class MainWindow : Form
+internal sealed class SettingsWindow : Form
 {
     private const int SaveDelayMs = 300;
-    private const int KeyInputPollMs = 15;
+    private const int KeyPollMs = 15;
     private const int StatusIntervalMs = 1000;
     private const string AddKeyText = "Add";
-    private readonly SettingsFile _file;
+    private readonly SettingsStore _file;
     private readonly LoopStatus _loopStatus;
-    private readonly IDatasetControl _recorder;
+    private readonly IDatasetRecorder _recorder;
     private readonly ManualResetEventSlim _stopped;
     private readonly string _modelsDirectory;
 
@@ -57,10 +58,10 @@ internal sealed class MainWindow : Form
     private long _lastFrames;
     private long _lastTicks = Stopwatch.GetTimestamp();
 
-    public MainWindow(
-        SettingsFile file,
+    public SettingsWindow(
+        SettingsStore file,
         LoopStatus loopStatus,
-        IDatasetControl recorder,
+        IDatasetRecorder recorder,
         ManualResetEventSlim stopped,
         string modelsDirectory)
     {
@@ -169,7 +170,7 @@ internal sealed class MainWindow : Form
         Controls.Add(_layout);
 
         _saveTimer.Interval = SaveDelayMs;
-        _keyInputTimer.Interval = KeyInputPollMs;
+        _keyInputTimer.Interval = KeyPollMs;
         _statusTimer.Interval = StatusIntervalMs;
     }
 
@@ -291,10 +292,10 @@ internal sealed class MainWindow : Form
             SettingChanged();
         };
         _hotkeys.SelectedIndexChanged += (_, _) => UpdateKeyButtons();
-        _addKey.Click += (_, _) => BeginKeyInput();
+        _addKey.Click += (_, _) => BeginKey();
         _removeKey.Click += (_, _) => RemoveSelectedKey();
         _saveTimer.Tick += (_, _) => Flush();
-        _keyInputTimer.Tick += (_, _) => PollKeyInput();
+        _keyInputTimer.Tick += (_, _) => PollKey();
         _statusTimer.Tick += (_, _) => RefreshStatus();
         FormClosing += (_, _) => Flush();
     }
@@ -372,7 +373,7 @@ internal sealed class MainWindow : Form
         }
     }
 
-    private void BeginKeyInput()
+    private void BeginKey()
     {
         _armed = false;
         _addKey.Enabled = false;
@@ -381,26 +382,26 @@ internal sealed class MainWindow : Form
     }
 
     // The click that started the input is still down. Nothing counts until all keys are up once.
-    private void PollKeyInput()
+    private void PollKey()
     {
-        if (KeyInput.IsEscapeDown())
+        if (Key.IsEscapeDown())
         {
-            EndKeyInput(null);
+            EndKey(null);
             return;
         }
 
-        string? name = KeyInput.FirstDown();
+        string? name = Key.FirstDown();
         if (name is null)
         {
             _armed = true;
         }
         else if (_armed)
         {
-            EndKeyInput(name);
+            EndKey(name);
         }
     }
 
-    private void EndKeyInput(string? name)
+    private void EndKey(string? name)
     {
         _keyInputTimer.Stop();
         _addKey.Enabled = true;
@@ -418,7 +419,7 @@ internal sealed class MainWindow : Form
         long frames = _loopStatus.Frames;
         long ticks = Stopwatch.GetTimestamp();
         double fps = (frames - _lastFrames) * (double)Stopwatch.Frequency / (ticks - _lastTicks);
-        StageTicks latency = _loopStatus.Latency.Average;
+        FrameStages latency = _loopStatus.Latency.Average;
         _lastFrames = frames;
         _lastTicks = ticks;
         DatasetStatus datasetStatus = _recorder.Status;

@@ -1,9 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NiceAimassist.Aim;
+using NiceAimassist.Capture;
 using NiceAimassist.Dataset;
 using NiceAimassist.Detect;
-using NiceAimassist.Shared.Gpu;
 using NiceAimassist.Hotkey;
 using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;

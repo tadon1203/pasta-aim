@@ -2,14 +2,14 @@ using NiceAimassist.Dataset;
 
 namespace NiceAimassist.Tests.Dataset;
 
-public sealed class DatasetStateTests
+public sealed class RecordingStateTests
 {
-    private static DatasetState NewState(Func<long> now) => new(now, ticksPerSecond: 1000);
+    private static RecordingState NewState(Func<long> now) => new(now, ticksPerSecond: 1000);
 
     [Fact]
     public void A_failure_stays_latched_until_recording_is_disabled()
     {
-        DatasetState state = NewState(() => 0);
+        RecordingState state = NewState(() => 0);
         state.SetEnabled(true);
         state.Fail("the duplication stopped");
 
@@ -26,7 +26,7 @@ public sealed class DatasetStateTests
     [Fact]
     public void Enabling_again_makes_the_next_image_due_at_once()
     {
-        DatasetState state = NewState(() => 0);
+        RecordingState state = NewState(() => 0);
         state.SetEnabled(true);
         state.MarkRecorded();
         Assert.False(state.IsDue);
@@ -41,7 +41,7 @@ public sealed class DatasetStateTests
     [Fact]
     public void A_write_error_is_kept_and_recording_continues()
     {
-        DatasetState state = NewState(() => 0);
+        RecordingState state = NewState(() => 0);
         state.SetEnabled(true);
 
         state.ReportWriteError("the disk is full");
@@ -54,7 +54,7 @@ public sealed class DatasetStateTests
     public void An_image_is_due_two_seconds_after_the_last_one_and_a_stall_causes_no_burst()
     {
         long now = 0;
-        DatasetState state = new(() => now, ticksPerSecond: 1000);
+        RecordingState state = new(() => now, ticksPerSecond: 1000);
         state.SetEnabled(true);
 
         Assert.True(state.IsDue);

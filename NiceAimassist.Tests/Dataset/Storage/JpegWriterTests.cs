@@ -4,7 +4,7 @@ using NiceAimassist.Dataset.Storage;
 
 namespace NiceAimassist.Tests.Dataset.Storage;
 
-public sealed class DatasetWriterTests : IDisposable
+public sealed class JpegWriterTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "nice-aimassist-dataset-" + Guid.NewGuid().ToString("N"));
 
@@ -19,7 +19,7 @@ public sealed class DatasetWriterTests : IDisposable
     [Fact]
     public void WriterSavesTheOriginalAsJpeg()
     {
-        DatasetWriter writer = new(_root);
+        JpegWriter writer = new(_root);
 
         writer.Write("sample", Solid(160, 90));
 

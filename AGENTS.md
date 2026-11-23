@@ -44,7 +44,7 @@ Detect, Dataset → Capture
 - Keep the namespace equal to the folder path.
 - Make a type in a subfolder `internal` when no other feature uses it.
 - A feature can own an interface that another feature implements. Example: `Capture/IFrameSource`, which `DesktopCapture` implements and `Loop` and `Dataset` use.
-- A setting that changes while the app runs flows one way: the settings window or the file changes `SettingsFile.Current`, and `SettingsFile.Changed` tells the listeners. Do not write the file to pass a change inside the app.
+- A setting that changes while the app runs flows one way: the settings window or the file changes `SettingsStore.Current`, and `SettingsStore.Changed` tells the listeners. Do not write the file to pass a change inside the app.
 - Put a test in the folder that matches the folder of the type under test.
 
 ### Naming

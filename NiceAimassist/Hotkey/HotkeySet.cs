@@ -12,11 +12,11 @@ public sealed class HotkeySet
 
     public bool HasKeys => ActiveKeys.Length > 0;
 
-    internal KeyInput[] ActiveKeys => Volatile.Read(ref _binding).Keys;
+    internal Key[] ActiveKeys => Volatile.Read(ref _binding).Keys;
 
     public bool IsHeld()
     {
-        foreach (KeyInput key in Volatile.Read(ref _binding).Keys)
+        foreach (Key key in Volatile.Read(ref _binding).Keys)
         {
             if (key.IsDown())
             {
@@ -36,11 +36,11 @@ public sealed class HotkeySet
             return;
         }
 
-        List<KeyInput> keys = [];
+        List<Key> keys = [];
         List<string> unknown = [];
         foreach (string name in names)
         {
-            if (KeyInput.TryParse(name, out KeyInput key))
+            if (Key.TryParse(name, out Key key))
             {
                 keys.Add(key);
             }
@@ -64,5 +64,5 @@ public sealed class HotkeySet
         Volatile.Write(ref _binding, new HotkeyBinding(names, [.. keys]));
     }
 
-    private sealed record HotkeyBinding(IReadOnlyList<string> Names, KeyInput[] Keys);
+    private sealed record HotkeyBinding(IReadOnlyList<string> Names, Key[] Keys);
 }

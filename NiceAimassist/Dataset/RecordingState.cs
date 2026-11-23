@@ -1,7 +1,7 @@
 namespace NiceAimassist.Dataset;
 
 // The loop thread uses every member except ReportWriteError. The writer thread calls ReportWriteError only.
-internal sealed class DatasetState
+internal sealed class RecordingState
 {
     private readonly Func<long> _now;
     private const int IntervalSeconds = 2;
@@ -12,7 +12,7 @@ internal sealed class DatasetState
     private volatile string? _lastError;
     private bool _failed;
 
-    public DatasetState(Func<long> now, long ticksPerSecond)
+    public RecordingState(Func<long> now, long ticksPerSecond)
     {
         _now = now;
         _interval = ticksPerSecond * IntervalSeconds;

@@ -6,7 +6,7 @@ using Silk.NET.DXGI;
 namespace NiceAimassist.Dataset.Staging;
 
 // Every method except MarkCopied runs on the loop thread. That thread owns the immediate context.
-internal sealed unsafe class StagingCopy : IDisposable
+internal sealed unsafe class StagingTexture : IDisposable
 {
     private const uint DoNotWait = 0x100000;
     private const int DxgiWasStillDrawing = unchecked((int)0x887A000A);
@@ -15,7 +15,7 @@ internal sealed unsafe class StagingCopy : IDisposable
     private readonly StagingGate _gate = new();
     private ID3D11Texture2D* _staging;
 
-    public StagingCopy(GpuDevices gpu) => _gpu = gpu;
+    public StagingTexture(GpuDevices gpu) => _gpu = gpu;
 
     public bool CanCopy => _gate.CanCopy;
 
