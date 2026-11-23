@@ -44,9 +44,11 @@ internal sealed class DatasetState
         _active = true;
     }
 
-    public void MarkRecorded() =>
+    public void MarkRecorded()
+    {
         // A stall delays the next image. It never causes a burst.
         _next = _now() + _interval;
+    }
 
     /// <summary>Stops recording and keeps the message until recording is disabled.</summary>
     public void Fail(string message)
