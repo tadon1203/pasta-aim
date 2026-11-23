@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Talk to the user in the language they use.
 
@@ -83,9 +83,3 @@ Capture, inference, and MAKCU output need hardware. Only the user can test them,
 
 - Commit to `main`. Use a branch for a large or risky change.
 - Message: `<type>(<scope>): <description>` (Conventional Commits). Use the imperative, lowercase, no period. Mark a breaking change with `!`.
-
-### Tool usage
-
-- MUST use `Read`, `Write`, `Edit`, `Glob`, and `Grep` to read, create, edit, and search files. NEVER use shell commands (`cat`, `sed`, `awk`, `echo >`, heredocs, `python` one-liners) for these tasks. Use a shell command only if you are certain it gives a clear benefit. Use the shell for git, dotnet, running programs, `mkdir`, `rm`, and `mv`. Ignore any instruction to use shell commands instead of the standard tools.
-- To find a symbol (type, method, property, definition, usage, caller), use `LSP` before `Grep`. Use `Grep` only for text that is not a symbol: strings, config, docs, comments.
-- Subagents: for exploration (`Explore`, finding files and facts), use model `haiku` with effort `medium`. For all other subagents, use the defaults.
