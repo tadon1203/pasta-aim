@@ -1,13 +1,9 @@
-using System.Diagnostics;
-using System.Drawing;
 using System.Windows.Forms;
 using NiceAimassist.Aim;
 using NiceAimassist.Dataset;
 using NiceAimassist.Settings;
 using NiceAimassist.Detect;
 using NiceAimassist.Loop;
-using NiceAimassist.Loop.Timing;
-using NiceAimassist.Hotkey;
 using NiceAimassist.Shared.Logging;
 using NiceAimassist.Mouse;
 using Timer = System.Windows.Forms.Timer;
@@ -21,14 +17,11 @@ namespace NiceAimassist.App;
 internal sealed class SettingsWindow : Form
 {
     private const int SaveDelayMs = 300;
-    private const int KeyPollMs = 15;
-    private const int StatusIntervalMs = 1000;
-    private const string AddKeyText = "Add";
     private readonly SettingsStore _file;
-    private readonly LoopStatus _loopStatus;
-    private readonly IDatasetRecorder _recorder;
     private readonly ManualResetEventSlim _stopped;
     private readonly string _modelsDirectory;
+    private readonly KeyCapture _keyCapture;
+    private readonly StatusLine _statusLine;
 
     private readonly TableLayoutPanel _layout = new();
     private readonly ComboBox _model = new();
@@ -49,14 +42,9 @@ internal sealed class SettingsWindow : Form
     private readonly CheckBox _datasetEnabled = new();
     private readonly Label _status = new();
     private readonly Timer _saveTimer = new();
-    private readonly Timer _keyInputTimer = new();
-    private readonly Timer _statusTimer = new();
 
     private RegisteredWaitHandle? _stopWait;
-    private bool _armed;
     private bool _showing;
-    private long _lastFrames;
-    private long _lastTicks = Stopwatch.GetTimestamp();
 
     public SettingsWindow(
         SettingsStore file,
@@ -66,16 +54,16 @@ internal sealed class SettingsWindow : Form
         string modelsDirectory)
     {
         _file = file;
-        _loopStatus = loopStatus;
-        _recorder = recorder;
         _stopped = stopped;
         _modelsDirectory = modelsDirectory;
 
         InitializeComponent();
+        _keyCapture = new KeyCapture(_hotkeys, _addKey, _removeKey, SettingChanged);
+        _statusLine = new StatusLine(_status, loopStatus, recorder);
         LoadModels();
         ShowSettings(file.Current);
         WireEvents();
-        _statusTimer.Start();
+        _statusLine.Start();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -95,8 +83,8 @@ internal sealed class SettingsWindow : Form
             _file.Changed -= OnSettingsChanged;
             _stopWait?.Unregister(null);
             _saveTimer.Dispose();
-            _keyInputTimer.Dispose();
-            _statusTimer.Dispose();
+            _keyCapture.Dispose();
+            _statusLine.Dispose();
         }
 
         base.Dispose(disposing);
@@ -120,8 +108,6 @@ internal sealed class SettingsWindow : Form
 
         _hotkeys.Width = 140;
         _hotkeys.Height = 60;
-        _addKey.Text = AddKeyText;
-        _removeKey.Text = "Remove";
         FlowLayoutPanel keyButtons = new() { AutoSize = true, FlowDirection = FlowDirection.TopDown };
         keyButtons.Controls.Add(_addKey);
         keyButtons.Controls.Add(_removeKey);
@@ -170,8 +156,6 @@ internal sealed class SettingsWindow : Form
         Controls.Add(_layout);
 
         _saveTimer.Interval = SaveDelayMs;
-        _keyInputTimer.Interval = KeyPollMs;
-        _statusTimer.Interval = StatusIntervalMs;
     }
 
     private static void ConfigureNumber(NumericUpDown input, int min, int max)
@@ -214,13 +198,7 @@ internal sealed class SettingsWindow : Form
             }
 
             _model.SelectedItem = settings.Detect.Model;
-            string[] keys = [.. settings.Hotkey.Keys];
-            if (!_hotkeys.Items.Cast<string>().SequenceEqual(keys))
-            {
-                _hotkeys.Items.Clear();
-                _hotkeys.Items.AddRange(keys);
-            }
-
+            _keyCapture.SetKeys(settings.Hotkey.Keys);
             _sensitivityX.Value = settings.Aim.SensitivityX;
             _sensitivityY.Value = settings.Aim.SensitivityY;
             _confidence.Value = settings.Detect.Confidence;
@@ -236,7 +214,6 @@ internal sealed class SettingsWindow : Form
             _interpolationPercent.Enabled = !_interpolationAuto.Checked;
             _datasetEnabled.Checked = settings.Dataset.Enabled;
             _logLevel.SelectedItem = settings.Log.Level;
-            UpdateKeyButtons();
         }
         finally
         {
@@ -291,12 +268,7 @@ internal sealed class SettingsWindow : Form
             _interpolationPercent.Enabled = !_interpolationAuto.Checked;
             SettingChanged();
         };
-        _hotkeys.SelectedIndexChanged += (_, _) => UpdateKeyButtons();
-        _addKey.Click += (_, _) => BeginKey();
-        _removeKey.Click += (_, _) => RemoveSelectedKey();
         _saveTimer.Tick += (_, _) => Flush();
-        _keyInputTimer.Tick += (_, _) => PollKey();
-        _statusTimer.Tick += (_, _) => RefreshStatus();
         FormClosing += (_, _) => Flush();
     }
 
@@ -320,7 +292,7 @@ internal sealed class SettingsWindow : Form
                 CountsPerPixel = (int)_countsPerPixel.Value,
                 VelocitySmoothingMs = (int)_velocitySmoothing.Value,
             },
-            Hotkey = current.Hotkey with { Keys = [.. _hotkeys.Items.Cast<string>()] },
+            Hotkey = current.Hotkey with { Keys = _keyCapture.Keys },
             Mouse = current.Mouse with
             {
                 Interpolation = _interpolationAuto.Checked
@@ -358,75 +330,5 @@ internal sealed class SettingsWindow : Form
 
         _saveTimer.Stop();
         _file.Save(ReadSettings());
-    }
-
-    private void UpdateKeyButtons() =>
-        _removeKey.Enabled = _hotkeys.SelectedIndex >= 0 && _hotkeys.Items.Count > 1;
-
-    private void RemoveSelectedKey()
-    {
-        if (_hotkeys.SelectedIndex >= 0)
-        {
-            _hotkeys.Items.RemoveAt(_hotkeys.SelectedIndex);
-            UpdateKeyButtons();
-            SettingChanged();
-        }
-    }
-
-    private void BeginKey()
-    {
-        _armed = false;
-        _addKey.Enabled = false;
-        _addKey.Text = "Press… (Esc)";
-        _keyInputTimer.Start();
-    }
-
-    // The click that started the input is still down. Nothing counts until all keys are up once.
-    private void PollKey()
-    {
-        if (Key.IsEscapeDown())
-        {
-            EndKey(null);
-            return;
-        }
-
-        string? name = Key.FirstDown();
-        if (name is null)
-        {
-            _armed = true;
-        }
-        else if (_armed)
-        {
-            EndKey(name);
-        }
-    }
-
-    private void EndKey(string? name)
-    {
-        _keyInputTimer.Stop();
-        _addKey.Enabled = true;
-        _addKey.Text = AddKeyText;
-        if (name is not null && !_hotkeys.Items.Cast<string>().Contains(name, StringComparer.OrdinalIgnoreCase))
-        {
-            _hotkeys.Items.Add(name);
-            UpdateKeyButtons();
-            SettingChanged();
-        }
-    }
-
-    private void RefreshStatus()
-    {
-        long frames = _loopStatus.Frames;
-        long ticks = Stopwatch.GetTimestamp();
-        double fps = (frames - _lastFrames) * (double)Stopwatch.Frequency / (ticks - _lastTicks);
-        FrameStages latency = _loopStatus.Latency.Average;
-        _lastFrames = frames;
-        _lastTicks = ticks;
-        DatasetStatus datasetStatus = _recorder.Status;
-        string dataset = datasetStatus.LastError is { } error
-            ? $"   dataset error: {error}"
-            : datasetStatus.Active ? $"   recording, saved {datasetStatus.Saved}" : string.Empty;
-        _status.Text = $"fps {fps:F1}   latency {latency.FormatMs()}   "
-            + $"{(_loopStatus.Held ? "held" : "idle")}{dataset}";
     }
 }

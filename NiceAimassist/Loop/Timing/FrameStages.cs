@@ -70,9 +70,3 @@ public readonly record struct FrameStages(
 
     public static double ToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 }
-
-/// <summary>The average and the worst frame of one window.</summary>
-public sealed record FrameStats(FrameStages Average, FrameStages Max)
-{
-    public static FrameStats Empty { get; } = new(default, default);
-}
