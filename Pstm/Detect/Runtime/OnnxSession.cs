@@ -57,13 +57,10 @@ internal sealed unsafe class OnnxSession : IDisposable
 
             Input = ModelContract.ParseInput(input.Dims, input.ElementType);
             Output = ModelContract.ParseOutput(output.Dims, output.ElementType);
-            ModelContract.ValidateMetadata(new ModelMetadata(
-                Dynamic: OrtApi.GetCustomMetadata(_session, "dynamic"),
-                EndToEnd: OrtApi.GetCustomMetadata(_session, "end2end"),
-                Nms: OrtApi.GetCustomMetadata(_session, "nms")));
+            ModelContract.ValidateMetadata(OrtApi.GetCustomMetadata(_session, "dynamic"));
 
             long[] inputShape = [1, 3, Input.Height, Input.Width];
-            long[] outputShape = [1, Output.Rows, ModelContract.OutputColumns];
+            long[] outputShape = [1, Output.Rows, Output.Columns];
 
             _allocator = OrtApi.CreateDirectMlAllocator(_session);
             _inputValue = OrtApi.CreateTensor(_allocator, inputShape, input.ElementType);

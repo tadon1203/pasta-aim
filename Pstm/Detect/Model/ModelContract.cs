@@ -6,16 +6,25 @@ internal enum TensorPrecision
     Fp32,
 }
 
+internal enum OutputLayout
+{
+    /// <summary>Rows of x1, y1, x2, y2, score, class.</summary>
+    EndToEnd,
+
+    /// <summary>Channels of cx, cy, w, h, then one channel per class. Each channel holds one value per anchor.</summary>
+    ChannelsFirst,
+}
+
 internal readonly record struct ModelInput(int Width, int Height, TensorPrecision Precision)
 {
     /// <summary>The size of the NCHW input tensor, with three channels.</summary>
     internal long ByteLength => 3L * Width * Height * ModelContract.ElementBytes(Precision);
 }
 
-internal readonly record struct ModelOutput(int Rows, TensorPrecision Precision)
+internal readonly record struct ModelOutput(OutputLayout Layout, int Rows, int Columns, TensorPrecision Precision)
 {
-    /// <summary>The size of the output tensor, [1, Rows, OutputColumns].</summary>
-    internal long ByteLength => (long)Rows * ModelContract.OutputColumns * ModelContract.ElementBytes(Precision);
+    /// <summary>The size of the output tensor, [1, Rows, Columns].</summary>
+    internal long ByteLength => (long)Rows * Columns * ModelContract.ElementBytes(Precision);
 }
 
 internal static class ModelContract
@@ -23,7 +32,11 @@ internal static class ModelContract
     internal const int ElementFloat32 = 1;
     internal const int ElementFloat16 = 10;
 
-    internal const int OutputColumns = 6;
+    /// <summary>The number of values in one end-to-end row.</summary>
+    internal const int EndToEndColumns = 6;
+
+    /// <summary>The number of box channels of a raw head: cx, cy, w, and h.</summary>
+    internal const int BoxChannels = 4;
 
     internal static int ElementBytes(TensorPrecision precision) =>
         precision == TensorPrecision.Fp16 ? 2 : 4;
@@ -49,29 +62,42 @@ internal static class ModelContract
     {
         if (dims.Length != 3
             || dims[0] != 1
-            || dims[2] != OutputColumns
             || dims[1] <= 0
-            || dims[1] > int.MaxValue)
+            || dims[2] <= 0
+            || dims[1] > int.MaxValue
+            || dims[2] > int.MaxValue)
         {
             throw new InvalidOperationException(
-                $"Expected a static end-to-end output [1, N, 6] (x1, y1, x2, y2, score, class), got [{Format(dims)}]. Export the model with NMS embedded and a fixed input size.");
+                $"Expected a static output [1, N, {EndToEndColumns}] (x1, y1, x2, y2, score, class) or "
+                + $"[1, {BoxChannels} + classes, N] (cx, cy, w, h, class scores), got [{Format(dims)}].");
         }
 
-        return new ModelOutput((int)dims[1], PrecisionOf(elementType, "output"));
+        TensorPrecision precision = PrecisionOf(elementType, "output");
+
+        // An end-to-end export puts the six box values on the last axis. A raw YOLO head puts them on the first.
+        if (dims[2] == EndToEndColumns)
+        {
+            return new ModelOutput(OutputLayout.EndToEnd, (int)dims[1], EndToEndColumns, precision);
+        }
+
+        // A raw head has one channel per class and many more anchors than channels.
+        if (dims[1] <= BoxChannels || dims[1] >= dims[2])
+        {
+            throw new InvalidOperationException(
+                $"Expected a static output [1, N, {EndToEndColumns}] (x1, y1, x2, y2, score, class) or "
+                + $"[1, {BoxChannels} + classes, N] (cx, cy, w, h, class scores), got [{Format(dims)}].");
+        }
+
+        return new ModelOutput(OutputLayout.ChannelsFirst, (int)dims[1], (int)dims[2], precision);
     }
 
-    internal static void ValidateMetadata(ModelMetadata metadata)
+    /// <summary>Rejects a model whose shapes are not static. The shapes themselves set the output layout.</summary>
+    internal static void ValidateMetadata(string? dynamicFlag)
     {
-        if (!metadata.IsStatic)
+        if (ParseFlag(dynamicFlag) == true)
         {
             throw new InvalidOperationException(
                 "The model was exported with dynamic shapes (metadata dynamic=True). Export it static.");
-        }
-
-        if (!metadata.HasEmbeddedNms)
-        {
-            throw new InvalidOperationException(
-                "The model is not end-to-end (metadata end2end=False). Export it with NMS embedded.");
         }
     }
 
@@ -83,17 +109,8 @@ internal static class ModelContract
             $"Unsupported model {role} element type {elementType}; expected FP16 or FP32."),
     };
 
-    private static string Format(ReadOnlySpan<long> dims) => string.Join(", ", dims.ToArray());
-}
-
-/// <summary>The optional model metadata. A missing value means that the export did not set it.</summary>
-internal readonly record struct ModelMetadata(string? Dynamic, string? EndToEnd, string? Nms)
-{
-    public bool IsStatic => ParseFlag(Dynamic) != true;
-
-    // end2end=False is acceptable only when nms=True.
-    public bool HasEmbeddedNms => ParseFlag(EndToEnd) != false || ParseFlag(Nms) == true;
-
     private static bool? ParseFlag(string? value) =>
         value is null ? null : value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+
+    private static string Format(ReadOnlySpan<long> dims) => string.Join(", ", dims.ToArray());
 }

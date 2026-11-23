@@ -33,7 +33,7 @@ public sealed unsafe class Detector : IDetector
 
         Log.Info(
             $"model input {InputWidth}x{InputHeight} {session.Input.Precision}, "
-            + $"output {session.Output.Rows} rows {session.Output.Precision}");
+            + $"output {session.Output.Layout} {session.Output.Rows}x{session.Output.Columns} {session.Output.Precision}");
 
         GpuTimer timer = new(gpu);
         Preprocessor? preprocessor = null;
