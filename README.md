@@ -1,4 +1,4 @@
-# nice-aimassist
+# pstm
 
 A Windows app that captures the center of a display, finds targets with an end-to-end YOLO model, and moves the mouse through a MAKCU device.
 
@@ -44,7 +44,7 @@ A missing section takes its defaults. The app clamps values that are out of rang
 | `dataset.enabled` | `true` | Record while a hotkey is down. |
 | `log.level` | `Info` | Most detailed log level. |
 
-Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `NiceAimassist/Hotkey/Key.cs`.
+Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `Pstm/Hotkey/Key.cs`.
 
 ## Model
 
@@ -58,7 +58,7 @@ The app checks these at startup and reports the first one that fails.
 
 ## Troubleshooting
 
-Each run writes `logs/nice-aimassist-yyyyMMdd-HHmmss.log`. The app keeps the last 10 files. Set `log.level` to `Debug` for more detail.
+Each run writes `logs/pstm-yyyyMMdd-HHmmss.log`. The app keeps the last 10 files. Set `log.level` to `Debug` for more detail.
 
 - `no MAKCU port found`: the device does not use the CH340 USB IDs `1A86:55D3` or `1A86:7523`. Check the cable and the driver.
 - `no model is selected` or `model file not found`: set `detect.model` to a file that exists in `models/`.
@@ -69,9 +69,9 @@ Each run writes `logs/nice-aimassist-yyyyMMdd-HHmmss.log`. The app keeps the las
 Build on Windows. Warnings are errors.
 
 ```text
-dotnet build NiceAimassist.sln -c Release
-dotnet test NiceAimassist.sln
-dotnet publish NiceAimassist/NiceAimassist.csproj -c Release
+dotnet build PastaAim.sln -c Release
+dotnet test PastaAim.sln
+dotnet publish Pstm/Pstm.csproj -c Release
 ```
 
-The publish output is a self-contained single file in `NiceAimassist/bin/Release/net10.0-windows/win-x64/publish/`. The checks to run before a commit are in [CLAUDE.md](./CLAUDE.md#commands).
+The publish output is a self-contained single file in `Pstm/bin/Release/net10.0-windows/win-x64/publish/`. The checks to run before a commit are in [CLAUDE.md](./CLAUDE.md#commands).

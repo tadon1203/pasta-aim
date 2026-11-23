@@ -28,7 +28,7 @@ Read a document only when its trigger applies.
 
 ### Structure
 
-Each top-level folder in `NiceAimassist/` is a feature, with two exceptions: `Shared/` and the two layers above the features.
+Each top-level folder in `Pstm/` is a feature, with two exceptions: `Shared/` and the two layers above the features.
 
 ```text
 App → Loop → Capture, Detect, Aim, Dataset, Hotkey, Mouse → Shared
@@ -94,11 +94,11 @@ A name states the role. A reader must know the structure from the names alone.
 
 The project builds only on Windows with the .NET 10 SDK. There is no CI and there are no commit hooks. Run the checks before you commit.
 
-- Build and lint: `dotnet build NiceAimassist.sln -c Release`. Warnings fail the build.
-- Check format: `dotnet format NiceAimassist.sln --verify-no-changes`. Fix format: `dotnet format NiceAimassist.sln`.
-- Tests: `dotnet test NiceAimassist.sln`.
-- Focused test: `dotnet test NiceAimassist.sln --filter "FullyQualifiedName~<ClassName>"`. Filter on a class name.
-- Release: `dotnet publish NiceAimassist/NiceAimassist.csproj -c Release`.
+- Build and lint: `dotnet build PastaAim.sln -c Release`. Warnings fail the build.
+- Check format: `dotnet format PastaAim.sln --verify-no-changes`. Fix format: `dotnet format PastaAim.sln`.
+- Tests: `dotnet test PastaAim.sln`.
+- Focused test: `dotnet test PastaAim.sln --filter "FullyQualifiedName~<ClassName>"`. Filter on a class name.
+- Release: `dotnet publish Pstm/Pstm.csproj -c Release`.
 
 The build, the full test run, and the publish are slow. Run them in the background. While you iterate, use a focused test.
 
