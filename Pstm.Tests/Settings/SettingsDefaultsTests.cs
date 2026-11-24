@@ -14,10 +14,9 @@ public sealed class SettingsDefaultsTests
         Assert.Equal(50, settings.Detect.Threshold);
         Assert.Null(settings.Detect.Model);
         Assert.Equal(
-            (100, 100, 50, 512, 12, 100),
+            (5, 5, 50, 512, 128, 10),
             (settings.Correction.SensitivityX, settings.Correction.SensitivityY, settings.Correction.Offset,
-                settings.Correction.MaxDelta, settings.Correction.LeadSmoothingMs, settings.Correction.LeadScale));
-        Assert.True(settings.Correction.Lead);
+                settings.Correction.MaxDelta, settings.Correction.NearPx, settings.Correction.NearBoost));
         Assert.True(settings.Mouse.Smoothing.IsAuto);
         Assert.False(settings.Samples.Enabled);
         Assert.Equal(LogLevel.Info, settings.Log.Level);

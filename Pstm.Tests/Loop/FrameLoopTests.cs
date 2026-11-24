@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Pstm.Capture;
+using Pstm.Correction;
 using Pstm.Samples;
 using Pstm.Detect;
 using Pstm.Loop;
@@ -12,7 +13,7 @@ namespace Pstm.Tests.Loop;
 
 public class FrameLoopTests
 {
-    // The target center is 100 px right of the input center (320). The default tracker moves dx = 100.
+    // The target center is 100 px right of the input center (320). The test settings use gain 100, so the tracker moves dx = 100.
     private static readonly Detection Centered = new(400, 300, 440, 340, 0.9f, 0);
 
     [Fact]
@@ -212,7 +213,11 @@ public class FrameLoopTests
 
     private static AppSettings Snapshot() => Snapshot(Smoothing.Auto);
 
-    private static AppSettings Snapshot(Smoothing smoothing) => new() { Mouse = new MouseSettings { Smoothing = smoothing } };
+    private static AppSettings Snapshot(Smoothing smoothing) => new()
+    {
+        Correction = new CorrectionSettings { SensitivityX = 100, SensitivityY = 100, NearBoost = 0 },
+        Mouse = new MouseSettings { Smoothing = smoothing },
+    };
 
     private sealed class Holder<T>(T value)
         where T : class

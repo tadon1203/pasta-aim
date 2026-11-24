@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Windows.Forms;
 using Pstm.Correction;
 using Pstm.Samples;
@@ -17,6 +18,7 @@ namespace Pstm.App;
 internal sealed class SettingsWindow : Form
 {
     private const int SaveDelayMs = 300;
+    private readonly Font _sectionFont;
     private readonly SettingsStore _file;
     private readonly ManualResetEventSlim _stopped;
     private readonly string _modelsDirectory;
@@ -34,13 +36,13 @@ internal sealed class SettingsWindow : Form
     private readonly NumericUpDown _threshold = new();
     private readonly NumericUpDown _offset = new();
     private readonly NumericUpDown _maxDelta = new();
-    private readonly CheckBox _lead = new();
-    private readonly NumericUpDown _leadScale = new();
-    private readonly NumericUpDown _leadSmoothing = new();
+    private readonly NumericUpDown _nearPx = new();
+    private readonly NumericUpDown _nearBoost = new();
     private readonly NumericUpDown _smoothingPercent = new();
     private readonly CheckBox _smoothingAuto = new();
     private readonly CheckBox _samplesEnabled = new();
     private readonly Label _status = new();
+    private readonly ToolTip _tips = new();
     private readonly Timer _saveTimer = new();
 
     private RegisteredWaitHandle? _stopWait;
@@ -57,6 +59,7 @@ internal sealed class SettingsWindow : Form
         _stopped = stopped;
         _modelsDirectory = modelsDirectory;
 
+        _sectionFont = new Font(Font, FontStyle.Bold);
         InitializeComponent();
         _keyCapture = new KeyCapture(_hotkeys, _addKey, _removeKey, SettingChanged);
         _statusLine = new StatusLine(_status, loopStatus, recorder);
@@ -83,6 +86,8 @@ internal sealed class SettingsWindow : Form
             _file.Changed -= OnSettingsChanged;
             _stopWait?.Unregister(null);
             _saveTimer.Dispose();
+            _tips.Dispose();
+            _sectionFont.Dispose();
             _keyCapture.Dispose();
             _statusLine.Dispose();
         }
@@ -99,7 +104,9 @@ internal sealed class SettingsWindow : Form
         MaximizeBox = false;
 
         _layout.AutoSize = true;
-        _layout.ColumnCount = 1;
+        _layout.ColumnCount = 2;
+        _layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _layout.Dock = DockStyle.Fill;
         _layout.Padding = new Padding(12);
 
@@ -120,8 +127,8 @@ internal sealed class SettingsWindow : Form
         ConfigureNumber(_threshold, 0, DetectSettings.MaxThreshold);
         ConfigureNumber(_offset, 0, CorrectionSettings.MaxOffset);
         ConfigureNumber(_maxDelta, 0, CorrectionSettings.MaxDeltaLimit);
-        ConfigureNumber(_leadScale, CorrectionSettings.MinSensitivity, CorrectionSettings.MaxSensitivity);
-        ConfigureNumber(_leadSmoothing, 0, CorrectionSettings.MaxLeadSmoothingMs);
+        ConfigureNumber(_nearPx, 0, CorrectionSettings.MaxNearPx);
+        ConfigureNumber(_nearBoost, 0, CorrectionSettings.MaxNearBoost);
         ConfigureNumber(_smoothingPercent, 0, 100);
         _smoothingAuto.Text = "Auto";
         _smoothingAuto.AutoSize = true;
@@ -132,27 +139,33 @@ internal sealed class SettingsWindow : Form
         _logLevel.DropDownStyle = ComboBoxStyle.DropDownList;
         _logLevel.Items.AddRange([.. Enum.GetValues<LogLevel>().Cast<object>()]);
 
-        _lead.Text = "On";
-        _lead.AutoSize = true;
         _samplesEnabled.Text = "Enabled (while keys are down)";
         _samplesEnabled.AutoSize = true;
 
+        _tips.SetToolTip(_nearPx, "Distance in input pixels where the near boost starts. 0 disables the boost.");
+        _tips.SetToolTip(_nearBoost, "Sensitivity added at the target point. 0 keeps the base gain.");
+
         _status.AutoSize = true;
-        _layout.Controls.Add(Rows(
-            ("Model (restart)", _model),
-            ("Threshold %", _threshold),
-            ("Gain X", _sensitivityX),
-            ("Gain Y", _sensitivityY),
-            ("Offset %", _offset),
-            ("Max step (0 = no cap)", _maxDelta),
-            ("Lead", _lead),
-            ("Lead smoothing (ms)", _leadSmoothing),
-            ("Lead scale %", _leadScale),
-            ("Smoothing %", smoothing),
-            ("Keys", keys),
-            ("Sample recording", _samplesEnabled),
-            ("Log level", _logLevel)));
+        AddSection("Input");
+        AddRow("Model (restart)", _model);
+        AddRow("Threshold %", _threshold);
+        AddSection("Correction");
+        AddRow("Gain X", _sensitivityX);
+        AddRow("Gain Y", _sensitivityY);
+        AddRow("Offset %", _offset);
+        AddRow("Max step (0 = no cap)", _maxDelta);
+        AddRow("Near radius (px)", _nearPx);
+        AddRow("Near boost", _nearBoost);
+        AddSection("Mouse");
+        AddRow("Smoothing %", smoothing);
+        AddSection("Keys");
+        AddRow("Keys", keys);
+        AddSection("Samples");
+        AddRow("Sample recording", _samplesEnabled);
+        AddSection("Log");
+        AddRow("Log level", _logLevel);
         _layout.Controls.Add(_status);
+        _layout.SetColumnSpan(_status, 2);
         Controls.Add(_layout);
 
         _saveTimer.Interval = SaveDelayMs;
@@ -165,17 +178,30 @@ internal sealed class SettingsWindow : Form
         input.Width = 80;
     }
 
-    private static TableLayoutPanel Rows(params (string Text, Control Input)[] rows)
+    private void AddSection(string title)
     {
-        TableLayoutPanel table = new() { AutoSize = true, ColumnCount = 2 };
-        foreach ((string text, Control input) in rows)
+        Label label = new()
         {
-            table.Controls.Add(new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 12, 6) });
-            input.Anchor = AnchorStyles.Left;
-            table.Controls.Add(input);
-        }
+            Text = title,
+            AutoSize = true,
+            Font = _sectionFont,
+            Margin = new Padding(3, 12, 3, 3),
+        };
+        _layout.Controls.Add(label);
+        _layout.SetColumnSpan(label, 2);
+    }
 
-        return table;
+    private void AddRow(string text, Control input)
+    {
+        _layout.Controls.Add(new Label
+        {
+            Text = text,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 6, 12, 6),
+        });
+        input.Anchor = AnchorStyles.Left;
+        _layout.Controls.Add(input);
     }
 
     private void LoadModels()
@@ -204,11 +230,8 @@ internal sealed class SettingsWindow : Form
             _threshold.Value = settings.Detect.Threshold;
             _offset.Value = settings.Correction.Offset;
             _maxDelta.Value = settings.Correction.MaxDelta;
-            _lead.Checked = settings.Correction.Lead;
-            _leadSmoothing.Value = settings.Correction.LeadSmoothingMs;
-            _leadScale.Value = settings.Correction.LeadScale;
-            _leadSmoothing.Enabled = settings.Correction.Lead;
-            _leadScale.Enabled = settings.Correction.Lead;
+            _nearPx.Value = settings.Correction.NearPx;
+            _nearBoost.Value = settings.Correction.NearBoost;
             _smoothingAuto.Checked = settings.Mouse.Smoothing.IsAuto;
             _smoothingPercent.Value = settings.Mouse.Smoothing.FixedPercent ?? 0;
             _smoothingPercent.Enabled = !_smoothingAuto.Checked;
@@ -251,18 +274,12 @@ internal sealed class SettingsWindow : Form
         foreach (NumericUpDown input in new[]
         {
             _sensitivityX, _sensitivityY, _threshold, _offset,
-            _maxDelta, _leadScale, _leadSmoothing, _smoothingPercent,
+            _maxDelta, _nearPx, _nearBoost, _smoothingPercent,
         })
         {
             input.ValueChanged += (_, _) => SettingChanged();
         }
 
-        _lead.CheckedChanged += (_, _) =>
-        {
-            _leadSmoothing.Enabled = _lead.Checked;
-            _leadScale.Enabled = _lead.Checked;
-            SettingChanged();
-        };
         _smoothingAuto.CheckedChanged += (_, _) =>
         {
             _smoothingPercent.Enabled = !_smoothingAuto.Checked;
@@ -288,9 +305,8 @@ internal sealed class SettingsWindow : Form
                 SensitivityY = (int)_sensitivityY.Value,
                 Offset = (int)_offset.Value,
                 MaxDelta = (int)_maxDelta.Value,
-                Lead = _lead.Checked,
-                LeadScale = (int)_leadScale.Value,
-                LeadSmoothingMs = (int)_leadSmoothing.Value,
+                NearPx = (int)_nearPx.Value,
+                NearBoost = (int)_nearBoost.Value,
             },
             Hotkey = current.Hotkey with { Keys = _keyCapture.Keys },
             Mouse = current.Mouse with

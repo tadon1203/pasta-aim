@@ -9,8 +9,11 @@ public sealed class CorrectionSettingsTests
     {
         var tracker = AppSettings.Parse(
             @"{ ""correction"": { ""sensitivity_x"": 0, ""sensitivity_y"": 20000, ""offset"": -1,
-                ""max_delta"": -5, ""lead_smoothing_ms"": 5000 } }").Correction;
+                ""max_delta"": -5, ""near_px"": 5000, ""near_boost"": 20000 } }").Correction;
 
-        Assert.Equal((1, 10_000, 0, 0, 1000), (tracker.SensitivityX, tracker.SensitivityY, tracker.Offset, tracker.MaxDelta, tracker.LeadSmoothingMs));
+        Assert.Equal(
+            (1, 10_000, 0, 0, 1000, 10_000),
+            (tracker.SensitivityX, tracker.SensitivityY, tracker.Offset, tracker.MaxDelta,
+                tracker.NearPx, tracker.NearBoost));
     }
 }

@@ -135,8 +135,6 @@ public sealed class FrameLoop
             Size input = new(_detector.InputWidth, _detector.InputHeight);
             CorrectionResult tracker = _tracker.Update(
                 target: frame.Target,
-                desktopTimestamp: frame.DesktopTimestamp,
-                nowTimestamp: _now(),
                 input: input,
                 settings: settings.Correction);
             long correctedAt = _now();

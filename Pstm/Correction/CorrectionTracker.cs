@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Drawing;
 using System.Numerics;
 using Pstm.Detect;
@@ -8,30 +7,17 @@ namespace Pstm.Correction;
 public sealed class CorrectionTracker
 {
     private const float MinIoU = 0.3f;
-    private const float DelaySmoothing = 0.2f;
-    private const float MaxLookAhead = 0.2f;
-    private const double MaxFrameGap = 0.1;
     private const float SensitivityDefault = 100f;
     private const float OffsetDefault = 50f;
 
     private Detection? _last;
     private Vector2 _remainder;
-    private Vector2 _velocity;
-    private (Vector2 Center, long Desktop)? _previous;
-    private Vector2 _shift;
-    private float? _delay;
 
-    public CorrectionResult Update(
-        Detection? target,
-        long desktopTimestamp,
-        long nowTimestamp,
-        Size input,
-        in CorrectionSettings settings)
+    public CorrectionResult Update(Detection? target, Size input, in CorrectionSettings settings)
     {
-        UpdateDelayEstimate(desktopTimestamp, nowTimestamp);
         if (!IsSameTarget(target))
         {
-            ResetTracking();
+            _remainder = Vector2.Zero;
         }
 
         _last = target;
@@ -40,29 +26,13 @@ public sealed class CorrectionTracker
             return new CorrectionResult(CorrectionOutcome.NoTarget, 0, 0);
         }
 
-        Vector2 center = new(detection.CenterX, detection.CenterY);
-        float gainX = settings.SensitivityX / SensitivityDefault;
-        float gainY = settings.SensitivityY / SensitivityDefault;
-
-        Vector2 point = center;
-        if (settings.Lead)
-        {
-            Vector2 velocity = UpdateVelocity(center, desktopTimestamp, settings.LeadSmoothingMs);
-            float lookAhead = MathF.Min(_delay ?? 0f, MaxLookAhead);
-            point += new Vector2(
-                Math.Clamp(velocity.X * lookAhead, -detection.Width, detection.Width),
-                Math.Clamp(velocity.Y * lookAhead, -detection.Height, detection.Height));
-        }
-        else
-        {
-            // A stale estimate must not lead the target after lead turns on again.
-            _velocity = Vector2.Zero;
-            _previous = null;
-        }
-
-        float errorX = point.X - input.Width * 0.5f;
-        float pointY = point.Y + detection.Height * ((settings.Offset - OffsetDefault) / 100f);
+        float errorX = detection.CenterX - input.Width * 0.5f;
+        float pointY = detection.CenterY + detection.Height * ((settings.Offset - OffsetDefault) / 100f);
         float errorY = pointY - input.Height * 0.5f;
+
+        float nearGain = NearGain(errorX, errorY, settings);
+        float gainX = (settings.SensitivityX + nearGain) / SensitivityDefault;
+        float gainY = (settings.SensitivityY + nearGain) / SensitivityDefault;
         Vector2 movement = new(errorX * gainX, errorY * gainY);
 
         if (settings.MaxDelta != 0)
@@ -83,62 +53,34 @@ public sealed class CorrectionTracker
             Math.Clamp(withRemainder.X - x, -0.5f, 0.5f),
             Math.Clamp(withRemainder.Y - y, -0.5f, 0.5f));
 
-        // The sent move shifts the next capture by its pixel size. The shift does not depend on the sensitivity.
-        // The next velocity adds this shift back.
-        _shift = new Vector2(x, y) * (SensitivityDefault / settings.LeadScale);
-
         return new CorrectionResult(x != 0 || y != 0 ? CorrectionOutcome.Move : CorrectionOutcome.OnTarget, x, y);
     }
 
     /// <summary>
-    /// Forgets the target and the measured state. The loop calls it when the keys are released, so that
-    /// the move from the last press does not read as target motion.
+    /// Forgets the target and the remainder. The loop calls it when the keys are released.
     /// </summary>
     public void Reset()
     {
         _last = null;
-        _delay = null;
-        ResetTracking();
+        _remainder = Vector2.Zero;
     }
 
-    private void UpdateDelayEstimate(long desktopTimestamp, long nowTimestamp)
+    private static float NearGain(float errorX, float errorY, in CorrectionSettings settings)
     {
-        float seconds = (float)(Math.Max(0L, nowTimestamp - desktopTimestamp) / (double)Stopwatch.Frequency);
-        _delay = _delay is { } smoothed ? smoothed + DelaySmoothing * (seconds - smoothed) : seconds;
+        if (settings.NearPx <= 0 || settings.NearBoost <= 0)
+        {
+            return 0f;
+        }
+
+        float distance = MathF.Sqrt(errorX * errorX + errorY * errorY);
+        float t = Math.Clamp(distance / settings.NearPx, 0f, 1f);
+        float near = 1f - t;
+        float smooth = near * near * (3f - 2f * near);
+        return settings.NearBoost * smooth;
     }
 
     private bool IsSameTarget(Detection? target) =>
         target is { } current && _last is { } last && Detection.IoU(last, current) >= MinIoU;
-
-    private void ResetTracking()
-    {
-        _remainder = Vector2.Zero;
-        _velocity = Vector2.Zero;
-        _previous = null;
-        _shift = Vector2.Zero;
-    }
-
-    private Vector2 UpdateVelocity(Vector2 center, long desktopTimestamp, int smoothingMs)
-    {
-        if (_previous is { } previous)
-        {
-            double gap = (desktopTimestamp - previous.Desktop) / (double)Stopwatch.Frequency;
-            if (gap > 0 && gap <= MaxFrameGap)
-            {
-                // The blend depends on the frame gap, so the smoothing time does not depend on the frame rate.
-                float blend = smoothingMs == 0 ? 1f : 1f - MathF.Exp((float)(-gap * 1000.0 / smoothingMs));
-                Vector2 raw = (center - previous.Center + _shift) / (float)gap;
-                _velocity += blend * (raw - _velocity);
-            }
-            else
-            {
-                _velocity = Vector2.Zero;
-            }
-        }
-
-        _previous = (center, desktopTimestamp);
-        return _velocity;
-    }
 
     // Round half away from zero. The tracker relies on this rule for symmetric moves.
     private static short ToShort(float value)

@@ -32,17 +32,18 @@ A missing section takes its defaults. The app clamps values that are out of rang
 | `display.output` | `0` | Display output for capture. |
 | `detect.model` | none | `.onnx` file in `models/`. Required. |
 | `detect.threshold` | `50` | Minimum score threshold, in percent. |
-| `correction.sensitivity_x` | `100` | Horizontal gain. |
-| `correction.sensitivity_y` | `100` | Vertical gain. |
+| `correction.sensitivity_x` | `5` | Horizontal gain outside the near radius. |
+| `correction.sensitivity_y` | `5` | Vertical gain outside the near radius. |
 | `correction.offset` | `50` | Correction point in percent of the box height. `0` is the top. |
 | `correction.max_delta` | `512` | Cap on one move. `0` is no cap. |
-| `correction.lead` | `true` | Lead a moving target. |
-| `correction.lead_smoothing_ms` | `12` | Lead. Smoothing time of the velocity. A larger value is steadier but slower. |
-| `correction.lead_scale` | `100` | Lead. Mouse counts for one capture pixel, in percent. |
+| `correction.near_px` | `128` | Near-boost radius in input pixels. `0` disables the boost. |
+| `correction.near_boost` | `10` | Sensitivity added at the target point. `0` keeps the base gain. |
 | `mouse.smoothing` | `"auto"` | MAKCU move smoothing: `"auto"` or a percent. |
 | `hotkey.keys` | `["F8"]` | Keys that enable correction. |
 | `samples.enabled` | `false` | Record while the keys are down. |
 | `log.level` | `Info` | Most detailed log level. |
+
+Set `correction.max_delta` to 20–60 to keep the approach smooth.
 
 Key names are case-insensitive. Examples: `F8`, `KeyA`, `Digit1`, `Space`, `MouseLeft`, `MouseX1`, `xinput:a`, `xinput:lb`. The full list is in `Pstm/Hotkey/Key.cs`.
 
